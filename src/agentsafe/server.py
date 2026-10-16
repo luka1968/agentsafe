@@ -258,6 +258,14 @@ def _clip_report(report: dict[str, Any]) -> dict[str, Any]:
     return report
 
 
+def create_app() -> FastMCP:
+    """Zero-arg factory for FastMCP Cloud / Prefect Horizon deployments.
+
+    Entrypoint: agentsafe.server:create_app (env vars supply all settings).
+    """
+    return build_server(Settings())
+
+
 def main() -> None:
     """Entry point: python -m agentsafe.server [--transport stdio|http]"""
     import argparse
