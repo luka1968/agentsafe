@@ -28,7 +28,7 @@ RUN pip install --no-cache-dir . \
     && pip install --no-cache-dir slither-analyzer==0.10.4 \
     && pip install --no-cache-dir mythril==0.24.3 \
     && pip install --no-cache-dir solc-select==1.2.0 \
-    && pip install --no-cache-dir setuptools \
+    && pip install --no-cache-dir "setuptools<81" \
     && python -c "import agentsafe.server" \
     && solc-select install 0.8.19 0.8.20 0.8.24 \
     && solc-select use 0.8.19
