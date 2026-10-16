@@ -20,11 +20,14 @@ COPY src ./src
 COPY scripts ./scripts
 
 # Project + pinned analysis tools (same pins as .github/workflows/audit.yml).
+# slither and mythril have conflicting shared-dependency pins; installing them
+# in ONE resolver run fails with ResolutionImpossible. Install sequentially
+# (last install wins on shared deps) and gate on agentsafe still importing.
 RUN pip install --no-cache-dir . \
-    && pip install --no-cache-dir \
-        slither-analyzer==0.10.4 \
-        mythril==0.24.3 \
-        solc-select==1.2.0 \
+    && pip install --no-cache-dir slither-analyzer==0.10.4 \
+    && pip install --no-cache-dir mythril==0.24.3 \
+    && pip install --no-cache-dir solc-select==1.2.0 \
+    && python -c "import agentsafe.server" \
     && solc-select install 0.8.19 0.8.20 0.8.24 \
     && solc-select use 0.8.19
 

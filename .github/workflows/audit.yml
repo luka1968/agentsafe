@@ -62,11 +62,16 @@ jobs:
       - name: Install project + pinned Python tools
         # Pins verified on PyPI at pin time: slither-analyzer 0.10.4 and
         # mythril 0.24.3 both exist and support Python 3.12.
+        # slither + mythril have conflicting shared-dependency pins: installing
+        # them in one resolver run fails with ResolutionImpossible, so install
+        # sequentially and gate on agentsafe still importing.
         run: |
+          python -m pip install --no-cache-dir --disable-pip-version-check -e . && \
           python -m pip install --no-cache-dir --disable-pip-version-check \
-            -e . && \
+            slither-analyzer==0.10.4 && \
           python -m pip install --no-cache-dir --disable-pip-version-check \
-            slither-analyzer==0.10.4 mythril==0.24.3
+            mythril==0.24.3 && \
+          python -c "import agentsafe.server"
 
       - name: Install solc (pinned versions)
         # solc-select 1.2.0 is the current release (3.0.4 does not exist).
