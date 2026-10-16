@@ -131,11 +131,15 @@ class EtherscanClient:
         backoff_cap: float = 8.0,
         client: httpx.AsyncClient | None = None,
         sleeper: Callable[[float], Awaitable[None]] | None = None,
+        strict: bool = True,
     ) -> None:
-        if not api_key:
-            raise ValueError("Etherscan API key is required")
-        if not base_url.startswith(("http://", "https://")):
-            raise ValueError("Etherscan base_url must be an http(s) URL")
+        if strict:
+            # Deferred (strict=False) mode is for cloud build-time inspection
+            # only; the server lifespan re-validates config at runtime.
+            if not api_key:
+                raise ValueError("Etherscan API key is required")
+            if not base_url.startswith(("http://", "https://")):
+                raise ValueError("Etherscan base_url must be an http(s) URL")
         self._api_key = api_key
         self._base_url = base_url
         self._max_retries = max_retries

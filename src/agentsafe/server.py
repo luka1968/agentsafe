@@ -16,6 +16,8 @@ true without a completed Phase-12 x402 adapter refuses to start.
 from __future__ import annotations
 
 import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -50,9 +52,16 @@ def _setup_logging(level: str) -> None:
     )
 
 
-def build_server(settings: Settings) -> FastMCP:
-    """Construct the FastMCP instance. Fails fast on bad config."""
-    validate_runtime_settings(settings)  # raises SettingsError with ALL problems
+def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
+    """Construct the FastMCP instance. Fails fast on bad config.
+
+    validate=False defers configuration validation to server startup via a
+    lifespan hook. Used for cloud deployments (FastMCP Cloud / Horizon)
+    where build-time inspection runs without environment variables; a
+    misconfigured deployment still refuses to serve at runtime.
+    """
+    if validate:
+        validate_runtime_settings(settings)  # raises SettingsError with ALL problems
 
     task_store = open_task_store(
         getattr(settings, "TASK_STORE", "sqlite"),
@@ -75,10 +84,22 @@ def build_server(settings: Settings) -> FastMCP:
         ref=settings.GITHUB_REF,
         timeout_seconds=settings.GITHUB_API_TIMEOUT_SECONDS,
         poll_interval_seconds=settings.GITHUB_POLL_INTERVAL_SECONDS,
+        strict=validate,
     )
 
     rpc = EthRpcClient(settings.INFURA_ETH_ENDPOINT)
-    explorer = EtherscanClient(settings.ETHERSCAN_API_KEY, base_url=settings.ETHERSCAN_BASE_URL)
+    explorer = EtherscanClient(
+        settings.ETHERSCAN_API_KEY,
+        base_url=settings.ETHERSCAN_BASE_URL,
+        strict=validate,
+    )
+
+    @asynccontextmanager
+    async def _startup_validation(server: FastMCP) -> AsyncIterator[None]:
+        if not validate:
+            # Cloud mode: env vars only exist at runtime, so fail fast HERE.
+            validate_runtime_settings(Settings())
+        yield None
 
     app = FastMCP(
         "agentSAFE",
@@ -87,6 +108,7 @@ def build_server(settings: Settings) -> FastMCP:
             "screening, NOT a formal security audit. Findings require human "
             "verification before any action."
         ),
+        lifespan=_startup_validation,
     )
 
     @app.tool
@@ -262,8 +284,10 @@ def create_app() -> FastMCP:
     """Zero-arg factory for FastMCP Cloud / Prefect Horizon deployments.
 
     Entrypoint: agentsafe.server:create_app (env vars supply all settings).
+    Cloud builds inspect the server WITHOUT env vars, so validation is
+    deferred to runtime startup (see build_server validate=False).
     """
-    return build_server(Settings())
+    return build_server(Settings(), validate=False)
 
 
 def main() -> None:

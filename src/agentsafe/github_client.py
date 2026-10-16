@@ -67,11 +67,15 @@ class GitHubActionsClient:
         resolve_attempts: int = 12,
         client: httpx.AsyncClient | None = None,
         sleeper: Any | None = None,
+        strict: bool = True,
     ) -> None:
-        if not token:
-            raise ValueError("GitHub token required")
-        if "/" not in repo or repo.count("/") != 1:
-            raise ValueError(f"repo must be 'owner/repo', got {repo!r}")
+        if strict:
+            # Deferred (strict=False) mode is for cloud build-time inspection
+            # only; the server lifespan re-validates config at runtime.
+            if not token:
+                raise ValueError("GitHub token required")
+            if "/" not in repo or repo.count("/") != 1:
+                raise ValueError(f"repo must be 'owner/repo', got {repo!r}")
         self._repo = repo
         self._workflow = workflow_file
         self._ref = ref
