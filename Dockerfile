@@ -33,13 +33,16 @@ RUN pip install --no-cache-dir . \
     && solc-select install 0.8.19 0.8.20 0.8.24 \
     && solc-select use 0.8.19
 
-# Aderyn (pinned release, official checksum).
+# Aderyn (pinned release, official checksum). The release tarball nests the
+# binary one directory deep; --strip-components=1 puts it on PATH.
 RUN set -eu \
     && curl -fsSL --retry 3 -o /tmp/aderyn.tar.xz \
         "https://github.com/Cyfrin/aderyn/releases/download/aderyn-v0.6.8/aderyn-x86_64-unknown-linux-gnu.tar.xz" \
     && echo "ffd6ca658962e211a3ac821c646f69c8e14bf1b1001cbfe091bcd4535a691e46  /tmp/aderyn.tar.xz" | sha256sum -c - \
-    && tar -xJf /tmp/aderyn.tar.xz -C /usr/local/bin \
-    && rm /tmp/aderyn.tar.xz
+    && mkdir -p /tmp/aderyn-x \
+    && tar -xJf /tmp/aderyn.tar.xz -C /tmp/aderyn-x --strip-components=1 \
+    && mv /tmp/aderyn-x/aderyn /usr/local/bin/aderyn \
+    && rm -rf /tmp/aderyn.tar.xz /tmp/aderyn-x
 
 # Heimdall (pinned release, computed checksum; re-verify when bumping).
 RUN set -eu \

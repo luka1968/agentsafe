@@ -90,7 +90,10 @@ jobs:
           EXPECTED_SHA256="ffd6ca658962e211a3ac821c646f69c8e14bf1b1001cbfe091bcd4535a691e46"
           curl -fsSL --retry 3 -o /tmp/aderyn.tar.xz "${URL}"
           echo "${EXPECTED_SHA256}  /tmp/aderyn.tar.xz" | sha256sum -c -
-          tar -xJf /tmp/aderyn.tar.xz -C /usr/local/bin
+          # Release tarball nests the binary one directory deep.
+          mkdir -p /tmp/aderyn-x
+          tar -xJf /tmp/aderyn.tar.xz -C /tmp/aderyn-x --strip-components=1
+          mv /tmp/aderyn-x/aderyn /usr/local/bin/aderyn
           aderyn --version
 
       - name: Install Heimdall (pinned release, computed checksum)
