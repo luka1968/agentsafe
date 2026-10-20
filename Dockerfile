@@ -30,7 +30,7 @@ RUN pip install --no-cache-dir . \
     && pip install --no-cache-dir solc-select==1.2.0 \
     && pip install --no-cache-dir "setuptools<81" \
     && python -c "import agentsafe.server" \
-    && solc-select install 0.8.19 0.8.20 0.8.24 \
+    && solc-select install 0.4.26 0.5.17 0.6.12 0.7.6 0.8.19 0.8.20 0.8.24 \
     && solc-select use 0.8.19
 
 # Aderyn (pinned release, official checksum). The release tarball nests the

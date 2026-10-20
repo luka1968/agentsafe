@@ -106,6 +106,8 @@ def _handler(slither=None, aderyn=None, versions=True):
                 return ProcResult(1, b"", b"")
             v = b"0.10.4" if spec.executable == "slither" else b"0.3.2"
             return ProcResult(0, v, b"")
+        if spec.executable == "solc-select":
+            return ProcResult(0, b"installed\n", b"")
         if spec.executable == "slither":
             if slither is None:
                 return ProcResult(None, b"", b"", missing=True, error="not found")
@@ -301,6 +303,44 @@ class TestSourceAnalyzer:
         analyzer = SourceAnalyzer(runner=FakeRunner(_handler()))
         with pytest.raises(AnalyzerError, match="no source files"):
             await analyzer.analyze(SourceBundle(is_verified=False))
+
+    async def test_ensure_solc_provisions_etherscan_version_before_slither(self):
+        runner = FakeRunner(_handler(slither=(0, SLITHER_OK), aderyn=(0, ADERYN_OK)))
+        await SourceAnalyzer(runner=runner).analyze(
+            _bundle(compiler_version="v0.4.19+commit.c4cbbb05")
+        )
+        solc_specs = [s for s in runner.specs if s.executable == "solc-select"]
+        assert solc_specs and solc_specs[0].args == ["install", "0.4.19"]
+        # provisioning must happen BEFORE the slither run
+        first_slither = next(i for i, s in enumerate(runner.specs) if s.executable == "slither")
+        assert runner.specs.index(solc_specs[0]) < first_slither
+
+    async def test_ensure_solc_failure_is_tolerated(self):
+        def handle(spec: ProcSpec) -> ProcResult:
+            if spec.executable == "solc-select":
+                return ProcResult(1, b"", b"no such version")
+            return _handler(slither=(0, SLITHER_OK), aderyn=(0, ADERYN_OK))(spec)
+
+        result = await SourceAnalyzer(runner=FakeRunner(handle)).analyze(_bundle())
+        assert not result.partial_failure  # provisioning failure alone is not a tool failure
+
+    async def test_ensure_solc_skipped_when_no_recorded_version(self):
+        runner = FakeRunner(_handler(slither=(0, SLITHER_OK), aderyn=(0, ADERYN_OK)))
+        await SourceAnalyzer(runner=runner).analyze(_bundle(compiler_version=""))
+        assert not [s for s in runner.specs if s.executable == "solc-select"]
+
+    async def test_slither_failure_recorded_with_stderr_detail(self):
+        # regression for the first WETH audit: exit 1, empty stdout, and the
+        # report only said "produced no JSON output" with no diagnostic.
+        bad = ProcResult(1, b"", b"Traceback ... solc 0.4.19 is not installed")
+        result = await SourceAnalyzer(
+            runner=FakeRunner(_handler(slither=bad, aderyn=(0, ADERYN_OK)))
+        ).analyze(_bundle(compiler_version=""))
+        slither_run = next(r for r in result.runs if r.tool == "slither")
+        assert not slither_run.executed
+        assert "exited with 1" in (slither_run.error or "")
+        assert "solc 0.4.19 is not installed" in (slither_run.error or "")
+        assert "stderr" in (slither_run.error or "")
 
     async def test_source_size_cap_enforced(self):
         big = [

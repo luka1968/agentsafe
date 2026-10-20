@@ -50,6 +50,8 @@ logger = logging.getLogger("agentSAFE.source")
 
 MAX_SOURCE_TOTAL_BYTES = 5_000_000
 
+_SOLC_VERSION_RE = re.compile(r"v?(\d+\.\d+\.\d+)")
+
 _SLITHER_IMPACT = {
     "high": Severity.HIGH,
     "medium": Severity.MEDIUM,
@@ -137,6 +139,12 @@ class SourceAnalyzer:
         try:
             self._materialize(bundle, workspace)
             root = workspace.root
+            # Root cause of the first WETH audit failing Slither with an
+            # opaque "no JSON output" error: the contract compiles with solc
+            # 0.4.x but the image preinstalls only 0.8.x. Provision the
+            # Etherscan-recorded compiler version BEFORE running Slither;
+            # solc-select install is idempotent and cheap when present.
+            await self._ensure_solc(getattr(bundle, "compiler_version", ""))
             runs.append(await self._run_slither(root))
             runs.append(await self._run_aderyn(root))
         finally:
@@ -144,6 +152,37 @@ class SourceAnalyzer:
 
         partial = any((not r.executed) or (r.error is not None) for r in runs)
         return SourceAnalysis(runs=runs, partial_failure=partial)
+
+    async def _ensure_solc(self, compiler_version: str) -> None:
+        """Ensure the Etherscan-recorded solc version is installed.
+
+        Etherscan reports the exact compiler the deployed contract was built
+        with (e.g. ``v0.4.19+commit...``). ``solc-select install`` is
+        idempotent: an already-installed version is a fast no-op. Failures
+        are logged and tolerated - the slither run itself reports the
+        resulting compile error instead.
+        """
+        m = _SOLC_VERSION_RE.search(compiler_version or "")
+        if not m:
+            return
+        version = m.group(1)
+        res = await self._runner.run(
+            ProcSpec(
+                executable="solc-select",
+                args=["install", version],
+                cwd=Path("."),
+                timeout_seconds=120.0,
+                max_output_bytes=4096,
+            )
+        )
+        if res.missing:
+            logger.warning("solc-select unavailable; assuming solc %s is installed", version)
+        elif res.exit_code not in (0, None):
+            logger.warning(
+                "solc-select install %s failed (exit %s); slither may fail to compile",
+                version,
+                res.exit_code,
+            )
 
     def _materialize(self, bundle, workspace: TempWorkspace) -> None:
         """Write files preserving paths/settings. No concatenation, no truncation."""
@@ -192,7 +231,10 @@ class SourceAnalyzer:
             run.error = f"slither spawn error: {res.error}"
             return run
         if not (res.stdout or b"").strip():
+            tail = _stderr_tail(res.stderr)
             run.error = f"slither exited with {res.exit_code} and produced no JSON output"
+            if tail:
+                run.error += f"; stderr: {tail}"
             return run
 
         try:
@@ -240,7 +282,10 @@ class SourceAnalyzer:
         except OSError:
             data = b""
         if not data.strip():
+            tail = _stderr_tail(res.stderr)
             run.error = f"aderyn exited with {res.exit_code} and wrote no report.json"
+            if tail:
+                run.error += f"; stderr: {tail}"
             return run
 
         try:
@@ -261,6 +306,11 @@ class SourceAnalyzer:
 # --------------------------------------------------------------------------
 # Output parsers (module-level pure functions => directly unit-testable)
 # --------------------------------------------------------------------------
+
+
+def _stderr_tail(stderr: bytes, limit: int = 300) -> str:
+    """Last `limit` chars of a tool's stderr, for diagnosable error records."""
+    return (stderr or b"").decode("utf-8", "replace").strip()[-limit:]
 
 
 def _parse_slither(res: ProcResult) -> tuple[list[Finding], str | None]:
