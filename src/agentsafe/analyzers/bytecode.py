@@ -253,8 +253,7 @@ class BytecodeAnalyzer:
             res = await self._runner.run(
                 ProcSpec(
                     executable=self._heimdall,
-                    args=["decompile", bytecode, "--include-sol",
-                          "--output", str(ws.root)],
+                    args=["decompile", bytecode, "--include-sol", "--output", str(ws.root)],
                     cwd=Path("."),
                     timeout_seconds=self._timeout,
                     max_output_bytes=self._max_output,

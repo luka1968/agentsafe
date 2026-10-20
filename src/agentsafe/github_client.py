@@ -32,8 +32,6 @@ API_BASE = "https://api.github.com"
 _TRANSIENT_HTTP = {429, 500, 502, 503, 504}
 MAX_ZIP_BYTES = 20 * 1024 * 1024
 MAX_MEMBER_BYTES = 20 * 1024 * 1024
-RUN_NAME_PREFIX = "audit-"
-ARTIFACT_NAME_PREFIX = "audit-report-"
 
 
 class GitHubClientError(RuntimeError):
@@ -78,6 +76,12 @@ class GitHubActionsClient:
                 raise ValueError(f"repo must be 'owner/repo', got {repo!r}")
         self._repo = repo
         self._workflow = workflow_file
+        # Run-name and artifact prefixes are derived from the workflow file so
+        # both audit.yml (audit-*, audit-report-*) and docker-audit.yml
+        # (docker-audit-*, docker-audit-report-*) associate correctly.
+        base = workflow_file.rsplit(".", 1)[0] if "." in workflow_file else workflow_file
+        self._run_name_prefix = f"{base}-"
+        self._artifact_name_prefix = f"{base}-report-"
         self._ref = ref
         self._base = base_url.rstrip("/")
         self._max_retries = max_retries
@@ -86,6 +90,7 @@ class GitHubActionsClient:
         self._sleeper = sleeper or asyncio.sleep
         self._client = client or httpx.AsyncClient(
             timeout=httpx.Timeout(timeout_seconds, connect=timeout_seconds),
+            follow_redirects=True,  # artifact downloads 302 to a signed URL
             headers={
                 "Authorization": f"Bearer {token}",
                 "Accept": "application/vnd.github+json",
@@ -164,7 +169,7 @@ class GitHubActionsClient:
         self, task_id: str, *, dispatched_after: datetime, attempts: int | None = None
     ) -> int:
         """Uniquely resolve the run for this task. Refuses to guess."""
-        expected = f"{RUN_NAME_PREFIX}{task_id}"
+        expected = f"{self._run_name_prefix}{task_id}"
         n = attempts or self._resolve_attempts
         for attempt in range(n):
             runs = await self._list_runs(since=dispatched_after, per_page=50)
@@ -236,7 +241,7 @@ class GitHubActionsClient:
     # -------------------------------------------------------------- artifacts
     async def fetch_report(self, run_id: int, task_id: str) -> dict[str, Any]:
         """Download + safely extract this task's report artifact; parse JSON."""
-        artifact_name = f"{ARTIFACT_NAME_PREFIX}{task_id}"
+        artifact_name = f"{self._artifact_name_prefix}{task_id}"
         resp = await self._request("GET", f"/repos/{self._repo}/actions/runs/{run_id}/artifacts")
         artifacts = (resp.json() or {}).get("artifacts") or []
         matching = [a for a in artifacts if a.get("name") == artifact_name]

@@ -9,8 +9,10 @@ Modes:
   stdio  : local development / single-client (default)
   http   : remote deployment (run behind an authenticating proxy)
 
-Payments: fail-closed. PAYMENTS_ENABLED=false runs free in dev mode;
-true without a completed Phase-12 x402 adapter refuses to start.
+Payments: fail-closed x402 gate (Phase 12). PAYMENTS_ENABLED=false runs free
+in dev mode; true requires the pinned official x402 SDK (see
+payment/x402_adapter.py) and gates audit_contract with verify-before-execution
+/ settle-after-execution. Report retrieval is bound to the verified payment.
 """
 
 from __future__ import annotations
@@ -21,7 +23,8 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastmcp import FastMCP
+from fastmcp import Context, FastMCP
+from fastmcp.tools import ToolResult
 
 from agentsafe import __version__
 from agentsafe.config import Settings, validate_runtime_settings
@@ -33,7 +36,7 @@ from agentsafe.github_client import (
     RunAssociationError,
 )
 from agentsafe.payment.x402_adapter import (
-    PaymentsNotEnabledError,
+    VerifiedPayment,
     X402PaymentAdapter,
 )
 from agentsafe.rpc import EthRpcClient
@@ -69,12 +72,16 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
         retention_days=settings.ARTIFACT_RETENTION_DAYS,
     )
 
-    # Payments gate (fail-closed)
+    # Payments gate (fail-closed; disabled = dev no-op)
     payment = X402PaymentAdapter(
         enabled=settings.PAYMENTS_ENABLED,
         sdk_version=settings.X402_SDK_VERSION,
         network=settings.X402_NETWORK,
         pay_to=settings.X402_PAY_TO,
+        facilitator_url=settings.X402_FACILITATOR_URL,
+        price=settings.X402_PRICE,
+        asset=settings.X402_ASSET,
+        max_timeout_seconds=settings.X402_MAX_TIMEOUT_SECONDS,
     )
 
     gh = GitHubActionsClient(
@@ -112,22 +119,32 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
     )
 
     @app.tool
-    async def audit_contract(address: str) -> dict[str, Any]:
+    async def audit_contract(address: str, ctx: Context) -> dict[str, Any] | ToolResult:
         """Start an audit for a Mainnet contract address. Returns a task_id.
 
         The audit runs on a GitHub Actions worker; poll check_audit_status.
+
+        When payments are enabled, this tool is x402-gated: an unpaid call
+        returns the official 402 payment-required body and never dispatches.
         """
         try:
             addr = normalize_address(address)
         except ValueError as exc:
             return {"ok": False, "error_code": "invalid_address", "error": str(exc)}
 
-        try:
-            payment.require_payment(f"audit:{addr}")
-        except PaymentsNotEnabledError as exc:  # pragma: no cover
-            return {"ok": False, "error_code": "payments_disabled", "error": str(exc)}
+        verified: VerifiedPayment | None = None
+        if payment.enabled:
+            # Official SDK flow: verify BEFORE execution. Unverified requests
+            # receive the payment-required result and no dispatch happens.
+            verified, deny = await payment.verify(ctx, "audit_contract")
+            if deny is not None:
+                return deny
 
         task = task_store.create_task(addr)
+        if verified is not None:
+            # Bind the verified payment to this task; report retrieval for
+            # this task is released only when this flag is set.
+            task_store.mark_paid(task.task_id, verified.ref)
         task_store.set_state(task.task_id, TaskState.QUEUED)
         logger.info("audit_contract address=%s task_id=%s", addr, task.task_id)
         try:
@@ -136,9 +153,9 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
             task_store.link_run(task.task_id, run_id)
             task_store.set_state(task.task_id, TaskState.RUNNING)
         except RunAssociationError as exc:
-            task_store.set_state(
-                task.task_id, TaskState.QUEUED, error_code="run_association_pending"
-            )
+            settled = await _settle_payment(verified, "audit_contract")
+            if settled is not None:
+                return settled
             return {
                 "ok": True,
                 "task_id": task.task_id,
@@ -149,6 +166,9 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
                 "detail": str(exc),
             }
         except GitHubClientError as exc:
+            # Dispatch failed: settlement is NOT attempted (verify-only so far,
+            # the on-chain transfer never executes -> no funds collected).
+            # No refund is owed or promised.
             task_store.set_state(task.task_id, TaskState.FAILED, error_code="dispatch_failed")
             return {
                 "ok": False,
@@ -156,6 +176,9 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
                 "error_code": "dispatch_failed",
                 "error": str(exc),
             }
+        settled = await _settle_payment(verified, "audit_contract")
+        if settled is not None:
+            return settled
         return {
             "ok": True,
             "task_id": task.task_id,
@@ -163,6 +186,41 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
             "run_id": run_id,
             "state": "running",
         }
+
+    async def _settle_payment(
+        verified: VerifiedPayment | None, tool_name: str
+    ) -> ToolResult | None:
+        """Settle AFTER successful execution (official after-handler phase).
+
+        Returns the settlement-failed error result on failure, else None.
+        A settlement failure does not stop the dispatched audit; it is
+        surfaced to the payer. No automatic refunds exist in the exact-EVM
+        scheme.
+        """
+        if verified is None:
+            return None
+        try:
+            settle_result = await payment.settle(verified)
+        except Exception as exc:
+            logger.error("settlement failed tool=%s ref=%s: %s", tool_name, verified.ref, exc)
+            return await payment.settlement_failed_result(tool_name, str(exc))
+        if not settle_result.success:
+            logger.error(
+                "settlement rejected tool=%s ref=%s reason=%s",
+                tool_name,
+                verified.ref,
+                settle_result.error_reason,
+            )
+            return await payment.settlement_failed_result(
+                tool_name, settle_result.error_reason or "unknown settlement failure"
+            )
+        logger.info(
+            "payment settled tool=%s ref=%s tx=%s",
+            tool_name,
+            verified.ref[:16],
+            settle_result.transaction,
+        )
+        return None
 
     @app.tool
     async def check_audit_status(task_id: str) -> dict[str, Any]:
@@ -203,6 +261,16 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
         task_store.set_state(task_id, TaskState(mapped))
 
         if mapped == "completed":
+            if payment.enabled and not task.paid:
+                # Payment binding: a task that never passed payment
+                # verification must not release a paid report.
+                return {
+                    "ok": False,
+                    "task_id": task_id,
+                    "state": mapped,
+                    "error_code": "payment_required",
+                    "error": "report withheld: no verified payment is bound to this task",
+                }
             try:
                 report = await gh.fetch_report(task.run_id, task_id)
             except ArtifactExpiredError:

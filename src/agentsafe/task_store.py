@@ -15,6 +15,8 @@ import logging
 import secrets
 import sqlite3
 import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Protocol
@@ -44,6 +46,12 @@ CREATE TABLE IF NOT EXISTS task_stages (
 );
 """
 
+# Phase 12: payment binding columns, added by an idempotent migration.
+_MIGRATION_COLUMNS = {
+    "paid": "INTEGER NOT NULL DEFAULT 0",
+    "payment_ref": "TEXT",
+}
+
 
 def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
@@ -72,6 +80,14 @@ class MemoryTaskStore:
             )
             self._tasks[task.task_id] = task
             return task.model_copy(deep=True)
+
+    def mark_paid(self, task_id: str, payment_ref: str) -> None:
+        with self._lock:
+            t = self._tasks.get(task_id)
+            if t:
+                t.paid = True
+                t.payment_ref = payment_ref
+                t.updated_at = datetime.now(UTC)
 
     def get(self, task_id: str) -> TaskStatus | None:
         with self._lock:
@@ -127,14 +143,35 @@ class SqliteTaskStore:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._retention_days = retention_days
         self._lock = threading.Lock()
-        with self._connect() as conn:
+        with self._lock, self._connect() as conn:
             conn.executescript(_SCHEMA)
+            self._migrate(conn)
             conn.commit()
 
-    def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self._path, timeout=10)
-        conn.row_factory = sqlite3.Row
-        return conn
+    @staticmethod
+    def _migrate(conn: sqlite3.Connection) -> None:
+        """Idempotent column additions (Phase 12 payment binding)."""
+        existing = {row[1] for row in conn.execute("PRAGMA table_info(tasks)")}
+        for name, decl in _MIGRATION_COLUMNS.items():
+            if name not in existing:
+                conn.execute(f"ALTER TABLE tasks ADD COLUMN {name} {decl}")
+
+    def _connect(self):
+        """Per-operation connection: commits on success, rollbacks on error,
+        and ALWAYS closes (sqlite3's own ``with conn`` only manages the
+        transaction, leaking the connection handle on Windows)."""
+
+        @contextmanager
+        def _managed() -> Iterator[sqlite3.Connection]:
+            conn = sqlite3.connect(self._path, timeout=10)
+            conn.row_factory = sqlite3.Row
+            try:
+                with conn:  # transaction scope: commit / rollback
+                    yield conn
+            finally:
+                conn.close()
+
+        return _managed()
 
     def create_task(self, address: str) -> TaskStatus:
         now = datetime.now(UTC)
@@ -160,6 +197,15 @@ class SqliteTaskStore:
                 ),
             )
         return task
+
+    def mark_paid(self, task_id: str, payment_ref: str) -> None:
+        with self._lock, self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE tasks SET paid = 1, payment_ref = ?, updated_at = ? WHERE task_id = ?",
+                (payment_ref, _now_iso(), task_id),
+            )
+            if cur.rowcount == 0:
+                raise KeyError(f"unknown task_id: {task_id}")
 
     def get(self, task_id: str) -> TaskStatus | None:
         with self._lock, self._connect() as conn:
@@ -226,6 +272,8 @@ def _row_to_task(row: sqlite3.Row, stages: list[sqlite3.Row]) -> TaskStatus:
         error_code=row["error_code"],
         created_at=datetime.fromisoformat(row["created_at"]),
         updated_at=datetime.fromisoformat(row["updated_at"]),
+        paid=bool(row["paid"]),
+        payment_ref=row["payment_ref"],
         stages=[
             StageStatus(
                 name=s["name"],
@@ -248,9 +296,9 @@ class TaskStore(Protocol):
 
     def link_run(self, task_id: str, run_id: int) -> None: ...
 
-    def set_state(
-        self, task_id: str, state: TaskState, error_code: str | None = None
-    ) -> None: ...
+    def set_state(self, task_id: str, state: TaskState, error_code: str | None = None) -> None: ...
+
+    def mark_paid(self, task_id: str, payment_ref: str) -> None: ...
 
     def upsert_stage(self, task_id: str, stage: StageStatus) -> None: ...
 

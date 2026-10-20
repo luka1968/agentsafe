@@ -122,9 +122,7 @@ def _handler(slither=None, aderyn=None, versions=True):
             code, payload = aderyn
             # aderyn v0.6.x writes its report to --output <file>, not stdout.
             if payload is not None:
-                (spec.cwd / "report.json").write_text(
-                    json.dumps(payload), encoding="utf-8"
-                )
+                (spec.cwd / "report.json").write_text(json.dumps(payload), encoding="utf-8")
             return ProcResult(code, b"", b"")
         raise AssertionError(f"unexpected executable {spec.executable}")
 
@@ -268,9 +266,7 @@ class TestSourceAnalyzer:
             if spec.executable == "slither":
                 return bad
             # aderyn contract: report lands in report.json, not stdout
-            (spec.cwd / "report.json").write_text(
-                "<html>not json</html>", encoding="utf-8"
-            )
+            (spec.cwd / "report.json").write_text("<html>not json</html>", encoding="utf-8")
             return ProcResult(0, b"", b"")
 
         result = await SourceAnalyzer(runner=FakeRunner(handle)).analyze(_bundle())

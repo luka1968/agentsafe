@@ -31,16 +31,17 @@ def _settings(**overrides) -> Settings:
         "LLM_PROVIDERS_JSON": json.dumps([VALID_PROVIDER]),
     }
     base.update(overrides)
-    return Settings.model_validate(base)
+    # _env_file=None: tests must be hermetic - never read the operator's .env
+    return Settings(_env_file=None, **base)
 
 
 class TestSettingsDefaults:
     def test_payments_disabled_by_default(self):
-        s = Settings()
+        s = Settings(_env_file=None)
         assert s.PAYMENTS_ENABLED is False
 
     def test_numeric_ranges_defaults(self):
-        s = Settings()
+        s = Settings(_env_file=None)
         assert 1 <= s.LLM_GLOBAL_RPM <= 1000
         assert s.AUDIT_TIMEOUT_SECONDS >= 30
         assert s.ARTIFACT_RETENTION_DAYS >= 1
@@ -116,6 +117,7 @@ class TestStartupValidation:
 
     def test_missing_multiple_settings_reports_all(self):
         s = Settings(
+            _env_file=None,
             INFURA_ETH_ENDPOINT="",
             ETHERSCAN_API_KEY="",
             GITHUB_TOKEN="",
@@ -131,17 +133,54 @@ class TestStartupValidation:
         assert "LLM_PROVIDERS_JSON" in msg
 
     def test_payments_enabled_without_sdk_fails_closed(self):
-        s = _settings(PAYMENTS_ENABLED=True)
+        s = _settings(PAYMENTS_ENABLED=True, X402_SDK_VERSION="")
         with pytest.raises(SettingsError, match="X402_SDK_VERSION"):
             validate_runtime_settings(s)
 
-    def test_payments_enabled_without_pay_to_fails_closed(self):
-        s = _settings(PAYMENTS_ENABLED=True, X402_SDK_VERSION="1.2.3")
+    def test_payments_enabled_with_wrong_pinned_version_fails_closed(self):
+        s = _settings(
+            PAYMENTS_ENABLED=True,
+            X402_SDK_VERSION="0.0.0",
+            X402_PAY_TO="0x" + "ab" * 20,
+        )
+        with pytest.raises(SettingsError, match="does not match installed x402"):
+            validate_runtime_settings(s)
+
+    def test_payments_enabled_requires_pay_to(self):
+        s = _settings(PAYMENTS_ENABLED=True)  # default pin matches installed SDK
         with pytest.raises(SettingsError, match="X402_PAY_TO"):
             validate_runtime_settings(s)
 
+    def test_payments_enabled_testnet_only_by_default(self):
+        s = _settings(
+            PAYMENTS_ENABLED=True,
+            X402_SDK_VERSION="2.25.0",
+            X402_PAY_TO="0x" + "ab" * 20,
+            X402_NETWORK="eip155:8453",  # Base mainnet
+        )
+        with pytest.raises(SettingsError, match="X402_ALLOW_MAINNET"):
+            validate_runtime_settings(s)
+        ok = _settings(
+            PAYMENTS_ENABLED=True,
+            X402_SDK_VERSION="2.25.0",
+            X402_PAY_TO="0x" + "ab" * 20,
+            X402_NETWORK="eip155:84532",  # Base Sepolia testnet
+        )
+        validate_runtime_settings(ok)
+
+    def test_payments_enabled_mainnet_opt_in_allowed(self):
+        s = _settings(
+            PAYMENTS_ENABLED=True,
+            X402_SDK_VERSION="2.25.0",
+            X402_PAY_TO="0x" + "ab" * 20,
+            X402_NETWORK="eip155:8453",
+            X402_ALLOW_MAINNET=True,
+        )
+        validate_runtime_settings(s)
+
     def test_optional_groups_can_be_relaxed(self):
         s = Settings(
+            _env_file=None,
             INFURA_ETH_ENDPOINT="",
             ETHERSCAN_API_KEY="",
             LLM_PROVIDERS_JSON="[]",

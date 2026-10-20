@@ -178,6 +178,11 @@ class TaskStatus(BaseModel):
     created_at: datetime | None = None
     updated_at: datetime | None = None
     error_code: str | None = None
+    # x402 payment binding (Phase 12): paid=True only after a payment passed
+    # official SDK verification for this task's dispatch; payment_ref is the
+    # canonical fingerprint of the verified payment payload (replay ledger key).
+    paid: bool = False
+    payment_ref: str | None = None
 
     def stage(self, name: str) -> StageStatus:
         for s in self.stages:

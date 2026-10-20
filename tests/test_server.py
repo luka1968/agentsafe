@@ -42,7 +42,7 @@ def _settings(**kw) -> Settings:
         "PAYMENTS_ENABLED": False,
     }
     base.update(kw)
-    return Settings.model_validate(base)
+    return Settings(_env_file=None, **base)
 
 
 def _wire_dispatch_and_runs():
@@ -105,13 +105,24 @@ class TestPaymentAdapterFailClosed:
         with pytest.raises(X402NotIntegratedError, match="X402_SDK_VERSION"):
             X402PaymentAdapter(enabled=True)
 
-    def test_enabled_with_sdk_still_refuses_until_phase12(self):
-        with pytest.raises(X402NotIntegratedError, match="not implemented yet"):
-            X402PaymentAdapter(enabled=True, sdk_version="1.2.3")
+    @respx.mock
+    def test_enabled_with_mismatched_sdk_refuses(self):
+        respx.get("https://facilitator.test/supported").mock(
+            return_value=httpx.Response(200, json={"kinds": [], "extensions": []})
+        )
+        with pytest.raises(X402NotIntegratedError, match="does not match installed"):
+            X402PaymentAdapter(
+                enabled=True,
+                sdk_version="1.2.3",
+                pay_to="0x" + "ab" * 20,
+                facilitator_url="https://facilitator.test",
+            )
 
-    def test_server_start_fails_when_payments_enabled_without_sdk(self):
-        with pytest.raises(SettingsError, match="X402_SDK_VERSION"):
+    def test_server_start_fails_when_payments_enabled_without_config(self):
+        with pytest.raises(SettingsError, match="X402_PAY_TO"):
             build_server(_settings(PAYMENTS_ENABLED=True))
+        with pytest.raises(SettingsError, match="X402_SDK_VERSION"):
+            build_server(_settings(PAYMENTS_ENABLED=True, X402_SDK_VERSION=""))
 
 
 class TestServerTools:

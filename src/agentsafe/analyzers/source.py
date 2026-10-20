@@ -240,9 +240,7 @@ class SourceAnalyzer:
         except OSError:
             data = b""
         if not data.strip():
-            run.error = (
-                f"aderyn exited with {res.exit_code} and wrote no report.json"
-            )
+            run.error = f"aderyn exited with {res.exit_code} and wrote no report.json"
             return run
 
         try:

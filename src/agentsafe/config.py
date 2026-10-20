@@ -6,10 +6,12 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any
+from typing import Any, ClassVar
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from agentsafe.schemas import normalize_address
 
 logger = logging.getLogger("agentSAFE.config")
 
@@ -103,11 +105,23 @@ class Settings(BaseSettings):
     TASK_STORE: str = "sqlite"
     TASK_DB_PATH: str = "data/tasks.db"
 
-    # --- Payments (fail-closed) ---
+    # --- Payments (x402, pinned SDK; fail-closed) ---
+    # Default: Base Sepolia TESTNET (CAIP-2 eip155:84532). Mainnet payments
+    # require X402_ALLOW_MAINNET=true and are only enabled after the
+    # end-to-end testnet test suite passes.
     PAYMENTS_ENABLED: bool = False
-    X402_NETWORK: str = "eip155:8453"
+    X402_NETWORK: str = "eip155:84532"
     X402_PAY_TO: str = ""
-    X402_SDK_VERSION: str = ""
+    X402_SDK_VERSION: str = "2.25.0"
+    X402_FACILITATOR_URL: str = "https://x402.org/facilitator"
+    X402_PRICE: str = "$0.01"
+    X402_ASSET: str = ""
+    X402_MAX_TIMEOUT_SECONDS: int = Field(default=300, ge=1, le=3600)
+    X402_ALLOW_MAINNET: bool = False
+
+    # Known x402 networks: testnet first; mainnet is opt-in only.
+    X402_NETWORK_TESTNET: ClassVar[str] = "eip155:84532"  # Base Sepolia
+    X402_NETWORK_MAINNET: ClassVar[str] = "eip155:8453"  # Base
 
     # --- Logging ---
     LOG_LEVEL: str = "INFO"
@@ -209,15 +223,46 @@ def validate_runtime_settings(
             errors.append("GITHUB_REPO is required (owner/repo)")
 
     if settings.PAYMENTS_ENABLED:
-        # Fail-closed: Phase 12 (real x402 adapter, pinned SDK, verified tests)
-        # must be complete before payments can be enabled.
-        if not settings.X402_SDK_VERSION.strip():
+        # Fail-closed: the pinned x402 SDK must be installed and the recorded
+        # pin must match the imported version, otherwise startup refuses.
+        try:
+            import x402  # noqa: PLC0415
+
+            installed_sdk = x402.__version__
+        except ImportError:
+            installed_sdk = ""
             errors.append(
-                "PAYMENTS_ENABLED=true requires X402_SDK_VERSION pinned to a verified "
-                "SDK release whose integration tests passed (Phase 12)"
+                "PAYMENTS_ENABLED=true requires the pinned x402 SDK "
+                "(pip install 'x402[evm]==2.25.0')"
+            )
+        if installed_sdk and settings.X402_SDK_VERSION.strip() != installed_sdk:
+            errors.append(
+                f"X402_SDK_VERSION={settings.X402_SDK_VERSION!r} does not match installed "
+                f"x402=={installed_sdk!r}; pin and installed version must agree"
             )
         if not settings.X402_PAY_TO.strip():
             errors.append("PAYMENTS_ENABLED=true requires X402_PAY_TO (payment recipient)")
+        else:
+            try:
+                normalize_address(settings.X402_PAY_TO)
+            except ValueError:
+                errors.append("X402_PAY_TO must be a valid EVM address")
+        network = settings.X402_NETWORK.strip()
+        if network != Settings.X402_NETWORK_TESTNET:
+            if network != Settings.X402_NETWORK_MAINNET:
+                errors.append(
+                    f"X402_NETWORK {network!r} is not supported; use Base Sepolia "
+                    f"({Settings.X402_NETWORK_TESTNET}) or Base ({Settings.X402_NETWORK_MAINNET})"
+                )
+            elif not settings.X402_ALLOW_MAINNET:
+                errors.append(
+                    "X402_NETWORK=Base mainnet requires X402_ALLOW_MAINNET=true and is only "
+                    "enabled after end-to-end Base Sepolia tests pass"
+                )
+        if not settings.X402_PRICE.strip().startswith("$"):
+            errors.append("X402_PRICE must be a USD price string like '$0.01'")
+        if not settings.X402_FACILITATOR_URL.strip():
+            errors.append("PAYMENTS_ENABLED=true requires X402_FACILITATOR_URL")
 
     if errors:
         raise SettingsError("Invalid configuration:\n- " + "\n- ".join(errors))

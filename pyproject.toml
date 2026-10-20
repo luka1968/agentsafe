@@ -17,11 +17,18 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+payments = [
+    # Pinned official x402 SDK (coinbase/x402-python). The payment adapter is
+    # written against THIS version's API surface (x402ResourceServer,
+    # HTTPFacilitatorClient, ExactEvmServerScheme, x402.mcp constants).
+    "x402[evm]==2.25.0",
+]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "respx>=0.21",
     "ruff>=0.4",
+    "x402[evm]==2.25.0",
 ]
 
 [tool.setuptools.packages.find]
