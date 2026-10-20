@@ -359,6 +359,26 @@ class TestSourceAnalyzer:
         assert res.error and "invalid extra_env" in res.error
         assert res.stdout == b""
 
+    async def test_extra_env_actually_reaches_the_subprocess(self):
+        """Regression: the runner built the merged env but passed a FRESH
+        sanitized env to create_subprocess_exec, silently dropping
+        extra_env (the SOLC_VERSION pin) - the third real audit failed
+        because of this. A real subprocess must observe the variable."""
+        import sys
+
+        from agentsafe.analyzers.proc import DefaultSubprocessRunner
+
+        runner = DefaultSubprocessRunner()
+        res = await runner.run(
+            ProcSpec(
+                executable=sys.executable,
+                args=["-c", "import os; print(os.environ.get('SOLC_VERSION'))"],
+                cwd=Path("."),
+                extra_env={"SOLC_VERSION": "0.4.19"},
+            )
+        )
+        assert b"0.4.19" in res.stdout
+
     async def test_ensure_solc_failure_is_tolerated(self):
         def handle(spec: ProcSpec) -> ProcResult:
             if spec.executable == "solc-select":

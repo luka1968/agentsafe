@@ -81,7 +81,7 @@ class DefaultSubprocessRunner:
                 cwd=str(spec.cwd),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                env=_sanitized_env(),
+                env=env,  # the sanitized env WITH any validated extra_env merged in
             )
         except FileNotFoundError:
             return ProcResult(
