@@ -79,6 +79,8 @@ async def run(args: argparse.Namespace) -> int:
         level=getattr(logging, settings.LOG_LEVEL, logging.INFO),
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
     )
+    # httpx INFO lines would log the Etherscan URL with its API key.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     # Worker needs RPC + Etherscan + LLM, but NOT GitHub dispatch credentials.
     validate_runtime_settings(settings, require_github=False)
 

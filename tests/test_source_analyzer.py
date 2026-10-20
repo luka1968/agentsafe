@@ -315,6 +315,50 @@ class TestSourceAnalyzer:
         first_slither = next(i for i, s in enumerate(runner.specs) if s.executable == "slither")
         assert runner.specs.index(solc_specs[0]) < first_slither
 
+    async def test_slither_run_pins_recorded_solc_version(self):
+        """Regression: crytic-compile uses solc-select's GLOBAL version and
+        never picks a pragma-compatible one; slither exits 1 silently when
+        the global solc cannot compile. The recorded version must be pinned
+        per-process via SOLC_VERSION (verified in a container repro)."""
+        runner = FakeRunner(_handler(slither=(0, SLITHER_OK), aderyn=(0, ADERYN_OK)))
+        await SourceAnalyzer(runner=runner).analyze(
+            _bundle(compiler_version="v0.4.19+commit.c4cbbb05")
+        )
+        slither_specs = [s for s in runner.specs if s.executable == "slither"]
+        probe, run = slither_specs[0], slither_specs[1]
+        assert probe.args[:1] == ["--version"] and probe.extra_env is None
+        assert run.extra_env == {"SOLC_VERSION": "0.4.19"}
+
+    async def test_solc_pin_skipped_when_provisioning_fails(self):
+        def handle(spec: ProcSpec) -> ProcResult:
+            if spec.executable == "solc-select":
+                return ProcResult(1, b"", b"no such version")
+            return _handler(slither=(0, SLITHER_OK), aderyn=(0, ADERYN_OK))(spec)
+
+        runner = FakeRunner(handle)
+        await SourceAnalyzer(runner=runner).analyze(
+            _bundle(compiler_version="v0.4.19+commit.c4cbbb05")
+        )
+        run_specs = [
+            s for s in runner.specs if s.executable == "slither" and s.args[:1] != ["--version"]
+        ]
+        assert run_specs[0].extra_env is None
+
+    async def test_extra_env_rejects_invalid_keys(self):
+        from agentsafe.analyzers.proc import DefaultSubprocessRunner
+
+        runner = DefaultSubprocessRunner()
+        res = await runner.run(
+            ProcSpec(
+                executable="python",
+                args=["-c", "print('should never run')"],
+                cwd=Path("."),
+                extra_env={"bad-key; rm -rf /": "x"},
+            )
+        )
+        assert res.error and "invalid extra_env" in res.error
+        assert res.stdout == b""
+
     async def test_ensure_solc_failure_is_tolerated(self):
         def handle(spec: ProcSpec) -> ProcResult:
             if spec.executable == "solc-select":

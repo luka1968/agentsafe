@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import shutil
 import stat
 from dataclasses import dataclass, field
@@ -46,6 +47,10 @@ class ProcSpec:
     cwd: Path
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS
     max_output_bytes: int = DEFAULT_MAX_OUTPUT_BYTES
+    # Extra env vars merged ON TOP of the sanitized env for this process only
+    # (e.g. SOLC_VERSION to pin the compiler for one slither run). Keys are
+    # validated: simple NAMEs, no embedded NULs - never arbitrary strings.
+    extra_env: dict[str, str] | None = None
 
 
 class SubprocessRunner(Protocol):
@@ -60,6 +65,16 @@ class DefaultSubprocessRunner:
 
     async def run(self, spec: ProcSpec) -> ProcResult:
         argv = [spec.executable, *spec.args]
+        env = _sanitized_env()
+        for key, value in (spec.extra_env or {}).items():
+            if not re.fullmatch(r"[A-Z_][A-Z0-9_]*", key) or "\x00" in value:
+                return ProcResult(
+                    None,
+                    b"",
+                    b"",
+                    error=f"refusing invalid extra_env entry: {key!r}",
+                )
+            env[key] = value
         try:
             proc = await asyncio.create_subprocess_exec(
                 *argv,

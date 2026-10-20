@@ -53,6 +53,9 @@ def _setup_logging(level: str) -> None:
         level=getattr(logging, level, logging.INFO),
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
     )
+    # httpx logs full request URLs at INFO; Etherscan URLs embed the API key
+    # as a query parameter, so those lines must never be emitted.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
@@ -116,7 +119,33 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
             "verification before any action."
         ),
         lifespan=_startup_validation,
+        # Production safety: clients never receive internal stack traces or
+        # environment-derived error details from a crashing tool; full
+        # details stay in the service logs.
+        mask_error_details=True,
     )
+
+    @app.tool
+    async def health() -> dict[str, Any]:
+        """Liveness/config probe. Safe, non-paid, and never returns secrets.
+
+        Use this to verify a deployment (public endpoint reachability,
+        tool discovery) without triggering an audit or a payment.
+        """
+        return {
+            "ok": True,
+            "service": "agentSAFE",
+            "version": __version__,
+            "chain": "ethereum-mainnet",
+            "payments": {
+                "enabled": payment.enabled,
+                "network": settings.X402_NETWORK if payment.enabled else None,
+                "price": settings.X402_PRICE if payment.enabled else None,
+            },
+            "task_store": getattr(settings, "TASK_STORE", "sqlite"),
+            "audit_workflow": settings.GITHUB_WORKFLOW_FILE,
+            "terms_of_service": "https://github.com/luka1968/agentsafe/blob/main/TERMS_OF_SERVICE.md",
+        }
 
     @app.tool
     async def audit_contract(address: str, ctx: Context) -> dict[str, Any] | ToolResult:

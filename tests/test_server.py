@@ -2,6 +2,7 @@
 
 import io
 import json
+import logging
 import zipfile
 from datetime import UTC
 
@@ -276,3 +277,90 @@ class TestServerTools:
         async with Client(server) as client:
             status = _unwrap(await client.call_tool("check_audit_status", {"task_id": task_id}))
         assert status["state"] == "failed"
+
+
+class TestProductionSafety:
+    async def test_health_tool_is_safe_and_non_paid(self):
+        """Deployment probe: no secrets, no payment challenge, stable shape."""
+        server = build_server(_settings())
+        async with Client(server) as client:
+            result = _unwrap(await client.call_tool("health", {}))
+        assert result["ok"] is True
+        assert result["service"] == "agentSAFE"
+        assert result["payments"]["enabled"] is False
+        # no secret ever appears in the health payload (key-style patterns)
+        text = json.dumps(result)
+        assert "sk-" not in text and "ghp_" not in text and "nvapi-" not in text
+        assert "api_key" not in text
+
+    @respx.mock
+    async def test_unexpected_tool_error_is_masked_from_clients(self, monkeypatch):
+        """A crashing tool must not leak stack traces or internals."""
+        _wire_dispatch_and_runs()
+        server = build_server(_settings())
+
+        def boom(self, task_id):
+            raise RuntimeError("sensitive detail xyz / C:\\path\\env")
+
+        from agentsafe.task_store import MemoryTaskStore
+
+        monkeypatch.setattr(MemoryTaskStore, "get", boom)
+
+        async with Client(server) as client:
+            result = await client.call_tool(
+                "check_audit_status", {"task_id": "whatever"}, raise_on_error=False
+            )
+        payload = json.dumps([c.model_dump() for c in getattr(result, "content", [])])
+        assert getattr(result, "is_error", False)
+        assert "Traceback" not in payload
+        assert "sensitive detail xyz" not in payload
+        assert "RuntimeError" not in payload
+
+    async def test_setup_logging_suppresses_httpx_url_lines(self):
+        """httpx INFO request lines embed the Etherscan apikey - must be off."""
+        from agentsafe.server import _setup_logging
+
+        _setup_logging("INFO")
+        assert logging.getLogger("httpx").level == logging.WARNING
+
+    @respx.mock
+    async def test_audit_flow_logs_contain_no_secrets(self):
+        """Canary check across everything the flow logs at INFO."""
+        import io as _io
+
+        canary_llm = "sk-canary-never-log-me"
+        canary_gh = "ghp-canary-never-log-me"
+        canary_eth = "ETHCANARY123"
+        _wire_dispatch_and_runs()
+        respx.get(f"{ETH}").mock(
+            return_value=httpx.Response(200, json={"status": "1", "result": []})
+        )
+        server = build_server(
+            _settings(
+                LLM_PROVIDERS_JSON=json.dumps(
+                    [
+                        {
+                            "name": "p",
+                            "base_url": "https://llm.test/v1",
+                            "api_key": canary_llm,
+                            "model": "m",
+                            "rpm_limit": 60,
+                        }
+                    ]
+                ),
+                GITHUB_TOKEN=canary_gh,
+                ETHERSCAN_API_KEY=canary_eth,
+            )
+        )
+        stream = _io.StringIO()
+        handler = logging.StreamHandler(stream)
+        logging.getLogger().addHandler(handler)
+        try:
+            async with Client(server) as client:
+                await client.call_tool("audit_contract", {"address": ADDR})
+        finally:
+            logging.getLogger().removeHandler(handler)
+        out = stream.getvalue()
+        assert canary_llm not in out
+        assert canary_gh not in out
+        assert canary_eth not in out

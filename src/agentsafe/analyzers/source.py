@@ -134,18 +134,20 @@ class SourceAnalyzer:
         if not bundle or not getattr(bundle, "files", None):
             raise AnalyzerError("no source files to analyze")
 
+        # Root cause of the first WETH audit failing Slither with an opaque
+        # "no JSON output" error (verified in a container repro): crytic-compile
+        # compiles with solc-select's GLOBAL version and does NOT pick a
+        # pragma-compatible one, and slither exits 1 silently when the global
+        # solc cannot compile the source. Provision the Etherscan-recorded
+        # compiler version and pin it per-process via SOLC_VERSION.
+        solc_version = await self._ensure_solc(getattr(bundle, "compiler_version", ""))
+
         runs: list[ToolRun] = []
         workspace = TempWorkspace.create()
         try:
             self._materialize(bundle, workspace)
             root = workspace.root
-            # Root cause of the first WETH audit failing Slither with an
-            # opaque "no JSON output" error: the contract compiles with solc
-            # 0.4.x but the image preinstalls only 0.8.x. Provision the
-            # Etherscan-recorded compiler version BEFORE running Slither;
-            # solc-select install is idempotent and cheap when present.
-            await self._ensure_solc(getattr(bundle, "compiler_version", ""))
-            runs.append(await self._run_slither(root))
+            runs.append(await self._run_slither(root, solc_version))
             runs.append(await self._run_aderyn(root))
         finally:
             workspace.cleanup()
@@ -153,18 +155,17 @@ class SourceAnalyzer:
         partial = any((not r.executed) or (r.error is not None) for r in runs)
         return SourceAnalysis(runs=runs, partial_failure=partial)
 
-    async def _ensure_solc(self, compiler_version: str) -> None:
+    async def _ensure_solc(self, compiler_version: str) -> str | None:
         """Ensure the Etherscan-recorded solc version is installed.
 
-        Etherscan reports the exact compiler the deployed contract was built
-        with (e.g. ``v0.4.19+commit...``). ``solc-select install`` is
-        idempotent: an already-installed version is a fast no-op. Failures
-        are logged and tolerated - the slither run itself reports the
-        resulting compile error instead.
+        Returns the version to pin via SOLC_VERSION, or None when unknown or
+        when provisioning failed (the slither run then reports the real
+        compile error instead). ``solc-select install`` is idempotent: an
+        already-installed version is a fast no-op.
         """
         m = _SOLC_VERSION_RE.search(compiler_version or "")
         if not m:
-            return
+            return None
         version = m.group(1)
         res = await self._runner.run(
             ProcSpec(
@@ -176,13 +177,18 @@ class SourceAnalyzer:
             )
         )
         if res.missing:
-            logger.warning("solc-select unavailable; assuming solc %s is installed", version)
-        elif res.exit_code not in (0, None):
+            # solc-select absent (e.g. dev machine): assume the environment
+            # already provides a usable solc and do not pin.
+            logger.warning("solc-select unavailable; not pinning solc %s", version)
+            return None
+        if res.exit_code not in (0, None):
             logger.warning(
                 "solc-select install %s failed (exit %s); slither may fail to compile",
                 version,
                 res.exit_code,
             )
+            return None
+        return version
 
     def _materialize(self, bundle, workspace: TempWorkspace) -> None:
         """Write files preserving paths/settings. No concatenation, no truncation."""
@@ -208,7 +214,7 @@ class SourceAnalyzer:
             }
             (workspace.root / "standard_input.json").write_text(json.dumps(std), encoding="utf-8")
 
-    async def _run_slither(self, root: Path) -> ToolRun:
+    async def _run_slither(self, root: Path, solc_version: str | None = None) -> ToolRun:
         run = ToolRun(tool="slither", executed=False)
         run.version = await self._version(self._slither)
         res = await self._runner.run(
@@ -218,6 +224,9 @@ class SourceAnalyzer:
                 cwd=root,
                 timeout_seconds=self._timeout,
                 max_output_bytes=self._max_output,
+                # Pin the contract's real compiler for THIS process only;
+                # the solc-select shim checks SOLC_VERSION before global.
+                extra_env={"SOLC_VERSION": solc_version} if solc_version else None,
             )
         )
         run.raw_exit_code = res.exit_code
