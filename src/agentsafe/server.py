@@ -25,10 +25,12 @@ from typing import Any
 
 from fastmcp import Context, FastMCP
 from fastmcp.tools import ToolResult
+from starlette.requests import Request
+from starlette.responses import HTMLResponse, PlainTextResponse
 
 from agentsafe import __version__
 from agentsafe.config import Settings, validate_runtime_settings
-from agentsafe.explorer import ContractNotVerifiedError, EtherscanClient
+from agentsafe.explorer import ContractNotVerifiedError, EtherscanClient, ExplorerError
 from agentsafe.github_client import (
     ArtifactExpiredError,
     GitHubActionsClient,
@@ -39,9 +41,17 @@ from agentsafe.payment.x402_adapter import (
     VerifiedPayment,
     X402PaymentAdapter,
 )
+from agentsafe.pricing import (
+    CUSTOM_PRICING_CONTACT_URL,
+    ContractTooLargeError,
+    audit_price_for_lines,
+    count_source_lines,
+    pricing_summary,
+)
 from agentsafe.rpc import EthRpcClient
 from agentsafe.schemas import AuditReport, TaskState, normalize_address
 from agentsafe.task_store import open_task_store
+from agentsafe.web import INDEX_HTML, LegalDocumentMissingError, legal_html
 
 logger = logging.getLogger("agentSAFE.server")
 
@@ -86,6 +96,10 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
         asset=settings.X402_ASSET,
         max_timeout_seconds=settings.X402_MAX_TIMEOUT_SECONDS,
     )
+    # Re-arm replay protection: payloads already consumed before a restart
+    # must stay rejected (bounded by the task-store retention window).
+    if payment.enabled:
+        payment.seed_replay_ledger(task_store.payment_refs())
 
     gh = GitHubActionsClient(
         token=settings.GITHUB_TOKEN,
@@ -140,12 +154,47 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
             "payments": {
                 "enabled": payment.enabled,
                 "network": settings.X402_NETWORK if payment.enabled else None,
-                "price": settings.X402_PRICE if payment.enabled else None,
+                "pricing": pricing_summary(),
             },
             "task_store": getattr(settings, "TASK_STORE", "sqlite"),
             "audit_workflow": settings.GITHUB_WORKFLOW_FILE,
             "terms_of_service": "https://github.com/luka1968/agentsafe/blob/main/TERMS_OF_SERVICE.md",
+            "web_pages": {
+                "/": "landing",
+                "/terms": "Terms of Service",
+                "/privacy": "Privacy Policy",
+                "/refund": "Refund Policy",
+            },
         }
+
+    # ------------------------------------------------------- public web pages
+    # Served by the HTTP transport (http_app): the legal Markdown files are
+    # the same single source of truth linked from the health tool.
+
+    @app.custom_route("/", methods=["GET"])
+    async def _index(request: Request) -> HTMLResponse:
+        return HTMLResponse(INDEX_HTML)
+
+    @app.custom_route("/terms", methods=["GET"])
+    async def _terms(request: Request) -> HTMLResponse:
+        try:
+            return HTMLResponse(legal_html("terms"))
+        except LegalDocumentMissingError as exc:
+            return PlainTextResponse(str(exc), status_code=500)
+
+    @app.custom_route("/privacy", methods=["GET"])
+    async def _privacy(request: Request) -> HTMLResponse:
+        try:
+            return HTMLResponse(legal_html("privacy"))
+        except LegalDocumentMissingError as exc:
+            return PlainTextResponse(str(exc), status_code=500)
+
+    @app.custom_route("/refund", methods=["GET"])
+    async def _refund(request: Request) -> HTMLResponse:
+        try:
+            return HTMLResponse(legal_html("refund"))
+        except LegalDocumentMissingError as exc:
+            return PlainTextResponse(str(exc), status_code=500)
 
     @app.tool
     async def audit_contract(address: str, ctx: Context) -> dict[str, Any] | ToolResult:
@@ -163,11 +212,50 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
 
         verified: VerifiedPayment | None = None
         if payment.enabled:
+            # Tiered pricing: quote from the verified source size BEFORE any
+            # payment challenge, so the advertised amount always matches the
+            # real audit cost. The client cannot influence the quoted tier.
+            try:
+                bundle = await explorer.get_verified_source(addr)
+            except ContractNotVerifiedError:
+                return {
+                    "ok": False,
+                    "error_code": "source_not_verified",
+                    "error": "audit requires verified source; no price can be quoted",
+                }
+            except ExplorerError as exc:
+                return {
+                    "ok": False,
+                    "error_code": "pricing_failed",
+                    "error": f"could not retrieve source for pricing: {exc}",
+                }
+            lines = count_source_lines(bundle)
+            try:
+                price = audit_price_for_lines(lines)
+            except ContractTooLargeError:
+                # Enterprise interception: reject BEFORE any payment is
+                # initiated or expensive processing starts. Never truncate
+                # the input or split it into billable requests.
+                return {
+                    "ok": False,
+                    "error_code": "ENTERPRISE_INQUIRY_REQUIRED",
+                    "error": "ENTERPRISE_INQUIRY_REQUIRED",
+                    "message": (
+                        "Your project exceeds the standard 5,000-line limit. "
+                        "Please contact us to discuss enterprise processing."
+                    ),
+                    "inquiryUrl": CUSTOM_PRICING_CONTACT_URL,
+                }
+            tier_requirements = payment.requirements_for_price(price)
             # Official SDK flow: verify BEFORE execution. Unverified requests
-            # receive the payment-required result and no dispatch happens.
-            verified, deny = await payment.verify(ctx, "audit_contract")
+            # receive the payment-required result quoting the tier price and
+            # no dispatch happens.
+            verified, deny = await payment.verify(
+                ctx, "audit_contract", requirements=tier_requirements
+            )
             if deny is not None:
                 return deny
+            logger.info("audit_contract quoted tier price=%s lines=%d", price, lines)
 
         task = task_store.create_task(addr)
         if verified is not None:
@@ -232,7 +320,9 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
             settle_result = await payment.settle(verified)
         except Exception as exc:
             logger.error("settlement failed tool=%s ref=%s: %s", tool_name, verified.ref, exc)
-            return await payment.settlement_failed_result(tool_name, str(exc))
+            return await payment.settlement_failed_result(
+                tool_name, str(exc), requirements=[verified.requirements]
+            )
         if not settle_result.success:
             logger.error(
                 "settlement rejected tool=%s ref=%s reason=%s",
@@ -241,7 +331,9 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
                 settle_result.error_reason,
             )
             return await payment.settlement_failed_result(
-                tool_name, settle_result.error_reason or "unknown settlement failure"
+                tool_name,
+                settle_result.error_reason or "unknown settlement failure",
+                requirements=[verified.requirements],
             )
         logger.info(
             "payment settled tool=%s ref=%s tx=%s",
@@ -410,7 +502,22 @@ def main() -> None:
     if args.transport == "stdio":
         mcp.run(transport="stdio")
     else:
-        mcp.run(transport="http", host=args.host, port=args.port)
+        # HTTP transport: serve the app with the access-log middleware
+        # (visitor IP + time, 30-day retention - see PRIVACY_POLICY.md).
+        import uvicorn
+        from starlette.middleware import Middleware as StarletteMiddleware
+
+        from agentsafe.web import AccessLogMiddleware, AccessLogStore
+
+        store = AccessLogStore(settings.ACCESS_LOG_DB_PATH)
+        purged = store.purge()
+        logger.info(
+            "access log db=%s purged=%d (retention 30 days)",
+            settings.ACCESS_LOG_DB_PATH,
+            purged,
+        )
+        app = mcp.http_app(middleware=[StarletteMiddleware(AccessLogMiddleware, store=store)])
+        uvicorn.run(app, host=args.host, port=args.port)
 
 
 if __name__ == "__main__":

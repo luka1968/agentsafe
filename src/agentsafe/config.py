@@ -105,6 +105,9 @@ class Settings(BaseSettings):
     TASK_STORE: str = "sqlite"
     TASK_DB_PATH: str = "data/tasks.db"
 
+    # --- HTTP access log (PRIVACY_POLICY.md: IP + time, 30-day retention) ---
+    ACCESS_LOG_DB_PATH: str = "data/access_log.db"
+
     # --- Payments (x402, pinned SDK; fail-closed) ---
     # Default: Base Sepolia TESTNET (CAIP-2 eip155:84532). Mainnet payments
     # require X402_ALLOW_MAINNET=true and are only enabled after the

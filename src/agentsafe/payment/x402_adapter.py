@@ -96,6 +96,9 @@ class X402PaymentAdapter:
         self.enabled = enabled
         self.network = network
         self.pay_to = pay_to
+        self._asset = asset.strip()
+        self._max_timeout_seconds = max_timeout_seconds
+        self._base_price = price
         if not enabled:
             logger.info("payments DISABLED (dev mode); paid gating is inactive")
             return
@@ -109,7 +112,6 @@ class X402PaymentAdapter:
             import x402  # noqa: PLC0415
             from x402.http import FacilitatorConfig, HTTPFacilitatorClient
             from x402.mechanisms.evm.exact import ExactEvmServerScheme
-            from x402.schemas import ResourceConfig
         except ImportError as exc:  # pragma: no cover - env-specific
             raise X402NotIntegratedError(
                 f"PAYMENTS_ENABLED=true requires the pinned x402 SDK "
@@ -131,33 +133,56 @@ class X402PaymentAdapter:
         # Sync network call (facilitator /supported) - acceptable at startup.
         self._server.initialize()
 
-        extra: dict[str, Any] = {}
-        if asset.strip():
-            extra["asset"] = asset.strip()
-        self._accepts = self._server.build_payment_requirements(
-            ResourceConfig(
-                scheme="exact",
-                network=network,
-                pay_to=pay_to,
-                price=price,
-                max_timeout_seconds=max_timeout_seconds,
-                extra=extra or None,
-            )
-        )
-        if not self._accepts:  # pragma: no cover - facilitator contract
-            raise X402NotIntegratedError(
-                f"facilitator at {facilitator_url} returned no payment requirements "
-                f"for network {network!r}"
-            )
+        self._accepts = self._build_requirements(price)
         self._replay_ledger: set[str] = set()
         logger.info(
-            "payments ENABLED (x402==%s, network=%s, pay_to=%s, price=%s, asset=%s)",
+            "payments ENABLED (x402==%s, network=%s, pay_to=%s, base price=%s, asset=%s)",
             x402.__version__,
             network,
             pay_to,
             price,
             self._accepts[0].asset,
         )
+
+    def _build_requirements(self, price: str) -> list[Any]:
+        """Advertised payment requirements for `price` (no network I/O;
+        uses the supported-responses cache filled by initialize())."""
+        from x402.schemas import ResourceConfig
+
+        extra: dict[str, Any] = {}
+        if self._asset:
+            extra["asset"] = self._asset
+        requirements = self._server.build_payment_requirements(
+            ResourceConfig(
+                scheme="exact",
+                network=self.network,
+                pay_to=self.pay_to,
+                price=price,
+                max_timeout_seconds=self._max_timeout_seconds,
+                extra=extra or None,
+            )
+        )
+        if not requirements:  # pragma: no cover - facilitator contract
+            raise X402NotIntegratedError(
+                f"facilitator returned no payment requirements for network "
+                f"{self.network!r} at price {price!r}"
+            )
+        return requirements
+
+    def requirements_for_price(self, price: str) -> list[Any]:
+        """Advertised requirements for a dynamic (tiered) price."""
+        if not self.enabled:
+            raise PaymentsNotEnabledError("tiered pricing requires payments to be enabled")
+        return self._build_requirements(price)
+
+    def seed_replay_ledger(self, refs: set[str]) -> None:
+        """Re-arm replay protection after a restart with payment fingerprints
+        already bound to tasks (persisted by the task store). Without this,
+        a restart would forget which payloads were already consumed."""
+        if not self.enabled:
+            return
+        self._replay_ledger.update(refs)
+        logger.info("replay ledger seeded with %d persisted payment refs", len(refs))
 
     @property
     def accepts(self) -> list[Any]:
@@ -175,27 +200,35 @@ class X402PaymentAdapter:
             mime_type="application/json",
         )
 
-    async def payment_required_result(self, tool_name: str, error: str) -> ToolResult:
+    async def payment_required_result(
+        self, tool_name: str, error: str, requirements: list[Any] | None = None
+    ) -> ToolResult:
         """Official x402 PaymentRequired body as a fastmcp error ToolResult.
 
         Mirrors x402.mcp.server._create_payment_required_result: the
         structuredContent carries the x402Version-2 payment-required object
-        that x402-aware clients parse to build a payment.
+        that x402-aware clients parse to build a payment. `requirements`
+        overrides the default (startup-price) advertised terms - used for
+        dynamic tiered pricing where the 402 body must quote the tier price.
         """
         from fastmcp.tools import ToolResult
 
+        accepts = requirements if requirements is not None else self._accepts
         payment_required = await self._server.create_payment_required_response(
-            self._accepts, self._resource_info(tool_name), error
+            accepts, self._resource_info(tool_name), error
         )
         body = payment_required.model_dump(by_alias=True, exclude_none=True)
         return ToolResult(structured_content=body, is_error=True)
 
-    async def settlement_failed_result(self, tool_name: str, error: str) -> ToolResult:
+    async def settlement_failed_result(
+        self, tool_name: str, error: str, *, requirements: list[Any] | None = None
+    ) -> ToolResult:
         """Mirrors x402.mcp.server._create_settlement_failed_result."""
         from fastmcp.tools import ToolResult
         from x402.mcp.types import MCP_PAYMENT_RESPONSE_META_KEY
 
-        accepts_dicts = [r.model_dump(by_alias=True, exclude_none=True) for r in self._accepts]
+        accepts = requirements if requirements is not None else self._accepts
+        accepts_dicts = [r.model_dump(by_alias=True, exclude_none=True) for r in accepts]
         error_data: dict[str, Any] = {
             "x402Version": 2,
             "accepts": accepts_dicts,
@@ -209,7 +242,7 @@ class X402PaymentAdapter:
                 "success": False,
                 "errorReason": error,
                 "transaction": "",
-                "network": self._accepts[0].network,
+                "network": accepts[0].network,
             },
         }
         return ToolResult(structured_content=error_data, is_error=True)
@@ -252,17 +285,26 @@ class X402PaymentAdapter:
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
     async def verify(
-        self, ctx: Context | None, tool_name: str
+        self,
+        ctx: Context | None,
+        tool_name: str,
+        *,
+        requirements: list[Any] | None = None,
     ) -> tuple[VerifiedPayment | None, ToolResult | None]:
         """Verify a payment BEFORE tool execution (official wrapper order).
 
         Returns (verified, None) to proceed, or (None, deny_result) where the
         deny result is the official payment-required error the client must
-        answer with a payment.
+        answer with a payment. `requirements` is the advertised-terms list the
+        payment must match (dynamic tiered pricing); None uses the
+        startup-price default.
         """
+        accepts = requirements if requirements is not None else self._accepts
         data = self.extract_payment_data(ctx)
         if data is None:
-            return None, await self.payment_required_result(tool_name, "Payment Required")
+            return None, await self.payment_required_result(
+                tool_name, "Payment Required", requirements=accepts
+            )
 
         from x402.schemas import PaymentPayload
 
@@ -270,29 +312,34 @@ class X402PaymentAdapter:
             payload = PaymentPayload.model_validate(data)
         except Exception as exc:
             return None, await self.payment_required_result(
-                tool_name, f"Invalid payment payload: {exc}"
+                tool_name, f"Invalid payment payload: {exc}", requirements=accepts
             )
 
         ref = self.payment_ref(payload)
         if ref in self._replay_ledger:
             return None, await self.payment_required_result(
-                tool_name, "Payment already used (replay rejected)"
+                tool_name, "Payment already used (replay rejected)", requirements=accepts
             )
 
-        requirements = self._server.find_matching_requirements(self._accepts, payload)
-        if requirements is None:
+        matched = self._server.find_matching_requirements(accepts, payload)
+        if matched is None:
             return None, await self.payment_required_result(
                 tool_name,
                 "No matching payment requirements found (check amount/network/asset)",
+                requirements=accepts,
             )
 
         try:
-            result = await self._server.verify_payment(payload, requirements)
+            result = await self._server.verify_payment(payload, matched)
         except Exception as exc:
-            return None, await self.payment_required_result(tool_name, str(exc))
+            return None, await self.payment_required_result(
+                tool_name, str(exc), requirements=accepts
+            )
         if not result.is_valid:
             return None, await self.payment_required_result(
-                tool_name, result.invalid_reason or "Payment verification failed"
+                tool_name,
+                result.invalid_reason or "Payment verification failed",
+                requirements=accepts,
             )
 
         # Consume on verify: a payload verified once is never accepted again,
@@ -300,7 +347,7 @@ class X402PaymentAdapter:
         # case no funds move, because settle executes the transfer).
         self._replay_ledger.add(ref)
         logger.info("payment verified tool=%s ref=%s payer=%s", tool_name, ref[:16], result.payer)
-        return VerifiedPayment(payload=payload, requirements=requirements, ref=ref), None
+        return VerifiedPayment(payload=payload, requirements=matched, ref=ref), None
 
     async def settle(self, verified: VerifiedPayment) -> Any:
         """Settle AFTER successful tool execution (official "after-handler"

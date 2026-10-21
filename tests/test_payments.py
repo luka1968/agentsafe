@@ -36,6 +36,34 @@ SUPPORTED = {
     "extensions": [],
 }
 
+# Verified-source fixture used for tiered pricing: N non-blank source lines.
+SOURCE_LINES = 10
+TIER_PRICE = "$0.50"  # <=100 lines
+TIER_AMOUNT = "500000"  # $0.50 at 6 decimals
+
+
+def _etherscan_source_response(lines: int) -> dict:
+    return {
+        "status": "1",
+        "message": "OK",
+        "result": [
+            {
+                "SourceCode": "pragma solidity ^0.8.20;\n" + "uint256 v;\n" * (lines - 1),
+                "ContractName": "C",
+                "CompilerVersion": "v0.8.20+commit.a1b79de6",
+                "OptimizationUsed": "0",
+                "Runs": "",
+                "ABI": "[]",
+                "Proxy": "0",
+                "Implementation": "",
+            }
+        ],
+    }
+
+
+def _mock_source(lines: int = SOURCE_LINES) -> None:
+    respx.get(ETH).mock(return_value=httpx.Response(200, json=_etherscan_source_response(lines)))
+
 
 def _settings(**kw) -> Settings:
     base = {
@@ -68,7 +96,8 @@ def _settings(**kw) -> Settings:
 
 
 def _mock_facilitator():
-    """Mock /supported, /verify, /settle. Returns the respx routes."""
+    """Mock Etherscan source + /supported, /verify, /settle. Returns the routes."""
+    _mock_source()
     routes = {
         "supported": respx.get(f"{FAC}/supported").mock(
             return_value=httpx.Response(200, json=SUPPORTED)
@@ -164,6 +193,9 @@ class TestAdapterConstruction:
         assert req.asset == "0x036CbD53842c5426634e7929541eC2318f3dCF7e"
         assert req.pay_to == "0x" + "ef" * 20
         assert req.amount == "10000"  # $0.01 at 6 decimals
+        # dynamic tiered pricing: requirements for an arbitrary price
+        tier = adapter.requirements_for_price("$25.00")
+        assert tier[0].amount == "25000000"  # $25.00 at 6 decimals
 
 
 class TestPaymentFlow:
@@ -181,6 +213,8 @@ class TestPaymentFlow:
         assert is_error is True
         assert body["x402Version"] == 2
         assert body["accepts"][0]["network"] == "eip155:84532"
+        # the 402 body quotes the TIER price, not the startup default price
+        assert body["accepts"][0]["amount"] == TIER_AMOUNT
         assert body["error"] == "Payment Required"
         assert "mcp://tool/audit_contract" in body["resource"]["url"]
 
@@ -196,7 +230,7 @@ class TestPaymentFlow:
                 network="eip155:84532",
                 pay_to="0x" + "ef" * 20,
                 facilitator_url=FAC,
-                price="$0.01",
+                price="$0.50",
             )
             payload = _client_payload(adapter_probe)
             result = await client.call_tool(
@@ -226,7 +260,7 @@ class TestPaymentFlow:
                 network="eip155:84532",
                 pay_to="0x" + "ef" * 20,
                 facilitator_url=FAC,
-                price="$0.01",
+                price="$0.50",
             )
             payload = _client_payload(probe, amount="1")  # underpayment
             result = await client.call_tool(
@@ -254,7 +288,7 @@ class TestPaymentFlow:
                 network="eip155:84532",
                 pay_to="0x" + "ef" * 20,
                 facilitator_url=FAC,
-                price="$0.01",
+                price="$0.50",
             )
             payload = _client_payload(probe, network="eip155:8453")  # mainnet
             result = await client.call_tool(
@@ -279,7 +313,7 @@ class TestPaymentFlow:
                 network="eip155:84532",
                 pay_to="0x" + "ef" * 20,
                 facilitator_url=FAC,
-                price="$0.01",
+                price="$0.50",
             )
             payload = _client_payload(probe, asset="0x" + "99" * 20)
             result = await client.call_tool(
@@ -303,7 +337,7 @@ class TestPaymentFlow:
             network="eip155:84532",
             pay_to="0x" + "ef" * 20,
             facilitator_url=FAC,
-            price="$0.01",
+            price="$0.50",
         )
         payload = _client_payload(probe)
         async with Client(server) as client:
@@ -328,6 +362,51 @@ class TestPaymentFlow:
         assert routes["settle"].call_count == 1
 
     @respx.mock
+    async def test_replayed_payment_rejected_across_restart(self):
+        """Regression: the replay ledger must survive a restart by seeding
+        from the persisted task store (payment_ref column)."""
+        import tempfile
+        from pathlib import Path
+
+        routes = _mock_facilitator()
+        _wire_dispatch_and_runs()
+        probe = X402PaymentAdapter(
+            enabled=True,
+            sdk_version="2.25.0",
+            network="eip155:84532",
+            pay_to="0x" + "ef" * 20,
+            facilitator_url=FAC,
+            price="$0.50",
+        )
+        payload = _client_payload(probe)
+        with tempfile.TemporaryDirectory() as tmp:
+            db = str(Path(tmp) / "tasks.db")
+            first = build_server(_settings(TASK_STORE="sqlite", TASK_DB_PATH=db))
+            async with Client(first) as client:
+                ok = await client.call_tool(
+                    "audit_contract",
+                    {"address": ADDR},
+                    meta={"x402/payment": payload},
+                    raise_on_error=False,
+                )
+            assert _unwrap_result(ok)[0] is False
+
+            # "restart": a fresh server over the same persisted task store
+            restarted = build_server(_settings(TASK_STORE="sqlite", TASK_DB_PATH=db))
+            async with Client(restarted) as client:
+                replay = await client.call_tool(
+                    "audit_contract",
+                    {"address": ADDR},
+                    meta={"x402/payment": payload},
+                    raise_on_error=False,
+                )
+        is_error, body = _unwrap_result(replay)
+        assert is_error is True
+        assert "replay" in body["error"].lower()
+        assert routes["verify"].call_count == 1  # only the original payment verified
+        assert routes["settle"].call_count == 1
+
+    @respx.mock
     async def test_verification_failure_blocks_dispatch(self):
         routes = _mock_facilitator()
         routes["verify"].mock(
@@ -343,7 +422,7 @@ class TestPaymentFlow:
             network="eip155:84532",
             pay_to="0x" + "ef" * 20,
             facilitator_url=FAC,
-            price="$0.01",
+            price="$0.50",
         )
         async with Client(server) as client:
             result = await client.call_tool(
@@ -381,7 +460,7 @@ class TestPaymentFlow:
             network="eip155:84532",
             pay_to="0x" + "ef" * 20,
             facilitator_url=FAC,
-            price="$0.01",
+            price="$0.50",
         )
         async with Client(server) as client:
             result = await client.call_tool(
@@ -411,7 +490,7 @@ class TestPaymentFlow:
             network="eip155:84532",
             pay_to="0x" + "ef" * 20,
             facilitator_url=FAC,
-            price="$0.01",
+            price="$0.50",
         )
         async with Client(server) as client:
             result = await client.call_tool(
@@ -503,7 +582,7 @@ class TestReportPaymentBinding:
             network="eip155:84532",
             pay_to="0x" + "ef" * 20,
             facilitator_url=FAC,
-            price="$0.01",
+            price="$0.50",
         )
         async with Client(server) as client:
             created = await client.call_tool(
@@ -562,6 +641,115 @@ class TestReportPaymentBinding:
             result = await client.call_tool("audit_contract", {"address": ADDR})
         assert result.data["ok"] is True
         assert result.data["state"] == "running"
+
+
+class TestTieredPricing:
+    """Dynamic per-contract quoting (AgentLISA tier table) - closes the
+    fixed-$0.01 loophole where any audit cost one cent."""
+
+    @respx.mock
+    async def test_old_fixed_cent_payment_no_longer_accepted(self):
+        """Regression: a $0.01 payload (the old fixed price) must NOT pass
+        for a 10-line contract quoted at $0.50."""
+        routes = _mock_facilitator()
+        _wire_dispatch_and_runs()
+        server = build_server(_settings())
+        cheap_probe = X402PaymentAdapter(
+            enabled=True,
+            sdk_version="2.25.0",
+            network="eip155:84532",
+            pay_to="0x" + "ef" * 20,
+            facilitator_url=FAC,
+            price="$0.01",
+        )
+        async with Client(server) as client:
+            result = await client.call_tool(
+                "audit_contract",
+                {"address": ADDR},
+                meta={"x402/payment": _client_payload(cheap_probe)},
+                raise_on_error=False,
+            )
+        is_error, body = _unwrap_result(result)
+        assert is_error is True
+        assert "No matching payment requirements" in body["error"]
+        # the 402 body re-quotes the correct tier price
+        assert body["accepts"][0]["amount"] == TIER_AMOUNT
+        assert routes["verify"].call_count == 0
+        assert routes["settle"].call_count == 0
+
+    @respx.mock
+    async def test_mid_tier_contract_quoted_at_5_dollars(self):
+        _mock_facilitator()
+        _mock_source(lines=600)  # 501-1,000 tier -> $5.00
+        _wire_dispatch_and_runs()
+        server = build_server(_settings())
+        async with Client(server) as client:
+            result = await client.call_tool(
+                "audit_contract",
+                {"address": ADDR},
+                raise_on_error=False,
+            )
+        is_error, body = _unwrap_result(result)
+        assert is_error is True
+        assert body["accepts"][0]["amount"] == "5000000"  # $5.00 at 6 decimals
+
+    @respx.mock
+    async def test_oversized_contract_requires_enterprise_inquiry(self):
+        routes = _mock_facilitator()
+        _mock_source(lines=5001)
+        _wire_dispatch_and_runs()
+        server = build_server(_settings())
+        async with Client(server) as client:
+            result = await client.call_tool(
+                "audit_contract",
+                {"address": ADDR},
+                raise_on_error=False,
+            )
+        is_error, body = _unwrap_result(result)
+        assert is_error is False
+        assert body["ok"] is False
+        assert body["error_code"] == "ENTERPRISE_INQUIRY_REQUIRED"
+        assert body["error"] == "ENTERPRISE_INQUIRY_REQUIRED"
+        assert "5,000-line limit" in body["message"]
+        assert "enterprise" in body["message"].lower()
+        assert body["inquiryUrl"] == "https://tally.so/r/laby7B"
+        # no payment challenge and nothing dispatched
+        assert routes["verify"].call_count == 0
+        assert routes["settle"].call_count == 0
+
+    @respx.mock
+    async def test_unverified_contract_cannot_be_priced_or_audited(self):
+        routes = _mock_facilitator()
+        respx.get(ETH).mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "status": "1",
+                    "message": "OK",
+                    "result": [
+                        {
+                            "SourceCode": "",
+                            "ContractName": "",
+                            "ABI": "Contract source code not verified",
+                            "CompilerVersion": "",
+                        }
+                    ],
+                },
+            )
+        )
+        _wire_dispatch_and_runs()
+        server = build_server(_settings())
+        async with Client(server) as client:
+            result = await client.call_tool(
+                "audit_contract",
+                {"address": ADDR},
+                raise_on_error=False,
+            )
+        is_error, body = _unwrap_result(result)
+        assert is_error is False
+        assert body["ok"] is False
+        assert body["error_code"] == "source_not_verified"
+        assert routes["verify"].call_count == 0
 
 
 class TestConfigGuardrails:

@@ -1,11 +1,15 @@
 # agentSAFE — Terms of Service
 
-Version: 1.0-draft (pending owner review) · Status: **draft for legal review**
+Version: 1.1 (owner-configured) · Effective date: **October 21, 2026** ·
+Status: draft for legal review
+
+Operator: **workfern** — an independent developer, Hong Kong. Governing
+jurisdiction: **Hong Kong**.
 
 These Terms of Service ("ToS") govern use of the agentSAFE MCP service
-("Service"), an AI-assisted smart-contract risk-screening tool. By calling
-any Service tool, you ("you", "the user") accept these terms. If you do not
-accept them, do not use the Service.
+("Service"), an AI-assisted smart-contract risk-screening tool operated by
+workfern. By calling any Service tool, you ("you", "the user") accept these
+terms. If you do not accept them, do not use the Service.
 
 > **Publication note:** this file is the source of truth for the ToS text.
 > It becomes publicly accessible once published at a stable URL (e.g. the
@@ -53,16 +57,31 @@ allocation of responsibility with counsel.`
 ## 6. Pricing, payment authorization, and service fees
 
 Prices are denominated in USDC and settled via the x402 payment protocol on
-Base (or the network advertised by the Service at request time). Calling a
-paid tool without payment returns a payment request; your payment
+Base Mainnet (`eip155:8453`) through the PayAI facilitator (or the network
+advertised by the Service at request time). Prices are tiered by verified
+source-code size and are advertised by the Service at request time, before
+payment authorization:
+
+| Verified source lines | Price (USDC) |
+| --- | ---: |
+| 1–100 | 0.50 |
+| 101–500 | 2.50 |
+| 501–1,000 | 5.00 |
+| 1,001–5,000 | 25.00 |
+| More than 5,000 | Enterprise inquiry required; no payment |
+
+Source lines are counted by the Service from the verified source published
+by the block explorer; blank lines are excluded and the count is determined
+solely by the Service, never by a client-submitted value. For contracts
+exceeding 5,000 source lines, the Service rejects the request before payment
+with the error code `ENTERPRISE_INQUIRY_REQUIRED` and an inquiry link:
+<https://tally.so/r/laby7B>.
+
+Calling a paid tool without payment returns a payment request; your payment
 application authorizes the exact advertised amount before the Service
 executes your request. Third-party payment infrastructure (facilitators,
 blockchain networks) may charge its own settlement and network fees, which
 are separate from the Service price.
-
-Current pricing is advertised by the Service at request time. For contracts
-exceeding the largest advertised size tier, contact us for custom pricing:
-<https://tally.so/r/xVXx0k>.
 
 ## 7. Audit execution failures, partial results, and report availability
 
@@ -77,13 +96,23 @@ promptly after completion.
 
 ## 8. Refund and failed-service handling
 
-Payment is settled only after the requested work has executed
-successfully. If execution fails before settlement, no payment is collected.
-If a payment settles but the Service fails to deliver a usable report, the
-operator will, at its discretion, re-run the audit or otherwise remedy the
-failed delivery. `TODO — OWNER INPUT REQUIRED: the operator must decide and
-state an explicit refund/remedy policy, and confirm it is compatible with
-the chosen payment facilitator's rules.`
+AI audit reports are virtual digital products generated instantly. Once
+execution has completed successfully and the report has been generated and
+delivered, the purchase is **non-refundable**. If a technical failure
+results in an empty or missing report, the user is entitled to a **full
+refund** upon contacting support at `lunanoach@gmail.com`.
+
+For clarity, consistent with the payment flow: a payment is settled only
+after the requested work has executed successfully, and a failed execution
+never settles — in that case no payment is collected and no refund is owed.
+The full refund entitlement above applies when a payment settled but the
+report is empty or missing.
+
+Mandatory consumer-protection requirements applicable in Hong Kong or the
+user's jurisdiction may override this section; this policy is drafted for
+legal review and is not presented as guaranteed enforceable in every
+circumstance. `TODO — OWNER INPUT REQUIRED: confirm with counsel that this
+refund rule satisfies applicable mandatory consumer-protection law.`
 
 ## 9. Report access tokens and confidentiality
 
@@ -96,19 +125,23 @@ secret store, however — treat report contents as non-confidential data.
 ## 10. Data handling, source-code processing, and retention
 
 The Service processes only: (a) the contract address you submit, (b) public
-verified source code and on-chain data it retrieves for that address, and
-(c) payment metadata required by the x402 protocol. Reports and task
-records are retained for the period stated in Section 7 and then expire.
-The Service does not knowingly process personal data. `TODO — OWNER INPUT
-REQUIRED: privacy practices (e.g. GDPR/CCPA statements, data processor
-terms) must be reviewed and added if required for your jurisdiction.`
+verified source code and on-chain data it retrieves for that address, (c)
+payment metadata required by the x402 protocol, and (d) the unguessable task
+identifier issued at request time. Reports and task records are retained for
+the period stated in Section 7 and then expire. The Service does not
+knowingly process personal data. See the separate `PRIVACY_POLICY.md`, which
+describes the actual data flows, including third parties (payment
+facilitator, block explorer, RPC provider, code-hosting, LLM providers) and
+transport-level logging. `TODO — OWNER INPUT REQUIRED: privacy practices
+must be reviewed for applicable Hong Kong requirements (e.g. the Personal
+Data (Privacy) Ordinance) before publication.`
 
 ## 11. Acceptable use and prohibited activity
 
 You agree not to: attempt to bypass payment or replay payment payloads;
 reverse-engineer the Service to resell its output as your own security
-certification; submit malicious automated workloads or attempt to disrupt
-the Service; use the Service in violation of applicable law or sanctions;
+certification; submit malicious automated workloads or attempt to disrupt the
+Service; use the Service in violation of applicable law or sanctions;
 or misrepresent Service output to third parties.
 
 ## 12. Service availability and maintenance
@@ -127,15 +160,15 @@ including merchantability, fitness for a particular purpose, and
 non-infringement. The operator is not liable for any damages, losses, or
 costs arising from use of, or reliance on, the Service or its reports.
 This section is drafted for legal review and is not presented as
-guaranteed enforceable. `TODO — OWNER INPUT REQUIRED: governing law,
-jurisdiction, and any liability cap must be set by the operator with
-counsel.`
+guaranteed enforceable. Governing law and jurisdiction: **Hong Kong**, as
+confirmed by the operator. `TODO — OWNER INPUT REQUIRED: confirm any
+liability cap with counsel.`
 
 ## 14. Contact
 
-Commercial inquiries and custom pricing:
-<https://tally.so/r/xVXx0k>
+Operator / legal entity: **workfern** (Hong Kong).
 
-`TODO — OWNER INPUT REQUIRED: official contact e-mail, legal entity name,
-registered address, and governing jurisdiction. Do not publish placeholder
-contact information.`
+Contact e-mail: `lunanoach@gmail.com`
+
+Commercial inquiries, refunds, and enterprise/custom pricing:
+<https://tally.so/r/laby7B>

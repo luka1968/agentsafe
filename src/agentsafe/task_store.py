@@ -89,6 +89,12 @@ class MemoryTaskStore:
                 t.payment_ref = payment_ref
                 t.updated_at = datetime.now(UTC)
 
+    def payment_refs(self) -> set[str]:
+        """All payment fingerprints ever bound to a task (replay-protection
+        seed after a restart)."""
+        with self._lock:
+            return {t.payment_ref for t in self._tasks.values() if t.payment_ref}
+
     def get(self, task_id: str) -> TaskStatus | None:
         with self._lock:
             t = self._tasks.get(task_id)
@@ -207,6 +213,15 @@ class SqliteTaskStore:
             if cur.rowcount == 0:
                 raise KeyError(f"unknown task_id: {task_id}")
 
+    def payment_refs(self) -> set[str]:
+        """All payment fingerprints ever bound to a task (replay-protection
+        seed after a restart)."""
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT payment_ref FROM tasks WHERE paid = 1 AND payment_ref IS NOT NULL"
+            ).fetchall()
+        return {r[0] for r in rows}
+
     def get(self, task_id: str) -> TaskStatus | None:
         with self._lock, self._connect() as conn:
             row = conn.execute("SELECT * FROM tasks WHERE task_id = ?", (task_id,)).fetchone()
@@ -299,6 +314,8 @@ class TaskStore(Protocol):
     def set_state(self, task_id: str, state: TaskState, error_code: str | None = None) -> None: ...
 
     def mark_paid(self, task_id: str, payment_ref: str) -> None: ...
+
+    def payment_refs(self) -> set[str]: ...
 
     def upsert_stage(self, task_id: str, stage: StageStatus) -> None: ...
 
