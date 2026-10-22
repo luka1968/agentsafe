@@ -12,6 +12,9 @@ dist/
 .venv/
 venv/
 
+# Dependency lock files - regenerate on build
+uv.lock
+
 # Tooling caches
 .pytest_cache/
 .mypy_cache/
