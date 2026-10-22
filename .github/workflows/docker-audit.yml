@@ -68,7 +68,7 @@ jobs:
             -e LLM_PROVIDERS_JSON \
             -e LLM_GLOBAL_RPM=10 \
             -e LLM_MAX_CALLS_PER_AUDIT=12 \
-            -e AUDIT_TIMEOUT_SECONDS=900 \
+            -e AUDIT_TIMEOUT_SECONDS=1800 \
             -e LOG_LEVEL=INFO \
             agentsafe:audit \
               --address "$AUDIT_ADDRESS" \
