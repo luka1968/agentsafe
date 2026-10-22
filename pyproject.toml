@@ -20,6 +20,8 @@ dependencies = [
     # so cloud builds (which install only base deps, no extras) include it
     # when PAYMENTS_ENABLED=true is baked into the deployment environment.
     "x402[evm]==2.25.0",
+    # Redis client for Upstash/Redis task store (serverless deployments)
+    "redis>=5.0",
 ]
 
 [project.optional-dependencies]

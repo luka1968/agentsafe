@@ -82,6 +82,7 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
     task_store = open_task_store(
         getattr(settings, "TASK_STORE", "sqlite"),
         Path(getattr(settings, "TASK_DB_PATH", "data/tasks.db")),
+        redis_url=getattr(settings, "REDIS_URL", ""),
         retention_days=settings.ARTIFACT_RETENTION_DAYS,
     )
 

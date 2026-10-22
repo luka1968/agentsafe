@@ -102,8 +102,10 @@ class Settings(BaseSettings):
     # --- Task persistence (Prompt 8) ---
     # 'sqlite' only if durable writable storage is guaranteed; otherwise
     # 'memory' + GitHub-side state reconstruction after restarts.
+    # 'redis' (Upstash) for serverless deployments like Vercel — persistent across cold starts.
     TASK_STORE: str = "sqlite"
     TASK_DB_PATH: str = "data/tasks.db"
+    REDIS_URL: str = ""  # Upstash/Redis URL for serverless task store
 
     # --- HTTP access log (PRIVACY_POLICY.md: IP + time, 30-day retention) ---
     ACCESS_LOG_DB_PATH: str = "data/access_log.db"
@@ -159,8 +161,8 @@ class Settings(BaseSettings):
     @classmethod
     def _validate_task_store(cls, v: str) -> str:
         v = v.strip().lower()
-        if v not in {"sqlite", "memory"}:
-            raise ValueError(f"TASK_STORE must be 'sqlite' or 'memory', got {v!r}")
+        if v not in {"sqlite", "memory", "redis"}:
+            raise ValueError(f"TASK_STORE must be 'sqlite', 'memory', or 'redis', got {v!r}")
         return v
 
     def llm_providers(self) -> list[LLMProviderConfig]:

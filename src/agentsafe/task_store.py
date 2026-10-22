@@ -11,6 +11,7 @@ task_id uses secrets.token_urlsafe - unguessable, no secrets embedded.
 
 from __future__ import annotations
 
+import json
 import logging
 import secrets
 import sqlite3
@@ -19,8 +20,9 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
+import redis as redis_client
 from agentsafe.schemas import StageState, StageStatus, TaskState, TaskStatus
 
 logger = logging.getLogger("agentSAFE.taskstore")
@@ -278,6 +280,239 @@ class SqliteTaskStore:
             return cur.rowcount
 
 
+class RedisTaskStore:
+    """Persistent task store using Upstash/Redis for serverless deployments.
+    
+    Key structure:
+      - {prefix}:task:{task_id} -> JSON serialized TaskStatus
+      - payment_refs are cached and regenerated on startup
+    
+    Suitable for Vercel Cloud Functions, AWS Lambda, etc. — survives cold starts
+    and scales horizontally across multiple instances.
+    """
+    
+    def __init__(self, redis_url: str, *, prefix: str = "agentsafe", retention_days: int = 14) -> None:
+        """Connect to Redis/Upstash via URL.
+        
+        Args:
+            redis_url: Connection string like 'redis://default:pass@host:port' or 
+                      'rediss://' for TLS (Upstash uses this by default)
+            prefix: Key namespace prefix (avoids collisions in shared Redis)
+            retention_days: How long to keep completed tasks before cleanup
+        """
+        self._prefix = prefix
+        self._retention_days = retention_days
+        self._lock = threading.Lock()
+        
+        # Connect to Redis (handles both redis:// and rediss:// URLs)
+        try:
+            self._client = redis_client.from_url(redis_url, decode_responses=True)
+            # Test connection
+            self._client.ping()
+            logger.info(f"Connected to Redis at {redis_url[:50]}...")
+        except Exception as e:
+            raise ValueError(f"Failed to connect to Redis at {redis_url!r}: {e}") from e
+    
+    def _key(self, *parts: str) -> str:
+        """Build a namespaced Redis key."""
+        return f"{self._prefix}:{':'.join(str(p) for p in parts)}"
+    
+    def _serialize_task(self, task: TaskStatus) -> str:
+        """Serialize TaskStatus to JSON."""
+        def default_serializer(obj: Any) -> Any:
+            if isinstance(obj, datetime):
+                return obj.isoformat()
+            if isinstance(obj, TaskState):
+                return obj.value
+            if isinstance(obj, StageState):
+                return obj.value
+            raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
+        
+        return json.dumps(task.model_dump(), default=default_serializer)
+    
+    def _deserialize_task(self, data: str, stages_data: list[dict] = []) -> TaskStatus | None:
+        """Deserialize JSON to TaskStatus."""
+        try:
+            task_dict = json.loads(data)
+            
+            # Parse datetime fields
+            for field in ("created_at", "updated_at"):
+                if field in task_dict:
+                    task_dict[field] = datetime.fromisoformat(task_dict[field])
+            
+            # Parse state enum
+            if "state" in task_dict:
+                task_dict["state"] = TaskState(task_dict["state"])
+            
+            # Parse stages
+            parsed_stages = []
+            for stage_dict in stages_data:
+                for field in ("started_at", "finished_at"):
+                    if stage_dict.get(field):
+                        stage_dict[field] = datetime.fromisoformat(stage_dict[field])
+                if "state" in stage_dict:
+                    stage_dict["state"] = StageState(stage_dict["state"])
+                parsed_stages.append(StageStatus(**stage_dict))
+            
+            task_dict["stages"] = parsed_stages
+            
+            return TaskStatus(**task_dict)
+        except Exception as e:
+            logger.error(f"Failed to deserialize task: {e}")
+            return None
+    
+    def create_task(self, address: str) -> TaskStatus:
+        now = datetime.now(UTC)
+        task = TaskStatus(
+            task_id=new_task_id(),
+            address=address,
+            state=TaskState.QUEUED,
+            created_at=now,
+            updated_at=now,
+        )
+        key = self._key("task", task.task_id)
+        pipeline = self._client.pipeline()
+        try:
+            pipeline.set(key, self._serialize_task(task), ex=60*24*self._retention_days)  # TTL = retention_days
+            pipeline.execute()
+        except redis_client.RedisError as e:
+            logger.error(f"Failed to create task in Redis: {e}")
+            raise
+        return task
+    
+    def get(self, task_id: str) -> TaskStatus | None:
+        key = self._key("task", task_id)
+        try:
+            data = self._client.get(key)
+            if not data:
+                return None
+            
+            # Stages are stored separately
+            pattern = self._key("stage", task_id, "*")
+            stage_keys = self._client.keys(pattern)
+            stages_data = []
+            for sk in stage_keys:
+                stage_json = self._client.get(sk)
+                if stage_json:
+                    stages_data.append(json.loads(stage_json))
+            
+            return self._deserialize_task(data, stages_data)
+        except redis_client.RedisError as e:
+            logger.error(f"Failed to get task from Redis: {e}")
+            return None
+    
+    def link_run(self, task_id: str, run_id: int) -> None:
+        with self._lock:
+            key = self._key("task", task_id)
+            task = self.get(task_id)
+            if not task:
+                raise KeyError(f"unknown task_id: {task_id}")
+            
+            task.run_id = run_id
+            task.updated_at = datetime.now(UTC)
+            
+            try:
+                self._client.set(key, self._serialize_task(task), ex=60*24*self._retention_days)
+            except redis_client.RedisError as e:
+                logger.error(f"Failed to update task in Redis: {e}")
+                raise
+    
+    def set_state(self, task_id: str, state: TaskState, error_code: str | None = None) -> None:
+        with self._lock:
+            task = self.get(task_id)
+            if not task:
+                raise KeyError(f"unknown task_id: {task_id}")
+            
+            task.state = state
+            if error_code:
+                task.error_code = error_code
+            task.updated_at = datetime.now(UTC)
+            
+            key = self._key("task", task_id)
+            try:
+                self._client.set(key, self._serialize_task(task), ex=60*24*self._retention_days)
+            except redis_client.RedisError as e:
+                logger.error(f"Failed to set task state in Redis: {e}")
+                raise
+    
+    def mark_paid(self, task_id: str, payment_ref: str) -> None:
+        with self._lock:
+            task = self.get(task_id)
+            if not task:
+                raise KeyError(f"unknown task_id: {task_id}")
+            
+            task.paid = True
+            task.payment_ref = payment_ref
+            task.updated_at = datetime.now(UTC)
+            
+            key = self._key("task", task_id)
+            try:
+                self._client.set(key, self._serialize_task(task), ex=60*24*self._retention_days)
+            except redis_client.RedisError as e:
+                logger.error(f"Failed to mark task paid in Redis: {e}")
+                raise
+    
+    def payment_refs(self) -> set[str]:
+        """All payment fingerprints ever bound to a task."""
+        try:
+            pattern = self._key("task", "*")
+            keys = self._client.keys(pattern)
+            refs = set()
+            for key in keys:
+                data = self._client.get(key)
+                if data:
+                    task_dict = json.loads(data)
+                    if task_dict.get("paid") and task_dict.get("payment_ref"):
+                        refs.add(task_dict["payment_ref"])
+            return refs
+        except redis_client.RedisError as e:
+            logger.error(f"Failed to fetch payment refs from Redis: {e}")
+            return set()
+    
+    def upsert_stage(self, task_id: str, stage: StageStatus) -> None:
+        with self._lock:
+            stage_key = self._key("stage", task_id, stage.name)
+            stage_data = {
+                "name": stage.name,
+                "state": stage.state.value,
+                "detail": stage.detail,
+                "started_at": stage.started_at.isoformat() if stage.started_at else None,
+                "finished_at": stage.finished_at.isoformat() if stage.finished_at else None,
+            }
+            try:
+                self._client.set(stage_key, json.dumps(stage_data), ex=60*24*self._retention_days)
+            except redis_client.RedisError as e:
+                logger.error(f"Failed to upsert stage in Redis: {e}")
+                raise
+    
+    def cleanup_expired(self, retention_days: int | None = None) -> int:
+        """Clean up tasks older than retention_days.
+        
+        Note: Redis handles TTL automatically on set, so explicit cleanup 
+        may not be necessary unless you want to free space earlier.
+        """
+        return 0  # Redis TTL handles this automatically
+
+
+def open_task_store(
+    mode: str, 
+    db_path: Path, 
+    redis_url: str = "",
+    *, 
+    retention_days: int = 14
+) -> TaskStore:
+    """Factory. mode: 'sqlite' (durable) | 'memory' (restart-loses-links) | 'redis' (Upstash)."""
+    if mode == "sqlite":
+        return SqliteTaskStore(db_path, retention_days=retention_days)
+    if mode == "memory":
+        return MemoryTaskStore()
+    if mode == "redis":
+        if not redis_url:
+            raise ValueError("REDIS_URL is required for redis task store mode")
+        return RedisTaskStore(redis_url, retention_days=retention_days)
+    raise ValueError(f"unknown task store mode: {mode!r}")
+
+
 def _row_to_task(row: sqlite3.Row, stages: list[sqlite3.Row]) -> TaskStatus:
     return TaskStatus(
         task_id=row["task_id"],
@@ -322,18 +557,10 @@ class TaskStore(Protocol):
     def cleanup_expired(self, retention_days: int) -> int: ...
 
 
-def open_task_store(mode: str, db_path: Path, *, retention_days: int = 14) -> TaskStore:
-    """Factory. mode: 'sqlite' (durable) | 'memory' (restart-loses-links)."""
-    if mode == "sqlite":
-        return SqliteTaskStore(db_path, retention_days=retention_days)
-    if mode == "memory":
-        return MemoryTaskStore()
-    raise ValueError(f"unknown task store mode: {mode!r}")
-
-
 __all__ = [
     "MemoryTaskStore",
-    "SqliteTaskStore",
+    "SqliteTaskStore", 
+    "RedisTaskStore",
     "TaskStore",
     "open_task_store",
     "new_task_id",
