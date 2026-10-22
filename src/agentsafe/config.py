@@ -105,7 +105,32 @@ class Settings(BaseSettings):
     # 'redis' (Upstash) for serverless deployments like Vercel — persistent across cold starts.
     TASK_STORE: str = "sqlite"
     TASK_DB_PATH: str = "data/tasks.db"
-    REDIS_URL: str = ""  # Upstash/Redis URL for serverless task store
+    
+    # Redis/Upstash configuration - supports multiple formats:
+    # 1. Direct REDIS_URL (redis:// or rediss:// format)
+    # 2. Vercel Upstash integration env vars (UPSTASH_REDIS_REST_URL + TOKEN)
+    REDIS_URL: str = ""
+    UPSTASH_REDIS_REST_URL: str = ""  # Vercel Upstash integration
+    UPSTASH_REDIS_REST_TOKEN: str = ""  # Vercel Upstash integration
+    
+    @property
+    def effective_redis_url(self) -> str:
+        """Get Redis URL, auto-detecting from various formats."""
+        # Priority 1: Direct REDIS_URL
+        if self.REDIS_URL.strip():
+            return self.REDIS_URL.strip()
+        
+        # Priority 2: Vercel Upstash integration vars
+        if self.UPSTASH_REDIS_REST_URL.strip() and self.UPSTASH_REDIS_REST_TOKEN.strip():
+            rest_url = self.UPSTASH_REDIS_REST_URL.strip().rstrip("/")
+            token = self.UPSTASH_REDIS_REST_TOKEN.strip()
+            # Construct redis:// URL from REST URL + token
+            # REST URL format: https://xxx.upstash.io
+            # Convert to: rediss://default:token@xxx.upstash.io:443
+            host = rest_url.replace("https://", "").replace("http://", "")
+            return f"rediss://default:{token}@{host}:443"
+        
+        return ""
 
     # --- HTTP access log (PRIVACY_POLICY.md: IP + time, 30-day retention) ---
     ACCESS_LOG_DB_PATH: str = "data/access_log.db"
