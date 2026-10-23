@@ -17,6 +17,8 @@ payment/x402_adapter.py) and gates audit_contract with verify-before-execution
 
 from __future__ import annotations
 
+import base64
+import json
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -26,7 +28,12 @@ from typing import Any
 from fastmcp import Context, FastMCP
 from fastmcp.tools import ToolResult
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, PlainTextResponse
+from starlette.responses import (
+    HTMLResponse,
+    JSONResponse,
+    PlainTextResponse,
+    Response,
+)
 
 from agentsafe import __version__
 from agentsafe.config import Settings, validate_runtime_settings
@@ -38,6 +45,7 @@ from agentsafe.github_client import (
     RunAssociationError,
 )
 from agentsafe.payment.x402_adapter import (
+    StarletteRequestAdapter,
     VerifiedPayment,
     X402PaymentAdapter,
 )
@@ -54,6 +62,19 @@ from agentsafe.task_store import open_task_store
 from agentsafe.web import INDEX_HTML, LegalDocumentMissingError, legal_html
 
 logger = logging.getLogger("agentSAFE.server")
+
+# -------------------------------------------------------------- x402 REST API
+# Machine-readable discovery (openapi.json, indexed by x402scan & co) plus a
+# real x402-gated REST dispatch endpoint mirroring the MCP audit_contract
+# flow. This is NOT part of the MCP protocol surface; it exists so that
+# x402 indexers and plain-HTTP x402 clients can discover and pay for audits.
+REST_AUDIT_PATH = "/api/audit"
+# The REST endpoint's flat fee (X402_REST_PRICE) only covers contracts up to
+# this many source lines. Larger contracts must use the MCP endpoint's tiered
+# pricing (audit_contract) or the enterprise channel; this cap prevents the
+# flat REST fee from undercutting the higher MCP tiers.
+REST_AUDIT_MAX_LINES = 500
+_OPENAPI_FILE = Path(__file__).resolve().parents[2] / "openapi.json"
 
 mcp: FastMCP | None = None
 
@@ -123,6 +144,35 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
         strict=validate,
     )
 
+    # Official x402 HTTP flow for the REST endpoint (payments-enabled only).
+    # Built once per process and shares the adapter's already-initialized
+    # x402ResourceServer (facilitator /supported cached at adapter startup),
+    # so no extra startup round-trips. Indexers like x402scan hit
+    # POST /api/audit without payment and receive the official 402 wire
+    # format (PAYMENT-REQUIRED header + body quoting X402_REST_PRICE).
+    x402_http = None
+    if payment.enabled:
+        from x402.http import PaymentOption, RouteConfig
+
+        x402_http = payment.http_resource_server(
+            {
+                f"POST {REST_AUDIT_PATH}": RouteConfig(
+                    accepts=PaymentOption(
+                        scheme="exact",
+                        pay_to=payment.pay_to,
+                        price=settings.X402_REST_PRICE,
+                        network=payment.network,
+                        max_timeout_seconds=settings.X402_MAX_TIMEOUT_SECONDS,
+                        extra={"asset": settings.X402_ASSET} if settings.X402_ASSET else None,
+                    ),
+                    description="AI smart-contract risk audit dispatch (x402-paid)",
+                    mime_type="application/json",
+                    service_name="agentSAFE",
+                    tags=["smart-contract-audit", "ai-audit", "base"],
+                )
+            }
+        )
+
     @asynccontextmanager
     async def _startup_validation(server: FastMCP) -> AsyncIterator[None]:
         if not validate:
@@ -169,6 +219,8 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
                 "/terms": "Terms of Service",
                 "/privacy": "Privacy Policy",
                 "/refund": "Refund Policy",
+                "/openapi.json": "OpenAPI discovery document (x402scan indexing)",
+                "/api/audit": "x402 REST audit dispatch (paid, see /openapi.json)",
             },
         }
 
@@ -200,6 +252,235 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
             return HTMLResponse(legal_html("refund"))
         except LegalDocumentMissingError as exc:
             return PlainTextResponse(str(exc), status_code=500)
+
+    # ------------------------------------------------ x402 REST API (x402scan)
+
+    @app.custom_route("/openapi.json", methods=["GET"])
+    async def _openapi(request: Request) -> Response:
+        """Machine-readable discovery document for x402 indexers."""
+        try:
+            spec = json.loads(_OPENAPI_FILE.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            logger.error("openapi.json unavailable at %s: %s", _OPENAPI_FILE, exc)
+            return PlainTextResponse(
+                "openapi discovery document unavailable", status_code=500
+            )
+        return JSONResponse(spec)
+
+    @app.custom_route(REST_AUDIT_PATH, methods=["POST"])
+    async def _api_audit(request: Request) -> Response:
+        """x402-gated REST audit dispatch (documented in openapi.json).
+
+        Fail-closed mirror of the MCP audit_contract flow:
+          no payment     -> official x402 402 (PAYMENT-REQUIRED header + body)
+          replay         -> 402, payload never accepted twice
+          verified       -> source-size guard BEFORE settlement (flat-fee cap),
+                            task dispatch, settlement AFTER successful dispatch
+          dispatch fail  -> settlement NOT attempted (no funds ever move)
+        """
+        if x402_http is None:
+            # Dev mode (payments disabled): free dispatch, mirrors free MCP tools.
+            body_bytes = await request.body()
+            try:
+                parsed_body = json.loads(body_bytes) if body_bytes else None
+            except json.JSONDecodeError:
+                parsed_body = None
+            return await _dispatch_audit_rest(request, None, parsed_body, None)
+        try:
+            from x402.http import HTTPRequestContext
+
+            body_bytes = await request.body()
+            try:
+                parsed_body = json.loads(body_bytes) if body_bytes else None
+            except json.JSONDecodeError:
+                parsed_body = None
+            ctx = HTTPRequestContext(
+                adapter=StarletteRequestAdapter(request, parsed_body=parsed_body),
+                path=REST_AUDIT_PATH,
+                method="POST",
+            )
+            result = await x402_http.process_http_request(ctx)
+            if result.type == "payment-error":
+                instr = result.response
+                assert instr is not None  # SDK contract: error carries instructions
+                headers = {
+                    k: v for k, v in (instr.headers or {}).items() if k.lower() != "content-type"
+                }
+                # Official x402 v2 wire format carries the machine-readable
+                # requirements in the base64 PAYMENT-REQUIRED header with an
+                # empty body. Mirror the decoded JSON into the body as well:
+                # the body is free-form per spec, and human/indexer fallback
+                # parsers (x402scan variants) get the terms without having to
+                # decode the header.
+                body = instr.body if isinstance(instr.body, dict) and instr.body else None
+                if body is None:
+                    required_header = headers.get("PAYMENT-REQUIRED") or headers.get(
+                        "payment-required"
+                    )
+                    body = {"error": "Payment Required"}
+                    if required_header:
+                        try:
+                            body = json.loads(base64.b64decode(required_header).decode("utf-8"))
+                        except Exception:  # noqa: BLE001 - fall back to minimal body
+                            logger.warning("could not decode PAYMENT-REQUIRED header for body mirror")
+                return JSONResponse(body, status_code=instr.status, headers=headers)
+            if result.type != "payment-verified" or result.payment_payload is None:
+                return JSONResponse(
+                    {
+                        "ok": False,
+                        "error_code": "payment_required",
+                        "error": "Payment Required",
+                    },
+                    status_code=402,
+                )
+            ref = X402PaymentAdapter.payment_ref(result.payment_payload)
+            if payment.replay_seen(ref):
+                logger.info("REST payment replay rejected ref=%s", ref[:16])
+                return JSONResponse(
+                    {
+                        "ok": False,
+                        "error_code": "payment_replay",
+                        "error": "Payment already used (replay rejected)",
+                    },
+                    status_code=402,
+                )
+            payment.record_replay(ref)
+            verified = VerifiedPayment(
+                payload=result.payment_payload,
+                requirements=result.payment_requirements,
+                ref=ref,
+            )
+            return await _dispatch_audit_rest(request, verified, parsed_body, ctx)
+        except Exception:  # noqa: BLE001 - never leak internals to HTTP clients
+            logger.exception("REST audit endpoint failed")
+            return JSONResponse(
+                {"ok": False, "error_code": "internal_error", "error": "internal error"},
+                status_code=500,
+            )
+
+    async def _dispatch_audit_rest(
+        request: Request,
+        verified: VerifiedPayment | None,
+        parsed_body: Any,
+        ctx: Any = None,
+    ) -> Response:
+        """Shared dispatch pipeline for POST /api/audit (x402-paid or free in
+        dev mode). The source-size guard runs BEFORE any settlement, so a
+        paid request that cannot be served at the flat fee never moves funds."""
+        if not isinstance(parsed_body, dict):
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error_code": "invalid_json",
+                    "error": "request body must be a JSON object with an 'address' field",
+                },
+                status_code=400,
+            )
+        try:
+            addr = normalize_address(str(parsed_body.get("address", "")))
+        except ValueError as exc:
+            return JSONResponse(
+                {"ok": False, "error_code": "invalid_address", "error": str(exc)},
+                status_code=400,
+            )
+        try:
+            bundle = await explorer.get_verified_source(addr)
+        except ContractNotVerifiedError:
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error_code": "source_not_verified",
+                    "error": "audit requires verified source; no price can be quoted",
+                },
+                status_code=422,
+            )
+        except ExplorerError as exc:
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error_code": "pricing_failed",
+                    "error": f"could not retrieve source for validation: {exc}",
+                },
+                status_code=422,
+            )
+        lines = count_source_lines(bundle)
+        if lines > REST_AUDIT_MAX_LINES:
+            logger.info("REST dispatch rejected: lines=%d exceeds flat-fee cap", lines)
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error_code": "REST_FLAT_FEE_LINE_LIMIT",
+                    "error": (
+                        f"{lines} source lines exceed the {REST_AUDIT_MAX_LINES}-line flat fee; "
+                        "use the MCP endpoint (audit_contract) for tiered pricing"
+                    ),
+                },
+                status_code=422,
+            )
+
+        task = task_store.create_task(addr)
+        if verified is not None:
+            task_store.mark_paid(task.task_id, verified.ref)
+        task_store.set_state(task.task_id, TaskState.QUEUED)
+        logger.info(
+            "REST audit dispatch address=%s task_id=%s paid=%s",
+            addr,
+            task.task_id,
+            verified is not None,
+        )
+        try:
+            dispatched_at = await gh.trigger_workflow(addr, task.task_id)
+            run_id = await gh.resolve_run_id(task.task_id, dispatched_after=dispatched_at)
+            task_store.link_run(task.task_id, run_id)
+            task_store.set_state(task.task_id, TaskState.RUNNING)
+        except GitHubClientError as exc:
+            # Dispatch failed: settlement is NOT attempted (verify-only so
+            # far; the on-chain transfer never executes -> no funds move).
+            task_store.set_state(task.task_id, TaskState.FAILED, error_code="dispatch_failed")
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "task_id": task.task_id,
+                    "error_code": "dispatch_failed",
+                    "error": str(exc),
+                },
+                status_code=502,
+            )
+
+        headers: dict[str, str] = {}
+        settlement_error: str | None = None
+        if verified is not None and x402_http is not None and ctx is not None:
+            settle = await x402_http.process_settlement(
+                verified.payload,
+                verified.requirements,
+                context=ctx,
+                phase="after-handler",
+            )
+            headers = {
+                k: v for k, v in (settle.headers or {}).items() if k.lower() != "content-type"
+            }
+            if not settle.success:
+                # Settlement failure does not stop the dispatched audit; it
+                # is surfaced to the payer (mirrors the MCP after-handler flow).
+                logger.error(
+                    "REST settlement failed ref=%s reason=%s",
+                    verified.ref[:16],
+                    settle.error_reason,
+                )
+                settlement_error = (
+                    f"payment settlement failed: {settle.error_reason or 'unknown failure'}"
+                )
+        body: dict[str, Any] = {
+            "ok": True,
+            "task_id": task.task_id,
+            "address": addr,
+            "state": "running",
+            "run_id": run_id,
+            "note": "report retrieval via the agentSAFE MCP tool check_audit_status",
+        }
+        if settlement_error:
+            body["settlement_error"] = settlement_error
+        return JSONResponse(body, status_code=202, headers=headers)
 
     @app.tool
     async def audit_contract(address: str, ctx: Context) -> dict[str, Any] | ToolResult:

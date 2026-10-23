@@ -175,6 +175,33 @@ class X402PaymentAdapter:
             raise PaymentsNotEnabledError("tiered pricing requires payments to be enabled")
         return self._build_requirements(price)
 
+    def http_resource_server(self, routes: dict[str, Any]) -> Any:
+        """Official SDK HTTP resource server for REST endpoints (x402 v2 wire
+        format: PAYMENT-SIGNATURE request header, PAYMENT-REQUIRED 402 header,
+        PAYMENT-RESPONSE settlement header).
+
+        ``routes`` maps "METHOD /path" patterns to x402.http.RouteConfig;
+        the underlying x402ResourceServer (already initialized against the
+        facilitator) is shared, so no extra network round-trips occur here.
+        Only callable when payments are enabled.
+        """
+        if not self.enabled:
+            raise PaymentsNotEnabledError("REST x402 gating requires payments to be enabled")
+        from x402.http import x402HTTPResourceServer
+
+        return x402HTTPResourceServer(self._server, routes)
+
+    # ------------------------------------------------------- replay ledger
+
+    def replay_seen(self, ref: str) -> bool:
+        """True when this payment fingerprint was already consumed."""
+        return not self.enabled or ref in self._replay_ledger
+
+    def record_replay(self, ref: str) -> None:
+        """Consume a payment fingerprint after successful verification."""
+        if self.enabled:
+            self._replay_ledger.add(ref)
+
     def seed_replay_ledger(self, refs: set[str]) -> None:
         """Re-arm replay protection after a restart with payment fingerprints
         already bound to tasks (persisted by the task store). Without this,
@@ -366,3 +393,57 @@ class X402PaymentAdapter:
         raise X402NotIntegratedError(  # pragma: no cover - server never calls this
             f"payment handling for {resource!r} must go through verify()/settle()"
         )
+
+
+class StarletteRequestAdapter:
+    """x402 SDK ``HTTPAdapter`` implementation for a Starlette ``Request``.
+
+    Used by the REST x402 endpoint (POST /api/audit) to feed the official
+    ``x402HTTPResourceServer`` middleware flow. The request body must be
+    pre-read (Starlette reads are async; the SDK protocol is sync), so the
+    parsed JSON is injected at construction time.
+    """
+
+    def __init__(self, request: Any, parsed_body: Any = None) -> None:
+        self._request = request
+        self._body = parsed_body
+
+    def get_header(self, name: str) -> str | None:
+        return self._request.headers.get(name)
+
+    def get_method(self) -> str:
+        return self._request.method
+
+    def get_path(self) -> str:
+        return self._request.url.path
+
+    def get_url(self) -> str:
+        """Canonical public URL for x402 resource identification.
+
+        Behind reverse proxies (Vercel / local tunnel) the advertised
+        resource must be the externally visible URL, so forwarded headers
+        take precedence over the internal request URL.
+        """
+        req = self._request
+        proto = req.headers.get("x-forwarded-proto") or req.url.scheme
+        host = (
+            req.headers.get("x-forwarded-host")
+            or req.headers.get("host")
+            or req.url.netloc
+        )
+        return f"{proto}://{host}{req.url.path}"
+
+    def get_accept_header(self) -> str:
+        return self._request.headers.get("accept", "")
+
+    def get_user_agent(self) -> str:
+        return self._request.headers.get("user-agent", "")
+
+    def get_query_params(self) -> dict[str, str] | None:
+        return dict(self._request.query_params) or None
+
+    def get_query_param(self, name: str) -> str | list[str] | None:
+        return self._request.query_params.get(name)
+
+    def get_body(self) -> Any:
+        return self._body

@@ -182,6 +182,12 @@ class Settings(BaseSettings):
     X402_SDK_VERSION: str = "2.25.0"
     X402_FACILITATOR_URL: str = "https://x402.org/facilitator"
     X402_PRICE: str = "$0.01"
+    # Flat price advertised by the x402 REST discovery endpoint (POST
+    # /api/audit, documented in openapi.json for x402scan indexing). This is
+    # the endpoint's own flat fee, separate from the MCP tool's tiered
+    # pricing; the REST path only serves contracts up to REST_AUDIT_MAX_LINES
+    # (see server.py) so it can never undercut the higher MCP tiers.
+    X402_REST_PRICE: str = "$3.00"
     X402_ASSET: str = ""
     X402_MAX_TIMEOUT_SECONDS: int = Field(default=300, ge=1, le=3600)
     X402_ALLOW_MAINNET: bool = False
