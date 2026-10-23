@@ -21,6 +21,7 @@ from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol
+from urllib.parse import urlsplit
 
 import redis as redis_client
 from agentsafe.schemas import StageState, StageStatus, TaskState, TaskStatus
@@ -61,6 +62,19 @@ def _now_iso() -> str:
 
 def new_task_id() -> str:
     return secrets.token_urlsafe(18)  # 24 chars, 144 bits entropy
+
+
+def _safe_redis_host(redis_url: str) -> str:
+    """Password-free description of a Redis URL for logs.
+
+    Connection URLs embed the auth password, so the URL itself must never be
+    logged. Only the scheme/host/port are safe to emit.
+    """
+    try:
+        parsed = urlsplit(redis_url)
+        return f"{parsed.scheme}://{parsed.hostname or '?'}:{parsed.port or 6379}"
+    except ValueError:  # pragma: no cover - malformed URL already rejected upstream
+        return "<unparseable-redis-url>"
 
 
 class MemoryTaskStore:
@@ -304,14 +318,26 @@ class RedisTaskStore:
         self._retention_days = retention_days
         self._lock = threading.Lock()
         
-        # Connect to Redis (handles both redis:// and rediss:// URLs)
+        # Connect to Redis. redis-py handles both redis:// and rediss:// URLs
+        # (rediss:// = TLS transport, required by Upstash). Socket timeouts keep
+        # serverless requests from hanging when the datastore is unreachable.
         try:
-            self._client = redis_client.from_url(redis_url, decode_responses=True)
-            # Test connection
+            self._client = redis_client.from_url(
+                redis_url,
+                decode_responses=True,
+                socket_connect_timeout=5.0,
+                socket_timeout=10.0,
+                health_check_interval=30,
+            )
+            # Test connection (also fails fast on wrong credentials)
             self._client.ping()
-            logger.info(f"Connected to Redis at {redis_url[:50]}...")
+            # Log host only - the URL embeds the auth password.
+            logger.info("Connected to Redis at %s", _safe_redis_host(redis_url))
         except Exception as e:
-            raise ValueError(f"Failed to connect to Redis at {redis_url!r}: {e}") from e
+            # Never include the URL in the error: it contains credentials.
+            raise ValueError(
+                f"Failed to connect to Redis ({_safe_redis_host(redis_url)}): {e}"
+            ) from e
     
     def _key(self, *parts: str) -> str:
         """Build a namespaced Redis key."""
@@ -387,14 +413,12 @@ class RedisTaskStore:
             if not data:
                 return None
             
-            # Stages are stored separately
+            # Stages are stored separately. SCAN (never KEYS: O(N) and blocking
+            # on Upstash) + one MGET round trip for all stage blobs.
             pattern = self._key("stage", task_id, "*")
-            stage_keys = self._client.keys(pattern)
-            stages_data = []
-            for sk in stage_keys:
-                stage_json = self._client.get(sk)
-                if stage_json:
-                    stages_data.append(json.loads(stage_json))
+            stage_keys = list(self._client.scan_iter(match=pattern, count=100))
+            stage_values = self._client.mget(stage_keys) if stage_keys else []
+            stages_data = [json.loads(v) for v in stage_values if v]
             
             return self._deserialize_task(data, stages_data)
         except redis_client.RedisError as e:
@@ -456,7 +480,7 @@ class RedisTaskStore:
         """All payment fingerprints ever bound to a task."""
         try:
             pattern = self._key("task", "*")
-            keys = self._client.keys(pattern)
+            keys = list(self._client.scan_iter(match=pattern, count=100))
             refs = set()
             for key in keys:
                 data = self._client.get(key)

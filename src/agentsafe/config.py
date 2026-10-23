@@ -102,35 +102,72 @@ class Settings(BaseSettings):
     # --- Task persistence (Prompt 8) ---
     # 'sqlite' only if durable writable storage is guaranteed; otherwise
     # 'memory' + GitHub-side state reconstruction after restarts.
-    # 'redis' (Upstash) for serverless deployments like Vercel — persistent across cold starts.
-    TASK_STORE: str = "sqlite"
+    # 'redis' (Upstash) for serverless deployments like Vercel — persistent
+    # across cold starts. '' (default) auto-selects: 'redis' when a Redis URL
+    # is detectable in the environment, else 'sqlite' (see resolved_task_store).
+    TASK_STORE: str = ""
     TASK_DB_PATH: str = "data/tasks.db"
-    
-    # Redis/Upstash configuration - supports multiple formats:
-    # 1. Direct REDIS_URL (redis:// or rediss:// format)
-    # 2. Vercel Upstash integration env vars (UPSTASH_REDIS_REST_URL + TOKEN)
+
+    # Redis/Upstash configuration for serverless (Vercel) deployments. The
+    # Upstash integration injects several layouts depending on version; all
+    # are detected by effective_redis_url below. Only RESP (TCP) credentials
+    # work with the redis-py client used by RedisTaskStore:
+    #   1. REDIS_URL / KV_URL / STORAGE_URL — direct redis:// or rediss:// URL
+    #   2. REDIS_HOST + REDIS_PORT + REDIS_PASSWORD — assembled, TLS enforced
+    # REST-only credentials (UPSTASH_REDIS_REST_* / KV_REST_API_*) cannot
+    # authenticate a TCP connection and are rejected with clear guidance.
     REDIS_URL: str = ""
-    UPSTASH_REDIS_REST_URL: str = ""  # Vercel Upstash integration
-    UPSTASH_REDIS_REST_TOKEN: str = ""  # Vercel Upstash integration
-    
+    KV_URL: str = ""
+    STORAGE_URL: str = ""
+    REDIS_HOST: str = ""
+    REDIS_PORT: str = ""
+    REDIS_PASSWORD: str = ""
+    UPSTASH_REDIS_REST_URL: str = ""
+    UPSTASH_REDIS_REST_TOKEN: str = ""
+    KV_REST_API_URL: str = ""
+    KV_REST_API_TOKEN: str = ""
+
     @property
     def effective_redis_url(self) -> str:
-        """Get Redis URL, auto-detecting from various formats."""
-        # Priority 1: Direct REDIS_URL
-        if self.REDIS_URL.strip():
-            return self.REDIS_URL.strip()
-        
-        # Priority 2: Vercel Upstash integration vars
-        if self.UPSTASH_REDIS_REST_URL.strip() and self.UPSTASH_REDIS_REST_TOKEN.strip():
-            rest_url = self.UPSTASH_REDIS_REST_URL.strip().rstrip("/")
-            token = self.UPSTASH_REDIS_REST_TOKEN.strip()
-            # Construct redis:// URL from REST URL + token
-            # REST URL format: https://xxx.upstash.io
-            # Convert to: rediss://default:token@xxx.upstash.io:443
-            host = rest_url.replace("https://", "").replace("http://", "")
-            return f"rediss://default:{token}@{host}:443"
-        
+        """Resolve a RESP connection URL from every known Vercel/Upstash
+        env-var layout. Assembled URLs always use ``rediss://`` (TLS) because
+        Upstash endpoints require TLS transport."""
+        # Priority 1: direct URLs (any redis:// / rediss:// form).
+        for url in (self.REDIS_URL, self.KV_URL, self.STORAGE_URL):
+            if url.strip():
+                return url.strip()
+        # Priority 2: component vars from the Upstash integration.
+        host = self.REDIS_HOST.strip()
+        if host:
+            port = self.REDIS_PORT.strip() or "6379"
+            password = self.REDIS_PASSWORD.strip()
+            creds = f"default:{password}@" if password else ""
+            return f"rediss://{creds}{host}:{port}"
+        # Priority 3: REST-only credentials are a hard error - the REST token
+        # is NOT the TCP password, so fabricating a rediss:// URL from them
+        # would fail authentication at ping time. Fail loudly with guidance.
+        rest_pairs = (
+            (self.UPSTASH_REDIS_REST_URL, self.UPSTASH_REDIS_REST_TOKEN),
+            (self.KV_REST_API_URL, self.KV_REST_API_TOKEN),
+        )
+        if any(url.strip() and token.strip() for url, token in rest_pairs):
+            raise SettingsError(
+                "Only Redis REST credentials were found (UPSTASH_REDIS_REST_* / "
+                "KV_REST_API_*). REST tokens cannot authenticate the TCP client "
+                "used by the task store. Set REDIS_URL to a redis:// or rediss:// "
+                "connection string (Vercel's Upstash integration injects it, or "
+                "copy it from the Upstash console)."
+            )
         return ""
+
+    @property
+    def resolved_task_store(self) -> str:
+        """Explicit TASK_STORE, or auto-selected backend: 'redis' (serverless-
+        safe, survives cold starts) when a Redis URL is detectable, else
+        'sqlite' for durable local state."""
+        if self.TASK_STORE:
+            return self.TASK_STORE
+        return "redis" if self.effective_redis_url else "sqlite"
 
     # --- HTTP access log (PRIVACY_POLICY.md: IP + time, 30-day retention) ---
     ACCESS_LOG_DB_PATH: str = "data/access_log.db"
@@ -186,8 +223,10 @@ class Settings(BaseSettings):
     @classmethod
     def _validate_task_store(cls, v: str) -> str:
         v = v.strip().lower()
-        if v not in {"sqlite", "memory", "redis"}:
-            raise ValueError(f"TASK_STORE must be 'sqlite', 'memory', or 'redis', got {v!r}")
+        if v not in {"", "sqlite", "memory", "redis"}:
+            raise ValueError(
+                f"TASK_STORE must be '', 'sqlite', 'memory', or 'redis', got {v!r}"
+            )
         return v
 
     def llm_providers(self) -> list[LLMProviderConfig]:

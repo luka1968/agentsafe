@@ -192,3 +192,75 @@ class TestStartupValidation:
             validate_runtime_settings(s, require_llm=False, require_github=False)
         with pytest.raises(SettingsError, match="ETHERSCAN"):
             validate_runtime_settings(s, require_llm=False, require_github=False)
+
+
+class TestRedisUrlResolution:
+    """effective_redis_url must detect every Vercel/Upstash env layout."""
+
+    def test_direct_redis_url_wins(self):
+        s = _settings(
+            REDIS_URL="rediss://default:secret@upstash.example:6379",
+            KV_URL="redis://other:6379",
+        )
+        assert s.effective_redis_url == "rediss://default:secret@upstash.example:6379"
+
+    def test_kv_url_fallback(self):
+        s = _settings(KV_URL="redis://kv.example:6379/0")
+        assert s.effective_redis_url == "redis://kv.example:6379/0"
+
+    def test_storage_url_fallback(self):
+        s = _settings(STORAGE_URL="rediss://default:p@storage.example:6379")
+        assert s.effective_redis_url == "rediss://default:p@storage.example:6379"
+
+    def test_component_vars_assembled_with_tls(self):
+        s = _settings(REDIS_HOST="smart-mammuth-12345.upstash.io", REDIS_PORT="6379", REDIS_PASSWORD="topsecret")
+        assert s.effective_redis_url == (
+            "rediss://default:topsecret@smart-mammuth-12345.upstash.io:6379"
+        )
+
+    def test_component_vars_default_port(self):
+        s = _settings(REDIS_HOST="h.example", REDIS_PASSWORD="pw")
+        assert s.effective_redis_url == "rediss://default:pw@h.example:6379"
+
+    def test_rest_only_credentials_rejected_with_guidance(self):
+        # REST tokens cannot authenticate the TCP client; must fail loudly.
+        s = _settings(
+            UPSTASH_REDIS_REST_URL="https://smart-mammuth-12345.upstash.io",
+            UPSTASH_REDIS_REST_TOKEN="AX-rest-token",
+        )
+        with pytest.raises(SettingsError, match="REDIS_URL"):
+            _ = s.effective_redis_url
+
+    def test_kv_rest_only_credentials_rejected(self):
+        s = _settings(
+            KV_REST_API_URL="https://kv.example",
+            KV_REST_API_TOKEN="kv-rest-token",
+        )
+        with pytest.raises(SettingsError, match="REDIS_URL"):
+            _ = s.effective_redis_url
+
+    def test_no_redis_config_yields_empty(self):
+        assert _settings().effective_redis_url == ""
+
+
+class TestResolvedTaskStore:
+    """Auto-selection: redis when a Redis URL exists, else sqlite."""
+
+    def test_explicit_sqlite_wins_even_with_redis(self):
+        s = _settings(TASK_STORE="sqlite", REDIS_URL="redis://h:6379")
+        assert s.resolved_task_store == "sqlite"
+
+    def test_explicit_redis_wins(self):
+        s = _settings(TASK_STORE="redis", REDIS_URL="redis://h:6379")
+        assert s.resolved_task_store == "redis"
+
+    def test_auto_redis_when_url_present(self):
+        s = _settings(REDIS_URL="rediss://default:p@h:6379")
+        assert s.resolved_task_store == "redis"
+
+    def test_auto_sqlite_when_no_redis(self):
+        assert _settings().resolved_task_store == "sqlite"
+
+    def test_invalid_explicit_store_rejected(self):
+        with pytest.raises(ValidationError, match="TASK_STORE"):
+            _settings(TASK_STORE="memcached")

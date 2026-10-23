@@ -79,10 +79,14 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
     if validate:
         validate_runtime_settings(settings)  # raises SettingsError with ALL problems
 
+    # Task store: explicit TASK_STORE wins; otherwise auto-selected from the
+    # environment - 'redis' when a Redis/Upstash URL is detectable (serverless
+    # safe, survives cold starts), else 'sqlite' for durable local state.
+    store_mode = settings.resolved_task_store
     task_store = open_task_store(
-        getattr(settings, "TASK_STORE", "sqlite"),
-        Path(getattr(settings, "TASK_DB_PATH", "data/tasks.db")),
-        redis_url=getattr(settings, "effective_redis_url", ""),  # Supports direct URL or Vercel Upstash vars
+        store_mode,
+        Path(settings.TASK_DB_PATH),
+        redis_url=settings.effective_redis_url if store_mode == "redis" else "",
         retention_days=settings.ARTIFACT_RETENTION_DAYS,
     )
 
