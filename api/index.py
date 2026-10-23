@@ -1,6 +1,11 @@
-"""Vercel Serverless Function for agentSAFE MCP server."""
+"""Vercel Serverless Function for agentSAFE MCP server (ASGI entrypoint).
 
-import os
+The Vercel Python runtime requires a top-level ASGI ``app`` variable.
+FastMCP's ``http_app()`` returns a Starlette ASGI application, which is
+exposed here directly. Configuration problems degrade to a plain-text
+500 responder instead of crashing the function.
+"""
+
 import sys
 from pathlib import Path
 
@@ -9,43 +14,34 @@ src_path = Path(__file__).resolve().parent.parent / "src"
 if str(src_path) not in sys.path:
     sys.path.insert(0, str(src_path))
 
-# Build the FastMCP server at module load time
-# (cached across requests within same instance)
-_mcp_app = None
+
+def _error_app(message: str):
+    """Minimal ASGI app that surfaces configuration errors as HTTP 500."""
+
+    async def _asgi(scope, receive, send):
+        if scope["type"] != "http":
+            return
+        body = f"agentSAFE configuration error: {message}\n".encode()
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 500,
+                "headers": [(b"content-type", b"text/plain; charset=utf-8")],
+            }
+        )
+        await send({"type": "http.response.body", "body": body})
+
+    return _asgi
 
 
-def _get_mcp_app():
-    """Lazy-initialize the MCP server app."""
-    global _mcp_app
-    if _mcp_app is not None:
-        return _mcp_app
-    
-    from agentsafe.server import build_server
-    from agentsafe.config import Settings
-    
-    settings = Settings()
-    
+def _build_app():
     try:
-        mcp = build_server(settings, validate=True)
-        _mcp_app = mcp.http_app()
-    except Exception as e:
-        # Return error response if configuration is invalid
-        from starlette.responses import PlainTextResponse
-        
-        def error_app(request):
-            return PlainTextResponse(
-                f"agentSAFE configuration error: {e}\n",
-                status_code=500
-            )
-        _mcp_app = error_app
-    
-    return _mcp_app
+        from agentsafe.config import Settings
+        from agentsafe.server import build_server
+
+        return build_server(Settings(), validate=True).http_app()
+    except Exception as exc:
+        return _error_app(str(exc))
 
 
-# Vercel expects a `handler` function with signature handler(request)
-def handler(request):
-    """Vercel Serverless entry point - delegates to FastMCP HTTP app."""
-    app = _get_mcp_app()
-    # Starlette apps implement call(request) -> response
-    return app.handle_request(request)
-
+app = _build_app()
