@@ -11,14 +11,28 @@ adaptations applied here:
 
 2. ``_ServerlessLifespanBootstrap`` - Vercel never emits ASGI ``lifespan``
    events, but FastMCP only starts its streamable-HTTP session manager
-   inside the lifespan. Without this bootstrap every ``/mcp`` request fails
+   inside the lifespan. Without a bootstrap every ``/mcp`` request fails
    with "Task group is not initialized" -> HTTP 500 (observed in
-   production). The bootstrap runs the real lifespan in a dedicated holder
-   task on the serving event loop - the uvicorn model: a lifespan task
-   separate from request tasks. Enter, suspension and exit all happen in the
-   holder task's own context, which keeps anyio task groups and fastmcp's
-   ContextVar tokens consistent. Real ASGI servers (uvicorn CLI) DO emit
-   lifespan, so the pass-through branch keeps local behavior unchanged.
+   production).
+
+   The bootstrap runs the real lifespan inside a dedicated holder task on
+   the *current* event loop - the uvicorn model (a lifespan task separate
+   from request tasks), so enter/suspend/exit happen in one task context
+   and anyio task groups plus fastmcp ContextVar tokens stay consistent.
+
+   Crucially, the holder is keyed PER EVENT LOOP: the Vercel Python runtime
+   rotates event loops across function invocations of the same warm
+   process. A holder bound to a previous loop leaves the session manager's
+   task group on a dead loop and every subsequent ``/mcp`` request fails
+   with 500 "Internal Server Error" (observed in production; landing pages
+   kept working because static routes never touch the session manager).
+   When the running loop differs from the holder's loop, the old holder is
+   abandoned (its loop is gone; the old loop's asyncgen shutdown finalizes
+   the suspended lifespan inside its own context) and a fresh holder is
+   started on the current loop.
+
+Real ASGI servers (uvicorn CLI) emit lifespan on a single loop, so the
+pass-through branch keeps local behavior unchanged.
 
 Configuration errors degrade to a plain-text 500 responder instead of
 crashing the function, mirroring the FastMCP Cloud path in DEPLOYMENT.md.
@@ -27,8 +41,6 @@ crashing the function, mirroring the FastMCP Cloud path in DEPLOYMENT.md.
 import asyncio
 import sys
 from pathlib import Path
-
-import anyio
 
 # Add src directory to path so agentsafe package imports work.
 # Vercel runs from the repo root; keep this explicit for local runs too.
@@ -65,29 +77,71 @@ def _error_app(message: str):
     return _asgi
 
 
+class _LoopLifespanState:
+    """Per-event-loop lifespan holder state.
+
+    One instance per event loop the runtime rotates through. Everything it
+    holds (the asyncio lock, the holder task, the shutdown event) is bound
+    to ``loop`` and must never be touched from another loop.
+    """
+
+    __slots__ = (
+        "loop",
+        "lock",
+        "started",
+        "failed",
+        "error",
+        "holder_task",
+        "shutdown_event",
+    )
+
+    def __init__(self, loop: asyncio.AbstractEventLoop) -> None:
+        self.loop = loop
+        self.lock = asyncio.Lock()  # created inside the running loop: bound OK
+        self.started = False
+        self.failed = False
+        self.error = ""
+        self.holder_task: asyncio.Task | None = None
+        self.shutdown_event: asyncio.Event | None = None
+
+
 class _ServerlessLifespanBootstrap:
     """Run the wrapped app's lifespan when the host never emits it.
 
-    The lifespan is entered and held by a dedicated background task on the
-    serving event loop (never exited unless :meth:`aclose` is called).
-    Entering/exiting from the SAME task keeps anyio cancel scopes and
-    fastmcp's ContextVar tokens consistent - the uvicorn model.
-
-    Idempotent and concurrency-safe: a single holder task per warm instance,
-    guarded by a lock and flags. Startup failures are captured and re-served
-    as clear 500 text instead of crashing repeatedly.
+    Concurrency-safe per loop: a single holder task per event loop, guarded
+    by that loop's lock and flags. Startup failures are captured and
+    re-served as clear 500 text instead of crashing repeatedly.
     """
 
     def __init__(self, asgi_app) -> None:
         self._app = asgi_app
-        self._started = False
-        self._failed = False
-        self._error = ""
-        self._lock = anyio.Lock()  # anyio 4.x: safe to create outside a loop
-        self._holder_task: asyncio.Task | None = None
-        self._shutdown_event: asyncio.Event | None = None
+        self._state: _LoopLifespanState | None = None
+        # Set when a real ASGI server (uvicorn) emits the lifespan itself:
+        # all further requests must skip bootstrapping entirely.
+        self._host_lifespan_seen = False
 
-    async def _hold_lifespan(self, started: asyncio.Event, shutdown: asyncio.Event) -> None:
+    # ------------------------------------------------------- holder logic
+
+    def _state_for_current_loop(self) -> _LoopLifespanState:
+        """Return the state bound to the running loop, rotating on change.
+
+        Vercel rotates event loops across invocations of the same warm
+        process. When the running loop is not the holder's loop, the old
+        holder is abandoned (its loop is dead - the session manager task
+        group dies with it, and the old loop's asyncgen shutdown finalizes
+        the suspended lifespan generator inside its own context, keeping
+        ContextVar token semantics correct) and a fresh state is created.
+        """
+        loop = asyncio.get_running_loop()
+        state = self._state
+        if state is None or state.loop is not loop:
+            self._state = _LoopLifespanState(loop)
+            state = self._state
+        return state
+
+    async def _hold_lifespan(
+        self, state: _LoopLifespanState, started: asyncio.Event, shutdown: asyncio.Event
+    ) -> None:
         """Enter the lifespan and hold it until ``shutdown`` is set.
 
         The ``yield`` suspension point of the lifespan generator, the
@@ -97,53 +151,62 @@ class _ServerlessLifespanBootstrap:
         """
         try:
             async with self._app.router.lifespan_context(self._app):
-                self._started = True
+                state.started = True
                 started.set()
                 await shutdown.wait()
         except Exception as exc:  # noqa: BLE001 - fail closed with detail
-            self._failed = True
-            self._error = str(exc)
+            state.failed = True
+            state.error = str(exc)
         finally:
             started.set()
 
-    async def _ensure_started(self) -> None:
-        if self._started or self._failed:
+    async def _ensure_started(self, state: _LoopLifespanState) -> None:
+        if state.started or state.failed:
             return
-        async with self._lock:
-            if self._started or self._failed:
+        async with state.lock:
+            if state.started or state.failed:
                 return
-            loop = asyncio.get_running_loop()
             started = asyncio.Event()
             shutdown = asyncio.Event()
-            self._shutdown_event = shutdown
-            self._holder_task = loop.create_task(self._hold_lifespan(started, shutdown))
+            state.shutdown_event = shutdown
+            state.holder_task = state.loop.create_task(
+                self._hold_lifespan(state, started, shutdown)
+            )
             await started.wait()
 
     async def aclose(self) -> None:
-        """Orderly shutdown: the holder task exits the lifespan inside its
-        own context (task groups unwind, ContextVar tokens reset correctly).
-        Idempotent; safe to call even when never started."""
-        task, self._holder_task = self._holder_task, None
+        """Orderly shutdown of the CURRENT loop's holder: the holder task
+        exits the lifespan inside its own context (task groups unwind,
+        ContextVar tokens reset correctly). Idempotent; a no-op when the
+        running loop is not the holder's loop (that holder died with its
+        loop) or never started."""
+        state = self._state
+        if state is None or state.loop is not asyncio.get_running_loop():
+            return
+        task, self._state = state.holder_task, None
         if task is None or task.done():
             return
-        if self._shutdown_event is not None:
-            self._shutdown_event.set()
+        if state.shutdown_event is not None:
+            state.shutdown_event.set()
         try:
             await task
         except Exception:  # noqa: BLE001 - shutdown must never raise upstream
             pass
 
+    # -------------------------------------------------------- ASGI entry
+
     async def __call__(self, scope, receive, send):
         if scope["type"] == "lifespan":
             # Real ASGI server (local uvicorn): let Starlette run its own
             # lifespan, then never bootstrap on top of it.
+            self._host_lifespan_seen = True
             await self._app(scope, receive, send)
-            self._started = True
             return
-        if scope["type"] == "http":
-            await self._ensure_started()
-            if self._failed:
-                await _send_text_error(send, self._error)
+        if scope["type"] == "http" and not self._host_lifespan_seen:
+            state = self._state_for_current_loop()
+            await self._ensure_started(state)
+            if state.failed:
+                await _send_text_error(send, state.error)
                 return
         await self._app(scope, receive, send)
 

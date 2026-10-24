@@ -12,6 +12,8 @@ operator's real .env (PAYMENTS_ENABLED=true, live keys) can never leak in.
 
 from __future__ import annotations
 
+import asyncio
+import concurrent.futures
 import importlib.util
 import json
 import sys
@@ -174,3 +176,69 @@ class TestServerlessEntrypoint:
                 _http_scope("POST", "/mcp", _INIT_REQUEST),
                 _INIT_REQUEST,
             )
+
+
+def _invoke_on_fresh_loop(app, scope: dict, body: bytes = b"") -> list[dict]:
+    """Run one ASGI call on its OWN event loop in its OWN thread - exactly how
+    a serverless runtime invokes a warm process between requests - then tear
+    that loop down (holder cancelled inside its own context, asyncgens
+    finalized, loop closed)."""
+    def _worker():
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            return loop.run_until_complete(_call_asgi(app, scope, body))
+        finally:
+            state = getattr(app, "_state", None)
+            task = getattr(state, "holder_task", None) if state is not None else None
+            if task is not None and not task.done():
+                task.cancel()
+                try:
+                    loop.run_until_complete(task)
+                except BaseException:  # noqa: BLE001 - CancelledError expected
+                    pass
+            loop.run_until_complete(loop.shutdown_asyncgens())
+            loop.close()
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+        return ex.submit(_worker).result(timeout=60)
+
+
+class TestEventLoopRotation:
+    """THE production regression (observed on Vercel): the Python runtime
+    rotates event loops across invocations of the same warm process. A
+    holder bound to a previous loop leaves the session manager's task group
+    on a dead loop; /mcp then 500s with 'Internal Server Error' while landing
+    pages keep working (static routes never touch the session manager).
+    The bootstrap must rebuild the lifespan holder on the new loop."""
+
+    async def test_mcp_survives_event_loop_rotation(self, entry_module):
+        # Invocation 1 (loop A): landing page triggers the cold-start bootstrap.
+        landing = _invoke_on_fresh_loop(
+            entry_module.app, _http_scope("GET", "/")
+        )
+        assert landing[0]["status"] == 200
+
+        # Invocation 2 (loop B): /mcp initialize on a DIFFERENT loop must be
+        # rebuilt and served - not routed to loop A's dead session manager.
+        messages = _invoke_on_fresh_loop(
+            entry_module.app,
+            _http_scope("POST", "/mcp", _INIT_REQUEST),
+            _INIT_REQUEST,
+        )
+        assert messages[0]["status"] == 200, f"messages={messages!r}"
+        body = b"".join(
+            m.get("body", b"") for m in messages if m["type"] == "http.response.body"
+        )
+        payload = json.loads(body)
+        assert payload["result"]["serverInfo"]["name"] == "agentSAFE"
+
+    async def test_rotation_repeats_across_many_loops(self, entry_module):
+        # Warm instance serving N invocations, each on a fresh loop.
+        for i in range(3):
+            messages = _invoke_on_fresh_loop(
+                entry_module.app,
+                _http_scope("POST", "/mcp", _INIT_REQUEST),
+                _INIT_REQUEST,
+            )
+            assert messages[0]["status"] == 200, f"invocation {i}: {messages!r}"
