@@ -267,6 +267,19 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
             )
         return JSONResponse(spec)
 
+    @app.custom_route("/.well-known/openapi.json", methods=["GET"])
+    async def _openapi_wellknown(request: Request) -> Response:
+        """Alias used by x402scan & discovery crawlers that probe the well-known
+        path instead of the root OpenAPI file."""
+        try:
+            spec = json.loads(_OPENAPI_FILE.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            logger.error("openapi.json unavailable at %s: %s", _OPENAPI_FILE, exc)
+            return PlainTextResponse(
+                "openapi discovery document unavailable", status_code=500
+            )
+        return JSONResponse(spec)
+
     @app.custom_route(REST_AUDIT_PATH, methods=["POST"])
     async def _api_audit(request: Request) -> Response:
         """x402-gated REST audit dispatch (documented in openapi.json).
