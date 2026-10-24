@@ -3,6 +3,11 @@
   "info": {
     "title": "agentSAFE - x402 Smart Contract Audit API",
     "version": "1.0.0",
+    "contact": {
+      "name": "agentSAFE",
+      "email": "arinoach@gmail.com",
+      "url": "https://github.com/luka1968/agentsafe"
+    },
     "description": "AI-assisted EVM smart-contract risk screening (Ethereum Mainnet), payable with x402 micro-payments in USDC on Base. This REST endpoint mirrors the audit dispatch of the agentSAFE MCP server (https://github.com/luka1968/agentsafe). Payment is enforced by the x402 protocol (scheme 'exact', x402Version 2): an unpaid request receives HTTP 402 with a base64-encoded 'PAYMENT-REQUIRED' header describing the exact on-chain payment terms. IMPORTANT: AI-assisted risk screening, NOT a formal security audit; findings require human verification before any action. Refund policy: https://agentsafe-three.vercel.app/refund"
   },
   "servers": [

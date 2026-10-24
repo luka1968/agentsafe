@@ -99,12 +99,35 @@ class TestOpenApiDiscovery:
         assert "3.00" in op["description"]
         # the 402 response is documented
         assert "402" in op["responses"]
+        # x402scan discovery requirements: paid classification inputs
+        assert op["security"] == [{"x402": []}]  # non-empty -> not "unprotected"
+        assert op["x-payment-info"] == {
+            "price": "3.00",
+            "currency": "USD",
+            "protocols": ["x402"],
+        }
+        assert spec["components"]["securitySchemes"]["x402"]["type"] == "http"
+        # ownership / contact surfacing for the x402scan listing
+        contact = spec["info"]["contact"]
+        assert "@" in contact["email"]
 
     async def test_openapi_file_is_valid_json_on_disk(self):
         from agentsafe.server import _OPENAPI_FILE
 
         spec = json.loads(_OPENAPI_FILE.read_text(encoding="utf-8"))
         assert spec["info"]["title"].startswith("agentSAFE")
+        assert spec["info"]["contact"]["email"]
+
+    @pytest.mark.respx
+    async def test_favicon_served_at_api_root(self, respx_mock):
+        """x402scan surfaces /favicon.ico in listings; it must exist."""
+        server = build_server(_settings(PAYMENTS_ENABLED=False))
+        async with _http_client(server) as client:
+            resp = await client.get("/favicon.ico")
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("image/x-icon")
+        # ICO magic: reserved 0 + type 1
+        assert resp.content[:4] == b"\x00\x00\x01\x00"
 
 
 class TestRestAuditFlow:

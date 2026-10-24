@@ -75,6 +75,7 @@ REST_AUDIT_PATH = "/api/audit"
 # flat REST fee from undercutting the higher MCP tiers.
 REST_AUDIT_MAX_LINES = 500
 _OPENAPI_FILE = Path(__file__).resolve().parents[2] / "openapi.json"
+_FAVICON_FILE = Path(__file__).resolve().parents[2] / "favicon.ico"
 
 mcp: FastMCP | None = None
 
@@ -279,6 +280,20 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
                 "openapi discovery document unavailable", status_code=500
             )
         return JSONResponse(spec)
+
+    @app.custom_route("/favicon.ico", methods=["GET"])
+    async def _favicon(request: Request) -> Response:
+        """API-root icon surfaced by x402scan listings and browser tabs."""
+        try:
+            data = _FAVICON_FILE.read_bytes()
+        except OSError as exc:
+            logger.error("favicon.ico unavailable at %s: %s", _FAVICON_FILE, exc)
+            return PlainTextResponse("favicon unavailable", status_code=404)
+        return Response(
+            content=data,
+            media_type="image/x-icon",
+            headers={"cache-control": "public, max-age=86400"},
+        )
 
     @app.custom_route(REST_AUDIT_PATH, methods=["POST"])
     async def _api_audit(request: Request) -> Response:
