@@ -76,6 +76,7 @@ REST_AUDIT_PATH = "/api/audit"
 REST_AUDIT_MAX_LINES = 500
 _OPENAPI_FILE = Path(__file__).resolve().parents[2] / "openapi.json"
 _FAVICON_FILE = Path(__file__).resolve().parents[2] / "favicon.ico"
+_LOGO_FILE = Path(__file__).resolve().parents[2] / "logo.png"
 
 mcp: FastMCP | None = None
 
@@ -280,6 +281,21 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
                 "openapi discovery document unavailable", status_code=500
             )
         return JSONResponse(spec)
+
+    @app.custom_route("/logo.png", methods=["GET"])
+    async def _logo(request: Request) -> Response:
+        """512x512 brand logotype for directory listings (x402scan
+        'Logotype URL' field and similar) that prefer PNG over ICO."""
+        try:
+            data = _LOGO_FILE.read_bytes()
+        except OSError as exc:
+            logger.error("logo.png unavailable at %s: %s", _LOGO_FILE, exc)
+            return PlainTextResponse("logo unavailable", status_code=404)
+        return Response(
+            content=data,
+            media_type="image/png",
+            headers={"cache-control": "public, max-age=3600"},
+        )
 
     @app.custom_route("/favicon.ico", methods=["GET"])
     async def _favicon(request: Request) -> Response:

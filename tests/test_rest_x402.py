@@ -129,6 +129,18 @@ class TestOpenApiDiscovery:
         # ICO magic: reserved 0 + type 1
         assert resp.content[:4] == b"\x00\x00\x01\x00"
 
+    @pytest.mark.respx
+    async def test_logo_png_served_for_logotype_fields(self, respx_mock):
+        """Directory listings' 'Logotype URL' fields prefer a square PNG."""
+        server = build_server(_settings(PAYMENTS_ENABLED=False))
+        async with _http_client(server) as client:
+            resp = await client.get("/logo.png")
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("image/png")
+        # PNG magic + dimensions via header bytes (IHDR width/height BE u32)
+        assert resp.content[:8] == b"\x89PNG\r\n\x1a\n"
+        assert resp.content[16:24] == (512).to_bytes(4, "big") * 2
+
 
 class TestRestAuditFlow:
     @respx.mock
