@@ -1,8 +1,8 @@
 ---
 name: agentsafe-audit
 description: AI-powered smart contract security audit with x402 payment.
-endpoint: https://x402.workfern.com/
-transport: sse
+endpoint: https://x402.workfern.com/mcp
+transport: streamable-http
 ---
 
 # Agentsafe Audit Skill
