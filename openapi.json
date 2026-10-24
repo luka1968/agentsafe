@@ -115,14 +115,22 @@
           {
             "x402": []
           }
-        ]
+        ],
+        "x-payment-info": {
+          "price": "3.00",
+          "currency": "USD",
+          "protocols": [
+            "x402"
+          ]
+        }
       }
     }
   },
   "components": {
     "securitySchemes": {
       "x402": {
-        "type": "apiKey",
+        "type": "http",
+        "scheme": "x402",
         "in": "header",
         "name": "PAYMENT-SIGNATURE",
         "description": "x402 v2 payment: the request carries a base64-encoded signed payment payload in the PAYMENT-SIGNATURE header (scheme 'exact', x402Version 2, USDC on eip155:8453 Base Mainnet). Unpaid requests receive HTTP 402 with the machine-readable terms in the PAYMENT-REQUIRED response header. This is the x402 micro-payment paywall - the endpoint is NOT free."
