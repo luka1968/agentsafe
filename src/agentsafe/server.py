@@ -292,7 +292,9 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
         return Response(
             content=data,
             media_type="image/x-icon",
-            headers={"cache-control": "public, max-age=86400"},
+            # Short TTL: lets icon updates propagate within an hour across
+            # browser + CDN caches (x402scan hotlinks this URL directly).
+            headers={"cache-control": "public, max-age=3600"},
         )
 
     @app.custom_route(REST_AUDIT_PATH, methods=["POST"])
