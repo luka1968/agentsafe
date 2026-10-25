@@ -35,6 +35,13 @@ _SEVERITY_ORDER = {
     Severity.LOW: 3,
     Severity.INFO: 4,
 }
+_STATUS_ORDER = {
+    FindingStatus.CONFIRMED: 0,
+    FindingStatus.POTENTIAL: 1,
+    FindingStatus.NEEDS_MANUAL_REVIEW: 2,
+    FindingStatus.INFORMATIONAL: 3,
+    FindingStatus.REJECTED: 4,
+}
 _EVIDENCE_SIMILARITY = 0.60
 _LINE_TOLERANCE = 5
 
@@ -51,20 +58,19 @@ def _loc(f: Finding) -> tuple[str | None, int | None]:
     return ((f.file_path or "").lower() or None), f.line_start
 
 
-def merge_findings(findings: Sequence[Finding]) -> list[Finding]:
-    """Deterministic, testable merge. Tool findings dominate; LLM findings
-    either merge into them (adding source + evidence) or survive standalone."""
-    tool = [f for f in findings if f.status == FindingStatus.TOOL_DETECTED]
-    llm = [f for f in findings if f.status == FindingStatus.LLM_SUGGESTED]
-    other = [
-        f
-        for f in findings
-        if f.status in (FindingStatus.CROSS_CHECKED, FindingStatus.MANUAL_REVIEW)
-    ]
+def merge_findings(
+    tool_findings: Sequence[Finding], llm_findings: Sequence[Finding]
+) -> list[Finding]:
+    """Deterministic, testable merge of VALIDATED findings.
 
+    Inputs are expected to already carry final states (confirmed/potential/
+    informational/rejected/needs_manual_review) from the ValidationAgent.
+    Tool findings merge by detector key; LLM findings either merge into
+    overlapping tool findings (upgrading the host to confirmed when the LLM
+    hypothesis was corroborated) or survive standalone."""
     # 1) detector merge among tool findings
     merged_tool: dict[tuple, Finding] = {}
-    for f in tool:
+    for f in tool_findings:
         key = f.merge_key()
         if key in merged_tool:
             merged_tool[key] = _absorb(merged_tool[key], f)
@@ -75,24 +81,34 @@ def merge_findings(findings: Sequence[Finding]) -> list[Finding]:
 
     # 2) LLM findings: attach to overlapping tool findings, or keep standalone
     standalone: list[Finding] = []
-    for f in llm:
+    for f in llm_findings:
         host = _find_host(f, tool_list)
         if host is not None:
             _absorb_into(host, f, cross=True)
         else:
             standalone.append(f)
 
-    # 3) LLM-vs-LLM duplicates by normalized title+location
+    # 3) LLM-vs-LLM duplicates by normalized title+location (highest-ranked
+    #    status survives as primary)
     deduped: dict[tuple, Finding] = {}
     for f in standalone:
         llm_key = ("llm", *_loc(f), _norm(f.title)[:120])
         if llm_key in deduped:
-            deduped[llm_key] = _absorb(deduped[llm_key], f)
+            pair = sorted((deduped[llm_key], f), key=lambda x: _STATUS_ORDER.get(x.status, 99))
+            deduped[llm_key] = _absorb(pair[0], pair[1])
         else:
             deduped[llm_key] = f
 
-    out = tool_list + list(deduped.values()) + list(other)
-    out.sort(key=lambda f: (_SEVERITY_ORDER[f.severity], f.status.value, f.title))
+    out = tool_list + list(deduped.values())
+    # presentation order: confirmed issues first, hypotheses next, guidance,
+    # and REJECTED findings always last (audit trail, not headline risk)
+    out.sort(
+        key=lambda f: (
+            _STATUS_ORDER.get(f.status, 99),
+            _SEVERITY_ORDER[f.severity],
+            f.title,
+        )
+    )
     return out
 
 
@@ -120,6 +136,17 @@ def _absorb_into(host: Finding, dup: Finding, *, cross: bool = False) -> None:
         host.evidence = (host.evidence + "\n--- additional evidence ---\n" + dup.evidence)[:4000]
     if dup.confidence is not None:
         host.confidence = max(host.confidence or 0.0, dup.confidence)
+    if dup.status is FindingStatus.REJECTED:
+        return  # a rejected hypothesis never raises severity nor upgrades state
+    if cross and dup.status is FindingStatus.CONFIRMED:
+        # independent corroboration: the tool-detected host is now confirmed
+        host.status = FindingStatus.CONFIRMED
+        host.metadata.setdefault("validation", {})
+        host.metadata["validation"]["rule"] = "cr0_llm_corroboration"
+        host.metadata["validation"]["reason"] = (
+            "an independent LLM agent reported the same issue at the same "
+            "location with its own evidence"
+        )
     if (
         cross
         and dup.severity in _SEVERITY_ORDER
@@ -153,8 +180,11 @@ def summarize(
     by_sev: dict[str, int] = {}
     by_status: dict[str, int] = {}
     for f in findings:
-        by_sev[f.severity.value] = by_sev.get(f.severity.value, 0) + 1
         by_status[f.status.value] = by_status.get(f.status.value, 0) + 1
+        # rejected findings are kept for auditability but excluded from the
+        # severity headline: they are contradicted claims, not risks.
+        if f.status is not FindingStatus.REJECTED:
+            by_sev[f.severity.value] = by_sev.get(f.severity.value, 0) + 1
     return ReportSummary(
         total_findings=len(findings),
         by_severity=by_sev,
@@ -169,7 +199,8 @@ def build_report(
     address: str,
     task_id: str | None,
     is_verified_source: bool,
-    raw_findings: Sequence[Finding],
+    tool_findings: Sequence[Finding],
+    llm_findings: Sequence[Finding],
     tools_executed: Sequence[str],
     tools_failed: Sequence[str],
     tool_versions: dict[str, str],
@@ -178,7 +209,7 @@ def build_report(
     errors: Sequence[str],
     execution_time_seconds: float,
 ) -> AuditReport:
-    findings = merge_findings(raw_findings)
+    findings = merge_findings(tool_findings, llm_findings)
     return AuditReport(
         address=address,
         chain=CHAIN_ID,

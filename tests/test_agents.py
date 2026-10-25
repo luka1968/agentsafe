@@ -17,7 +17,7 @@ from agentsafe.agents.fund_flow import FundFlowAgent
 from agentsafe.agents.validation import ValidationAgent
 from agentsafe.config import LLMProviderConfig
 from agentsafe.llm.router import LLMRouter
-from agentsafe.schemas import Finding, FindingStatus
+from agentsafe.schemas import Finding, FindingStatus, Severity
 
 PROV = LLMProviderConfig(
     name="prov", base_url="https://llm.test/v1", api_key="sk-x", model="m", rpm_limit=60
@@ -255,40 +255,133 @@ class TestValidationAgent:
         base.update(kw)
         return Finding(**base)
 
-    def test_supported_finding_becomes_cross_checked(self):
+    # ------------------------------------------------- LLM decision chain
+
+    def test_supported_finding_becomes_confirmed(self):
         v = ValidationAgent()
         out = v.validate([self._llm_finding()], [self._tool_finding()])
-        assert out.cross_checked == 1
+        assert out.confirmed == 1
         f = out.findings[0]
-        assert f.status is FindingStatus.CROSS_CHECKED
+        assert f.status is FindingStatus.CONFIRMED
+        assert f.metadata["validation"]["rule"] == "cr0_independent_support"
         assert f.metadata["validation"]["supporting_source"] == ["slither"]
+        assert f.metadata["validation"]["supporting_detector"] == "missing-access-control"
 
-    def test_unsupported_finding_becomes_manual_review(self):
+    def test_unsupported_finding_becomes_potential(self):
         v = ValidationAgent()
         out = v.validate([self._llm_finding()], [])
-        assert out.manual_review == 1
-        assert out.findings[0].status is FindingStatus.MANUAL_REVIEW
+        assert out.potential == 1
+        f = out.findings[0]
+        assert f.status is FindingStatus.POTENTIAL
+        assert f.metadata["validation"]["rule"] == "pt0_default"
+
+    def test_missing_evidence_is_rejected(self):
+        v = ValidationAgent()
+        out = v.validate([self._llm_finding(evidence="")], [])
+        assert out.rejected == 1
+        f = out.findings[0]
+        assert f.status is FindingStatus.REJECTED
+        assert f.metadata["validation"]["rule"] == "e0_missing_evidence"
+
+    def test_missing_line_number_needs_manual_review(self):
+        v = ValidationAgent()
+        out = v.validate([self._llm_finding(line_start=None)], [])
+        assert out.needs_manual_review == 1
+        assert out.findings[0].metadata["validation"]["rule"] == "l0_missing_line_number"
+
+    def test_untraceable_evidence_needs_manual_review(self):
+        v = ValidationAgent()
+        llm = self._llm_finding(evidence="totally fabricated code that never existed")
+        segments = {"Vault.sol": "contract Vault { function drain() external { } }"}
+        out = v.validate([llm], [], segments)
+        assert out.needs_manual_review == 1
+        assert out.findings[0].metadata["validation"]["rule"] == "e0_evidence_not_in_code"
+
+    def test_traceable_evidence_survives_against_real_source(self):
+        v = ValidationAgent()
+        segments = {"Vault.sol": "contract Vault { function drain() external { } }"}
+        out = v.validate([self._llm_finding()], [], segments)
+        assert out.potential == 1  # complete evidence, nothing refutes it
 
     def test_evidence_similarity_support(self):
         v = ValidationAgent()
         llm = self._llm_finding(
-            file_path=None,
-            line_start=None,
+            file_path="Other.sol",
+            line_start=1,
             evidence="drain() has no access control",
             title="no access control on drain",
         )
-        tool = self._tool_finding(file_path="Other.sol", line_start=1)
+        tool = self._tool_finding(file_path="Vault.sol", line_start=42)
         out = v.validate([llm], [tool])
-        assert out.cross_checked == 1
+        assert out.confirmed == 1
 
-    def test_never_upgrades_to_confirmed(self):
+    def test_state_change_records_original_claim(self):
+        v = ValidationAgent()
+        out = v.validate([self._llm_finding(evidence="")], [])
+        meta = out.findings[0].metadata["validation"]
+        assert meta["original_status"] == "llm_suggested"
+        assert meta["original_severity"] == "high"
+
+    def test_final_states_only_never_entry_states(self):
         v = ValidationAgent()
         out = v.validate([self._llm_finding()], [self._tool_finding()])
         statuses = {f.status for f in out.findings}
-        assert statuses <= {FindingStatus.CROSS_CHECKED, FindingStatus.MANUAL_REVIEW}
+        assert statuses <= {
+            FindingStatus.CONFIRMED,
+            FindingStatus.POTENTIAL,
+            FindingStatus.INFORMATIONAL,
+            FindingStatus.REJECTED,
+            FindingStatus.NEEDS_MANUAL_REVIEW,
+        }
+
+    def test_detail_counts_all_five_states(self):
+        v = ValidationAgent()
+        out = v.validate(
+            [
+                self._llm_finding(),                      # confirmed
+                self._llm_finding(evidence=""),            # rejected
+                self._llm_finding(line_start=None),        # needs manual review
+            ],
+            [self._tool_finding()],
+        )
+        assert out.detail() == (
+            "confirmed=1 potential=0 informational=0 rejected=1 "
+            "needs_manual_review=1"
+        )
 
     def test_non_llm_findings_pass_through(self):
         v = ValidationAgent()
         tool = self._tool_finding()
         out = v.validate([tool], [])
         assert out.findings[0] is tool
+
+    # ------------------------------------------------- tool decision chain
+
+    def test_tool_finding_corroborated_by_llm_becomes_confirmed(self):
+        v = ValidationAgent()
+        llm_out = v.validate([self._llm_finding()], [self._tool_finding()])
+        tool_out = v.validate_tools([self._tool_finding()], llm_out.findings)
+        assert tool_out.confirmed == 1
+        assert tool_out.findings[0].metadata["validation"]["rule"] == "cr0_llm_corroboration"
+
+    def test_tool_info_finding_is_informational(self):
+        v = ValidationAgent()
+        tool = self._tool_finding(severity="info")
+        out = v.validate_tools([tool], [])
+        assert out.informational == 1
+        assert out.findings[0].metadata["validation"]["rule"] == "if0_info_grade"
+
+    def test_tool_finding_without_support_is_potential(self):
+        v = ValidationAgent()
+        out = v.validate_tools([self._tool_finding(file_path="X.sol", line_start=7)], [])
+        assert out.potential == 1
+        assert out.findings[0].metadata["validation"]["rule"] == "pt0_default_tool"
+
+    def test_tool_finding_severity_never_upgraded(self):
+        v = ValidationAgent()
+        llm_out = v.validate(
+            [self._llm_finding(severity="low", title="minor note on drain")],
+            [self._tool_finding()],
+        )
+        tool_out = v.validate_tools([self._tool_finding()], llm_out.findings)
+        assert tool_out.findings[0].severity is Severity.HIGH

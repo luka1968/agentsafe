@@ -299,19 +299,27 @@ class AuditOrchestrator:
                 if byte_result is not None:
                     tool_findings.extend(byte_result.findings)
                 llm_findings = [f for f in findings if f.status == FindingStatus.LLM_SUGGESTED]
-                if llm_findings:
-                    outcome = self._validation.validate(llm_findings, tool_findings)
+                validation_segments = segments or None
+                if llm_findings or tool_findings:
+                    llm_out = self._validation.validate(
+                        llm_findings,
+                        tool_findings,
+                        validation_segments,
+                        pseudo,
+                    )
+                    tool_out = self._validation.validate_tools(
+                        tool_findings, llm_out.findings, validation_segments, pseudo
+                    )
                     validated = {
-                        id(f): nf for f, nf in zip(llm_findings, outcome.findings, strict=True)
+                        id(f): nf
+                        for f, nf in zip(llm_findings, llm_out.findings, strict=True)
                     }
                     findings = [validated.get(id(f), f) for f in findings]
-                    done(
-                        "cross_validation",
-                        detail=f"cross_checked={outcome.cross_checked} "
-                        f"manual_review={outcome.manual_review}",
-                    )
+                    tool_final = list(tool_out.findings)
+                    done("cross_validation", detail=llm_out.detail())
                 else:
-                    skip("cross_validation", "no LLM findings to validate")
+                    tool_final = list(tool_findings)
+                    skip("cross_validation", "no findings to validate")
 
                 # -- 8. merge + report -------------------------------------------
                 start("merge_report")
@@ -324,7 +332,8 @@ class AuditOrchestrator:
                     address=addr,
                     task_id=task_id,
                     is_verified_source=is_verified,
-                    raw_findings=[*tool_findings, *findings],
+                    tool_findings=tool_final,
+                    llm_findings=findings,
                     tools_executed=tools_executed,
                     tools_failed=tools_failed,
                     tool_versions=tool_versions,

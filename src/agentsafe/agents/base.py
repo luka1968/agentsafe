@@ -41,6 +41,7 @@ class LLMFindingPayload(BaseModel):
     recommendation: str = ""
     file_path: str | None = None
     line_start: int | None = Field(default=None, ge=1)
+    line_end: int | None = Field(default=None, ge=1)
     confidence: float | None = Field(default=None, ge=0.0, le=1.0)
 
     @field_validator("severity")
@@ -49,6 +50,14 @@ class LLMFindingPayload(BaseModel):
         v = v.strip().lower()
         if v not in {"critical", "high", "medium", "low", "info"}:
             raise ValueError(f"invalid severity: {v!r}")
+        return v
+
+    @field_validator("line_end")
+    @classmethod
+    def _line_range(cls, v: int | None, info) -> int | None:
+        start = info.data.get("line_start")
+        if v is not None and start is not None and v < start:
+            raise ValueError("line_end must be >= line_start")
         return v
 
 
@@ -195,6 +204,7 @@ object described in your instructions."""
             recommendation=p.recommendation,
             file_path=p.file_path or (label.split("#part")[0] or None),
             line_start=p.line_start,
+            line_end=p.line_end,
             confidence=p.confidence,
             metadata={
                 "agent": self.name,

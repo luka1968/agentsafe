@@ -26,22 +26,47 @@ OUTPUT FORMAT - STRICT JSON, NO MARKDOWN, NO COMMENTARY:
       "title": "short issue title (max 200 chars)",
       "severity": "critical" | "high" | "medium" | "low" | "info",
       "description": "what the issue is and why it matters",
-      "evidence": "exact quoted code fragment or bytecode offset that shows the issue",
+      "evidence": "EXACT code fragment copied character-for-character from the provided code",
       "recommendation": "concrete fix",
       "file_path": "file path if known, else null",
-      "line_start": integer line number if known, else null,
+      "line_start": integer line number in the provided file (MANDATORY),
+      "line_end": integer ending line number if the issue spans lines, else null,
       "confidence": number between 0.0 and 1.0
     }
   ]
 }
 Rules:
-- Every finding MUST include a concrete evidence quote from the provided code.
+- EVIDENCE: every finding MUST include a concrete code fragment COPIED
+  EXACTLY (character-for-character) from the provided code. Do NOT
+  paraphrase, do NOT quote from memory, do NOT invent code.
+- LINE NUMBERS: line_start is MANDATORY. It must be the line number inside
+  the provided file where the evidence fragment appears. You may use null
+  ONLY for decompiled pseudo-source when the line number is genuinely
+  unknown.
 - If you cannot find issues, return {"findings": []}. Do NOT invent findings.
 - Severity guidance: critical = direct loss of funds/total takeover;
   high = likely exploitable privilege or fund issue; medium = conditional
   exploit or logic hazard; low = hygiene issue; info = informational.
-- Your findings are HYPOTHESES that a downstream validator will verify.
-  Never describe them as proven or confirmed."""
+- Severity calibration - your severity claims will be machine-checked and
+  unsupported claims are DOWNGRADED, so calibrate honestly:
+  * REENTRANCY: before reporting reentrancy, verify the ordering in the
+    code: if the state update (e.g. balance deduction) happens BEFORE the
+    external call, the function follows Checks-Effects-Interactions and a
+    reentrancy claim about that ordering is FALSE. Only report reentrancy
+    when an external call happens BEFORE the state it corrupts.
+  * INTEGER OVERFLOW/UNDERFLOW: reporting overflow requires a CONCRETE
+    attack path: attacker-controlled input, the reachable arithmetic
+    operation, and the resulting loss or impact. "Solidity 0.4.x has no
+    automatic overflow checks" alone is at most informational. Never
+    report theoretical overflow as critical or high.
+  * ERC-20 STANDARD BEHAVIOR: transfer() delegating to
+    transferFrom(msg.sender, ...) is the canonical pattern (WETH and many
+    audited tokens), not a vulnerability by itself. The ERC-20
+    approve/transferFrom allowance race (SWC-114) is standard known
+    behavior: report it as informational guidance unless the code shows a
+    specific exploitable deviation.
+- Your findings are HYPOTHESES that a downstream validator will verify
+  against the source code. Never describe them as proven or confirmed."""
 
 
 def system_prompt(focus: str) -> str:
@@ -87,11 +112,14 @@ Report ONLY issues you can ground in quoted code evidence."""
 VALIDATION_FOCUS = """\
 You verify hypotheses produced by other analyst agents against concrete
 evidence. For each candidate finding you receive:
-- Confirm it has a concrete code/bytecode evidence quote.
+- Confirm it has a concrete code/bytecode evidence quote and a line number.
 - Check whether the quoted code actually supports the claim.
-- You may ONLY mark a finding as cross_checked when the evidence independently
-  supports it, or manual_review when it needs human confirmation.
-- You may NEVER mark anything as proven, confirmed, or "safe"."""
+- You may ONLY mark a finding as confirmed when independent evidence
+  supports it, potential when it is credible but unverified, informational
+  when it reflects standard or theoretical behavior, rejected when the
+  code contradicts it, or needs_manual_review when evidence is incomplete.
+- You may NEVER mark anything as proven, safe, or claim a contract is
+  bug-free."""
 
 DEEP_DIVE_SUFFIX = """\
 The code shows indicators relevant to your focus area. Perform a deep

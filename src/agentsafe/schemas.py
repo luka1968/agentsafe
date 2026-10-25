@@ -35,19 +35,49 @@ class Severity(StrEnum):
 
 
 class FindingStatus(StrEnum):
-    """Verification status of a finding.
+    """Finding lifecycle states (strict state machine).
 
+    Internal entry states (never present in a final report):
     - tool_detected: a deterministic tool reported it (not yet proven exploitable)
-    - llm_suggested: LLM hypothesis requiring evidence
-    - cross_checked: independent, traceable supporting evidence attached
-    - manual_review: needs human confirmation
-    None of these states may be used to claim "the contract is safe".
+    - llm_suggested: LLM hypothesis entering validation
+
+    Final states (the only ones a customer-facing report may contain):
+    - confirmed: independently corroborated (tool + LLM agreement at the
+      same location, or deterministic corroboration). Corroboration means
+      "independently supported by evidence", never "proven exploitable".
+    - potential: complete evidence, neither confirmed nor refuted. Credible
+      hypothesis requiring human judgment.
+    - informational: validated as standard/theoretical/informational-grade
+      (e.g. standard ERC-20 semantics, purely theoretical arithmetic issue).
+    - rejected: contradicted by deterministic source analysis or missing
+      required evidence. Kept in reports for auditability, excluded from
+      severity headlines.
+    - needs_manual_review: validation inconclusive (missing location,
+      untraceable evidence). Human input required.
+
+    None of these states may ever be used to claim "the contract is safe".
     """
 
     TOOL_DETECTED = "tool_detected"
     LLM_SUGGESTED = "llm_suggested"
-    CROSS_CHECKED = "cross_checked"
-    MANUAL_REVIEW = "manual_review"
+    CONFIRMED = "confirmed"
+    POTENTIAL = "potential"
+    INFORMATIONAL = "informational"
+    REJECTED = "rejected"
+    NEEDS_MANUAL_REVIEW = "needs_manual_review"
+
+    @classmethod
+    def final_states(cls) -> frozenset["FindingStatus"]:
+        """States valid in a customer-facing report."""
+        return frozenset(
+            {
+                cls.CONFIRMED,
+                cls.POTENTIAL,
+                cls.INFORMATIONAL,
+                cls.REJECTED,
+                cls.NEEDS_MANUAL_REVIEW,
+            }
+        )
 
 
 class TaskState(StrEnum):
@@ -97,10 +127,23 @@ class Finding(BaseModel):
     @classmethod
     def _validate_evidence(cls, v: str, info) -> str:
         status = info.data.get("status")
-        if status != FindingStatus.MANUAL_REVIEW and not v.strip():
+        # Entry states may arrive without evidence text (tools), rejected
+        # findings may be rejected precisely for lacking evidence, and
+        # needs_manual_review may be incomplete - that is its purpose. Every
+        # state presented as actionable (confirmed/potential/informational)
+        # MUST carry evidence: findings without evidence must never be
+        # presented as actionable.
+        exempt = {
+            FindingStatus.TOOL_DETECTED,
+            FindingStatus.LLM_SUGGESTED,
+            FindingStatus.REJECTED,
+            FindingStatus.NEEDS_MANUAL_REVIEW,
+        }
+        if status not in exempt and not v.strip():
             raise ValueError(
-                "evidence is required unless status is manual_review; "
-                "findings without evidence must never be presented as confirmed"
+                "evidence is required for actionable statuses "
+                "(confirmed/potential/informational); findings without "
+                "evidence must never be presented as actionable"
             )
         return v
 

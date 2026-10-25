@@ -26,11 +26,37 @@ ETH = "https://api.etherscan.test/v2/api"
 
 CODE = "0x6080604052" + "ff" * 300
 
+# Deliberately reentrancy-VULNERABLE vault: the external call precedes the
+# state update, so the CEI rule must NOT reject reentrancy claims here and
+# the slither + LLM double signal at the same spot must end up confirmed.
+V_SOURCE = "\n".join(
+    [
+        "pragma solidity ^0.8.0;",
+        "",
+        "contract Vault {",
+        "    mapping(address => uint256) private balances;",
+        "",
+        "    constructor() payable {}",
+        "",
+        "    function deposit() external payable {",
+        "        balances[msg.sender] += msg.value;",
+        "    }",
+        "",
+        "    function withdraw(uint256 amount) external {",
+        '        require(balances[msg.sender] >= amount, "insufficient");',
+        '        (bool ok, ) = msg.sender.call{value: amount}("");',
+        '        require(ok, "transfer failed");',
+        "        balances[msg.sender] -= amount;",
+        "    }",
+        "}",
+    ]
+)
+
 BUNDLE = SourceBundle(
     is_verified=True,
     contract_name="Vault",
     compiler_version="v0.8.19+commit.7dd6d404",
-    files=[SourceFile(path="V.sol", content="contract Vault {}")],
+    files=[SourceFile(path="V.sol", content=V_SOURCE)],
 )
 
 SLITHER_FINDING = Finding(
@@ -296,9 +322,9 @@ class TestValidationFlow:
             status=FindingStatus.LLM_SUGGESTED,
             source=["fund_flow"],
             description="hypothesis",
-            evidence="withdraw() calls receiver",
+            evidence='(bool ok, ) = msg.sender.call{value: amount}("");',
             file_path="V.sol",
-            line_start=10,
+            line_start=14,
             confidence=0.7,
         )
 
@@ -319,7 +345,13 @@ class TestValidationFlow:
         )
         report = await orch.run(ADDR)
         assert report.llm_usage.total_calls == 0  # OneShotAgent bypassed router
-        cross = [f for f in report.findings if f.status is FindingStatus.CROSS_CHECKED]
+        cross = [f for f in report.findings if f.status is FindingStatus.CONFIRMED]
         # withdraw hypothesis is supported by slither reentrancy at same spot
         assert cross, report.findings
-        assert cross[0].metadata["validation"]["supporting_detector"] == "reentrancy-eth"
+        # the surviving finding is the tool host, corroborated by the LLM
+        assert cross[0].metadata["validation"]["rule"] == "cr0_llm_corroboration"
+        assert set(cross[0].source) == {"slither", "fund_flow"}
+        assert any(
+            m["title"] == "Unprotected withdraw"
+            for m in cross[0].metadata["merged_from"]
+        )

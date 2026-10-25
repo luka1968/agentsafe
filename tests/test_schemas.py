@@ -83,15 +83,17 @@ class TestFindingSemantics:
 
     def test_invalid_status_rejected(self):
         with pytest.raises(ValidationError):
-            Finding(**_finding(status="confirmed"))
+            Finding(**_finding(status="proven"))
 
-    def test_evidence_required_unless_manual_review(self):
-        no_ev = _finding(evidence="")
-        with pytest.raises(ValidationError, match="evidence"):
-            Finding(**no_ev)
-        # manual_review is allowed to carry no evidence (that's its purpose)
-        f = Finding(**_finding(evidence="", status="manual_review"))
-        assert f.status is FindingStatus.MANUAL_REVIEW
+    def test_entry_and_non_evidentiary_states_may_lack_evidence(self):
+        for st in ("tool_detected", "llm_suggested", "rejected", "needs_manual_review"):
+            f = Finding(**_finding(evidence="", status=st))
+            assert f.status.value == st
+
+    def test_evidence_required_for_evidentiary_final_states(self):
+        for st in ("confirmed", "potential", "informational"):
+            with pytest.raises(ValidationError, match="evidence"):
+                Finding(**_finding(evidence="", status=st))
 
     def test_source_must_be_non_empty(self):
         with pytest.raises(ValidationError):
