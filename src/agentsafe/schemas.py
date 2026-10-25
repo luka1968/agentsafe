@@ -282,6 +282,42 @@ class ReportSummary(BaseModel):
     by_status: dict[str, int] = Field(default_factory=dict)
     tools_executed: list[str] = Field(default_factory=list)
     tools_failed: list[str] = Field(default_factory=list)
+    # Clear partial-analysis status for the static-analysis pipeline
+    # (never inferred from tool invocation alone):
+    #   full        - every source tool ran and returned a parsable result
+    #   partial     - some tools ran, others failed; missing results are NOT
+    #                 evidence of safety
+    #   unavailable - the static-analysis stage itself errored out
+    #   skipped     - no verified source (closed-source path)
+    static_analysis_status: Literal["full", "partial", "unavailable", "skipped"] = "skipped"
+
+
+class ToolExecution(BaseModel):
+    """Structured diagnostic for ONE analyzer invocation (Section 5).
+
+    Captured for every tool attempt regardless of outcome: exit code,
+    duration, tool/compiler versions, failure category and output tails.
+    ``executed=True`` means a parsable result was produced - never merely
+    that the binary was invoked.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    tool: str
+    kind: Literal["source", "bytecode"] = "source"
+    executed: bool
+    exit_code: int | None = None
+    duration_seconds: float | None = Field(default=None, ge=0)
+    tool_version: str | None = None
+    compiler_version: str | None = None
+    # Documented failure taxonomy (agentsafe.analyzers.source categories):
+    #   not_installed | timeout | spawn_error | no_output | compile_error |
+    #   parse_error | tool_error | nonzero_exit_no_findings | None (success)
+    failure_category: str | None = None
+    error: str | None = None
+    stderr_tail: str | None = None
+    stdout_tail: str | None = None
+    findings_count: int = Field(default=0, ge=0)
 
 
 class AuditReport(BaseModel):
@@ -296,6 +332,7 @@ class AuditReport(BaseModel):
     is_verified_source: bool = False
     summary: ReportSummary = Field(default_factory=ReportSummary)
     findings: list[Finding] = Field(default_factory=list)
+    tool_executions: list[ToolExecution] = Field(default_factory=list)
     tools_used: list[str] = Field(default_factory=list)
     tool_versions: dict[str, str] = Field(default_factory=dict)
     llm_usage: LLMUsage = Field(default_factory=LLMUsage)

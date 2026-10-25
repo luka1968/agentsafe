@@ -13,6 +13,7 @@ from agentsafe.llm.router import (
     BudgetExhaustedError,
     LLMRouter,
     ProviderUnavailableError,
+    SchemaValidationError,
 )
 
 PROV_A = LLMProviderConfig(
@@ -37,6 +38,13 @@ class FakeClock:
 def _ok_body(content: dict) -> dict:
     return {
         "choices": [{"message": {"content": json.dumps(content)}}],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 20},
+    }
+
+
+def _ok_body_text(content: str) -> dict:
+    return {
+        "choices": [{"message": {"content": content}}],
         "usage": {"prompt_tokens": 10, "completion_tokens": 20},
     }
 
@@ -96,15 +104,31 @@ class TestBudget:
         clock = FakeClock()
         b = AuditBudget(max_calls=10, deadline=100.0, clock=clock)
         b.record_call()
-        b.record_success(
-            type(
-                "R", (), {"provider": "p", "model": "m", "prompt_tokens": 5, "completion_tokens": 7}
-            )()
-        )
+        result = type(
+            "R", (), {"provider": "p", "model": "m", "prompt_tokens": 5, "completion_tokens": 7}
+        )()
+        b.record_tokens(result)  # tokens counted per HTTP-200 attempt
+        b.record_success(result)  # provider/model provenance on success
         s = b.usage_summary()
         assert s["total_calls"] == 1
         assert s["prompt_tokens"] == 5 and s["completion_tokens"] == 7
         assert s["providers_used"] == ["p"] and s["models_used"] == ["m"]
+
+    def test_tokens_preserved_when_validation_fails(self):
+        clock = FakeClock()
+        b = AuditBudget(max_calls=10, deadline=100.0, clock=clock)
+        b.record_call()
+        b.record_tokens(
+            type(
+                "R", (), {"provider": "p", "model": "m", "prompt_tokens": 5, "completion_tokens": 7}
+            )()
+        )
+        b.record_failure()
+        s = b.usage_summary()
+        # Section 6: tokens consumed on a failed (invalid-JSON) attempt are
+        # still accounted for, and the failure is visible.
+        assert s["prompt_tokens"] == 5 and s["completion_tokens"] == 7
+        assert s["failed_calls"] == 1
 
 
 class TestRouterCalls:
@@ -151,10 +175,87 @@ class TestRouterCalls:
         route = respx.post("https://a.test/v1/chat/completions").mock(
             return_value=httpx.Response(200, json=_ok_body({"wrong": "shape"}))
         )
-        with pytest.raises(ProviderUnavailableError):
+        with pytest.raises(SchemaValidationError, match="schema_violation"):
             await router.complete_json(budget, [{"role": "user", "content": "hi"}], OkPayload)
         assert route.call_count == 2  # initial + 1 repair attempt
         assert budget.failed_calls == 1
+
+    @respx.mock
+    async def test_empty_response_categorized_and_retried(self):
+        clock = FakeClock()
+        sleep = SleepRecorder(clock)
+        router = _router(clock=clock, sleeper=sleep, retries=1)
+        budget = router.start_audit(max_calls=5, deadline_seconds=60)
+        route = respx.post("https://a.test/v1/chat/completions").mock(
+            return_value=httpx.Response(200, json=_ok_body_text(""))
+        )
+        with pytest.raises(SchemaValidationError, match="empty_response"):
+            await router.complete_json(budget, [{"role": "user", "content": "hi"}], OkPayload)
+        assert route.call_count == 2
+        assert budget.failed_calls == 1
+
+    @respx.mock
+    async def test_json_extracted_from_prose_wrapper(self):
+        """Section 6: JSON embedded in prose is extracted (never invented)."""
+        clock = FakeClock()
+        sleep = SleepRecorder(clock)
+        router = _router(clock=clock, sleeper=sleep, retries=1)
+        budget = router.start_audit(max_calls=5, deadline_seconds=60)
+        wrapped = 'Sure! Here is the result:\n{"answer": "extracted"}\nHope that helps.'
+        respx.post("https://a.test/v1/chat/completions").mock(
+            return_value=httpx.Response(200, json=_ok_body_text(wrapped))
+        )
+        payload, _ = await router.complete_json(
+            budget, [{"role": "user", "content": "hi"}], OkPayload
+        )
+        assert payload.answer == "extracted"
+
+    @respx.mock
+    async def test_json_mode_sets_response_format(self):
+        """Section 6: structured-output mode is opt-in per provider."""
+        clock = FakeClock()
+        sleep = SleepRecorder(clock)
+        prov = PROV_A.model_copy(update={"json_mode": True})
+        router = _router(providers=[prov], clock=clock, sleeper=sleep)
+        budget = router.start_audit(max_calls=5, deadline_seconds=60)
+        route = respx.post("https://a.test/v1/chat/completions").mock(
+            return_value=httpx.Response(200, json=_ok_body({"answer": "ok"}))
+        )
+        await router.complete_json(budget, [{"role": "user", "content": "hi"}], OkPayload)
+        import json as _json
+
+        sent = _json.loads(route.calls[0].request.content)
+        assert sent["response_format"] == {"type": "json_object"}
+
+    @respx.mock
+    async def test_json_mode_off_by_default(self):
+        clock = FakeClock()
+        sleep = SleepRecorder(clock)
+        router = _router(providers=[PROV_A], clock=clock, sleeper=sleep)
+        budget = router.start_audit(max_calls=5, deadline_seconds=60)
+        route = respx.post("https://a.test/v1/chat/completions").mock(
+            return_value=httpx.Response(200, json=_ok_body({"answer": "ok"}))
+        )
+        await router.complete_json(budget, [{"role": "user", "content": "hi"}], OkPayload)
+        import json as _json
+
+        sent = _json.loads(route.calls[0].request.content)
+        assert "response_format" not in sent
+
+    @respx.mock
+    async def test_tokens_counted_on_failed_validation(self):
+        clock = FakeClock()
+        sleep = SleepRecorder(clock)
+        router = _router(clock=clock, sleeper=sleep, retries=1)
+        budget = router.start_audit(max_calls=5, deadline_seconds=60)
+        respx.post("https://a.test/v1/chat/completions").mock(
+            return_value=httpx.Response(200, json=_ok_body({"wrong": "shape"}))
+        )
+        with pytest.raises(SchemaValidationError):
+            await router.complete_json(budget, [{"role": "user", "content": "hi"}], OkPayload)
+        s = budget.usage_summary()
+        assert s["prompt_tokens"] == 20 and s["completion_tokens"] == 40  # 2 attempts x 10/20
+        assert s["failed_calls"] == 1
 
     @respx.mock
     async def test_429_rotates_to_next_provider(self):

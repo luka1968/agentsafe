@@ -198,6 +198,11 @@ class TestVerifiedSourcePath:
         assert "mythril" in report.summary.tools_executed
         assert report.llm_usage.total_calls == 0  # router None -> agents skipped
         assert any(s == "llm_agents" and v == "skipped" for s, v in stages)
+        # Section 5: structured tool diagnostics + partial-analysis status
+        assert report.summary.static_analysis_status == "full"
+        assert {t.tool for t in report.tool_executions} >= {"slither", "aderyn", "mythril"}
+        sl = next(t for t in report.tool_executions if t.tool == "slither")
+        assert sl.executed and sl.kind == "source" and sl.findings_count >= 1
 
     @respx.mock
     async def test_invalid_address_fails_fast(self):
@@ -355,3 +360,40 @@ class TestValidationFlow:
             m["title"] == "Unprotected withdraw"
             for m in cross[0].metadata["merged_from"]
         )
+
+
+class TestSection5PartialStatus:
+    @respx.mock
+    async def test_partial_static_analysis_status_when_tool_fails(self):
+        from agentsafe.agents.fund_flow import FundFlowAgent
+        from agentsafe.analyzers.source import ToolRun as SR
+
+        class HalfBrokenSource(SourceAnalyzer):
+            async def analyze(self, bundle):
+                return SourceAnalysis(
+                    runs=[
+                        SR(tool="slither", executed=True, findings=[]),
+                        SR(
+                            tool="aderyn",
+                            executed=False,
+                            error="aderyn not installed: not found",
+                            failure_category="not_installed",
+                        ),
+                    ],
+                    partial_failure=True,
+                )
+
+        _stub_rpc(CODE)
+        orch = _orchestrator(
+            FakeExplorer(verified=True),
+            HalfBrokenSource(),
+            FakeBytecodeAnalyzer(findings=[]),
+            router=None,
+            agents=[FundFlowAgent(_router())],
+        )
+        report = await orch.run(ADDR, task_id="task-p")
+        assert report.summary.static_analysis_status == "partial"
+        ad = next(t for t in report.tool_executions if t.tool == "aderyn")
+        assert ad.executed is False
+        assert ad.failure_category == "not_installed"
+        assert any("not evidence of safety" in l for l in report.limitations)

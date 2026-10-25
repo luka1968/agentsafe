@@ -163,6 +163,40 @@ class TestBuildReport:
         assert report.disclaimer and "not a formal security audit" in report.disclaimer
         assert "aderyn: crashed" in report.errors
 
+    def test_tool_executions_and_static_status_passthrough(self):
+        from agentsafe.schemas import ToolExecution
+
+        te = ToolExecution(
+            tool="slither",
+            kind="source",
+            executed=True,
+            exit_code=0,
+            duration_seconds=1.5,
+            tool_version="0.10.4",
+            compiler_version="0.8.19",
+            findings_count=2,
+        )
+        report = build_report(
+            address="0x" + "ab" * 20,
+            task_id="t" * 24,
+            is_verified_source=True,
+            tool_findings=[],
+            llm_findings=[],
+            tools_executed=["slither"],
+            tools_failed=["aderyn"],
+            tool_versions={},
+            llm_usage=LLMUsage(),
+            limitations=[],
+            errors=[],
+            execution_time_seconds=1.0,
+            tool_executions=[te],
+            static_analysis_status="partial",
+        )
+        assert report.tool_executions == [te]
+        assert report.summary.static_analysis_status == "partial"
+        # zero findings + partial status: still never "safe"
+        assert report.summary.total_findings == 0
+
     def test_by_severity_excludes_rejected_but_by_status_keeps_all(self):
         report = build_report(
             address="0x" + "ab" * 20,

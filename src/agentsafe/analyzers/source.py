@@ -31,6 +31,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -50,6 +51,32 @@ logger = logging.getLogger("agentSAFE.source")
 
 MAX_SOURCE_TOTAL_BYTES = 5_000_000
 
+# Documented failure taxonomy (mirrored in schemas.ToolExecution docs).
+CAT_NOT_INSTALLED = "not_installed"
+CAT_TIMEOUT = "timeout"
+CAT_SPAWN_ERROR = "spawn_error"
+CAT_NO_OUTPUT = "no_output"
+CAT_COMPILE_ERROR = "compile_error"
+CAT_PARSE_ERROR = "parse_error"
+CAT_TOOL_ERROR = "tool_error"
+CAT_NONZERO_NO_FINDINGS = "nonzero_exit_no_findings"
+CAT_SIZE_POLICY = "size_policy"
+
+# Markers observed in slither/crytic-compile stderr when the solc invocation
+# itself failed (as opposed to the tool crashing or emitting nothing).
+_COMPILE_ERROR_MARKERS = (
+    "error compiling",
+    "compilation error",
+    "compilation failed",
+    "unable to compile",
+    "syntaxerror",
+    "parsererror",
+    "declarationerror",
+    "typeerror",
+    "unimplemented feature",
+    "source file requires different compiler version",
+)
+
 _SOLC_VERSION_RE = re.compile(r"v?(\d+\.\d+\.\d+)")
 
 _SLITHER_IMPACT = {
@@ -63,7 +90,12 @@ _SLITHER_IMPACT = {
 
 @dataclass
 class ToolRun:
-    """Result of one tool run. executed=False means "we know nothing"."""
+    """Result of one tool run. executed=False means "we know nothing".
+
+    Diagnostics (exit code, duration, versions, failure category, output
+    tails) are captured for EVERY attempt so reports can explain partial
+    analysis instead of silently omitting tools.
+    """
 
     tool: str
     executed: bool
@@ -71,12 +103,19 @@ class ToolRun:
     error: str | None = None
     version: str | None = None
     raw_exit_code: int | None = None
+    duration_seconds: float | None = None
+    compiler_version: str | None = None
+    failure_category: str | None = None
+    stderr_tail: str | None = None
+    stdout_tail: str | None = None
 
 
 @dataclass
 class SourceAnalysis:
     runs: list[ToolRun]
     partial_failure: bool
+    solc_selected: str | None = None
+    solc_provision_note: str | None = None
 
     @property
     def findings(self) -> list[Finding]:
@@ -140,7 +179,9 @@ class SourceAnalyzer:
         # pragma-compatible one, and slither exits 1 silently when the global
         # solc cannot compile the source. Provision the Etherscan-recorded
         # compiler version and pin it per-process via SOLC_VERSION.
-        solc_version = await self._ensure_solc(getattr(bundle, "compiler_version", ""))
+        solc_version, solc_note = await self._ensure_solc(
+            getattr(bundle, "compiler_version", "")
+        )
 
         runs: list[ToolRun] = []
         workspace = TempWorkspace.create()
@@ -153,19 +194,25 @@ class SourceAnalyzer:
             workspace.cleanup()
 
         partial = any((not r.executed) or (r.error is not None) for r in runs)
-        return SourceAnalysis(runs=runs, partial_failure=partial)
+        return SourceAnalysis(
+            runs=runs,
+            partial_failure=partial,
+            solc_selected=solc_version,
+            solc_provision_note=solc_note,
+        )
 
-    async def _ensure_solc(self, compiler_version: str) -> str | None:
+    async def _ensure_solc(self, compiler_version: str) -> tuple[str | None, str | None]:
         """Ensure the Etherscan-recorded solc version is installed.
 
-        Returns the version to pin via SOLC_VERSION, or None when unknown or
-        when provisioning failed (the slither run then reports the real
-        compile error instead). ``solc-select install`` is idempotent: an
-        already-installed version is a fast no-op.
+        Returns (version_to_pin, provision_note). The note is None on success
+        or when no version was requested; it records WHY pinning was skipped
+        so reports can surface the root cause instead of an opaque failure.
+        ``solc-select install`` is idempotent: an already-installed version is
+        a fast no-op.
         """
         m = _SOLC_VERSION_RE.search(compiler_version or "")
         if not m:
-            return None
+            return None, None
         version = m.group(1)
         res = await self._runner.run(
             ProcSpec(
@@ -179,16 +226,17 @@ class SourceAnalyzer:
         if res.missing:
             # solc-select absent (e.g. dev machine): assume the environment
             # already provides a usable solc and do not pin.
+            note = f"solc-select not installed; solc {version} not pinned"
             logger.warning("solc-select unavailable; not pinning solc %s", version)
-            return None
+            return None, note
         if res.exit_code not in (0, None):
-            logger.warning(
-                "solc-select install %s failed (exit %s); slither may fail to compile",
-                version,
-                res.exit_code,
+            note = (
+                f"solc-select install {version} failed (exit {res.exit_code}); "
+                "slither will use the global solc and may fail to compile"
             )
-            return None
-        return version
+            logger.warning("solc-select install %s failed; slither may fail to compile", version)
+            return None, note
+        return version, None
 
     def _materialize(self, bundle, workspace: TempWorkspace) -> None:
         """Write files preserving paths/settings. No concatenation, no truncation."""
@@ -215,8 +263,9 @@ class SourceAnalyzer:
             (workspace.root / "standard_input.json").write_text(json.dumps(std), encoding="utf-8")
 
     async def _run_slither(self, root: Path, solc_version: str | None = None) -> ToolRun:
-        run = ToolRun(tool="slither", executed=False)
+        run = ToolRun(tool="slither", executed=False, compiler_version=solc_version)
         run.version = await self._version(self._slither)
+        started = time.monotonic()
         res = await self._runner.run(
             ProcSpec(
                 executable=self._slither,
@@ -229,33 +278,59 @@ class SourceAnalyzer:
                 extra_env={"SOLC_VERSION": solc_version} if solc_version else None,
             )
         )
+        run.duration_seconds = round(time.monotonic() - started, 3)
         run.raw_exit_code = res.exit_code
+        run.stderr_tail = _stderr_tail(res.stderr)
         if res.missing:
+            run.failure_category = CAT_NOT_INSTALLED
             run.error = f"slither not installed: {res.error}"
             return run
         if res.timed_out:
+            run.failure_category = CAT_TIMEOUT
             run.error = f"slither timed out after {self._timeout:.0f}s"
             return run
         if res.error:
+            run.failure_category = CAT_SPAWN_ERROR
             run.error = f"slither spawn error: {res.error}"
             return run
         if not (res.stdout or b"").strip():
-            tail = _stderr_tail(res.stderr)
-            run.error = f"slither exited with {res.exit_code} and produced no JSON output"
-            if tail:
-                run.error += f"; stderr: {tail}"
+            # No stdout at all. Exit-code semantics (slither docs): 0 = clean
+            # run (findings may exist and appear in JSON); nonzero almost
+            # always means compilation/tooling failure. Classify via stderr
+            # markers so reports can distinguish compile errors from silence.
+            run.failure_category = (
+                CAT_COMPILE_ERROR
+                if _looks_like_compile_error(run.stderr_tail)
+                else CAT_NO_OUTPUT
+            )
+            run.error = (
+                f"slither exited with {res.exit_code} and produced no JSON output "
+                f"(category: {run.failure_category})"
+            )
+            if run.stderr_tail:
+                run.error += f"; stderr: {run.stderr_tail}"
             return run
+        # stdout exists; keep only a bounded tail for diagnostics (the full
+        # body is the JSON payload, parsed below - never stored raw).
+        run.stdout_tail = _stdout_tail(res.stdout)
 
         try:
             findings, tool_err = _parse_slither(res)
         except Exception as exc:  # parser bug guard: record, never fabricate
+            run.failure_category = CAT_PARSE_ERROR
             run.error = f"slither output could not be parsed: {exc}"
             return run
         run.findings = findings
         run.executed = True
         if tool_err:
+            run.failure_category = CAT_TOOL_ERROR
             run.error = tool_err  # parsed but tool reported its own error
         if res.exit_code not in (0, None) and not findings and not tool_err:
+            # Slither's documented behavior: a nonzero exit WITHOUT its JSON
+            # results is a tooling failure, not an empty analysis. WETH9
+            # regression: exactly this shape (exit 1, silent) = wrong global
+            # solc. Kept "executed=False" so "no findings" is never claimed.
+            run.failure_category = CAT_NONZERO_NO_FINDINGS
             run.error = f"slither exited with {res.exit_code} and produced no JSON"
             run.executed = False
         return run
@@ -267,6 +342,7 @@ class SourceAnalyzer:
         # the --output file extension. Relative path + cwd keeps it inside the
         # (already path-guarded) temp workspace.
         report_path = root / "report.json"
+        started = time.monotonic()
         res = await self._runner.run(
             ProcSpec(
                 executable=self._aderyn,
@@ -276,14 +352,19 @@ class SourceAnalyzer:
                 max_output_bytes=self._max_output,
             )
         )
+        run.duration_seconds = round(time.monotonic() - started, 3)
         run.raw_exit_code = res.exit_code
+        run.stderr_tail = _stderr_tail(res.stderr)
         if res.missing:
+            run.failure_category = CAT_NOT_INSTALLED
             run.error = f"aderyn not installed: {res.error}"
             return run
         if res.timed_out:
+            run.failure_category = CAT_TIMEOUT
             run.error = f"aderyn timed out after {self._timeout:.0f}s"
             return run
         if res.error:
+            run.failure_category = CAT_SPAWN_ERROR
             run.error = f"aderyn spawn error: {res.error}"
             return run
         try:
@@ -291,22 +372,32 @@ class SourceAnalyzer:
         except OSError:
             data = b""
         if not data.strip():
-            tail = _stderr_tail(res.stderr)
-            run.error = f"aderyn exited with {res.exit_code} and wrote no report.json"
-            if tail:
-                run.error += f"; stderr: {tail}"
+            run.failure_category = (
+                CAT_COMPILE_ERROR
+                if _looks_like_compile_error(run.stderr_tail)
+                else CAT_NO_OUTPUT
+            )
+            run.error = (
+                f"aderyn exited with {res.exit_code} and wrote no report.json "
+                f"(category: {run.failure_category})"
+            )
+            if run.stderr_tail:
+                run.error += f"; stderr: {run.stderr_tail}"
             return run
 
         try:
             findings, tool_err = _parse_aderyn(data)
         except Exception as exc:
+            run.failure_category = CAT_PARSE_ERROR
             run.error = f"aderyn output could not be parsed: {exc}"
             return run
         run.findings = findings
         run.executed = True
         if tool_err:
+            run.failure_category = CAT_TOOL_ERROR
             run.error = tool_err
         if res.exit_code not in (0, None) and not findings and not tool_err:
+            run.failure_category = CAT_NONZERO_NO_FINDINGS
             run.error = f"aderyn exited with {res.exit_code} and wrote no usable JSON"
             run.executed = False
         return run
@@ -320,6 +411,20 @@ class SourceAnalyzer:
 def _stderr_tail(stderr: bytes, limit: int = 300) -> str:
     """Last `limit` chars of a tool's stderr, for diagnosable error records."""
     return (stderr or b"").decode("utf-8", "replace").strip()[-limit:]
+
+
+def _stdout_tail(stdout: bytes, limit: int = 300) -> str:
+    """Last `limit` chars of stdout, for diagnostics when output existed but
+    was not usable. Only stored when the JSON payload itself is absent."""
+    return (stdout or b"").decode("utf-8", "replace").strip()[-limit:]
+
+
+def _looks_like_compile_error(stderr_tail: str | None) -> bool:
+    """Classify stderr as a Solidity-compile failure vs generic silence."""
+    if not stderr_tail:
+        return False
+    low = stderr_tail.lower()
+    return any(marker in low for marker in _COMPILE_ERROR_MARKERS)
 
 
 def _parse_slither(res: ProcResult) -> tuple[list[Finding], str | None]:

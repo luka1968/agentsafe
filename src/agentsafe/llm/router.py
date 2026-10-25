@@ -49,6 +49,24 @@ class SchemaValidationError(LLMRouterError):
     """LLM output failed strict JSON/schema validation after limited retries."""
 
 
+# Output-failure taxonomy (Section 6). Categories are stable strings so
+# reports/logs can aggregate WHY structured output failed.
+VC_EMPTY = "empty_response"
+VC_INVALID_JSON = "invalid_json"
+VC_SCHEMA = "schema_violation"
+
+
+@dataclass
+class ValidationFailure:
+    """Categorized structured-output failure (never a fabricated result)."""
+
+    category: str
+    detail: str
+
+    def __str__(self) -> str:
+        return f"{self.category}: {self.detail}"
+
+
 @dataclass
 class LLMCallResult:
     content: str
@@ -67,6 +85,7 @@ class _ProviderRuntime:
     model: str
     rpm_limit: int
     max_output_tokens: int | None
+    json_mode: bool = False
     cooldown_until: float = 0.0
     permanent_failure: str | None = None
     window: deque = field(default_factory=deque)
@@ -128,13 +147,17 @@ class AuditBudget:
     def record_call(self) -> None:
         self.calls_made += 1
 
-    def record_success(self, result: LLMCallResult) -> None:
-        self.providers_used.add(result.provider)
-        self.models_used.add(result.model)
+    def record_tokens(self, result: LLMCallResult) -> None:
+        """Token accounting for any HTTP-200 attempt, successful or not:
+        tokens are consumed by the provider even when validation later fails."""
         if result.prompt_tokens is not None:
             self.prompt_tokens += result.prompt_tokens
         if result.completion_tokens is not None:
             self.completion_tokens += result.completion_tokens
+
+    def record_success(self, result: LLMCallResult) -> None:
+        self.providers_used.add(result.provider)
+        self.models_used.add(result.model)
 
     def record_failure(self) -> None:
         self.failed_calls += 1
@@ -181,6 +204,7 @@ class LLMRouter:
                 model=p.model,
                 rpm_limit=p.rpm_limit,
                 max_output_tokens=p.max_output_tokens,
+                json_mode=bool(getattr(p, "json_mode", False)),
             )
             for p in providers
         ]
@@ -271,6 +295,11 @@ class LLMRouter:
                 "max_tokens": tokens,
                 "temperature": 0,
             }
+            # Structured-output mode (Section 6): only for providers configured
+            # with json_mode=True; unknown fields break some OpenAI-compatible
+            # endpoints, so this is strictly opt-in per provider.
+            if p.json_mode:
+                payload["response_format"] = {"type": "json_object"}
             await self._provider_limiters[p.name].acquire(self._sleeper, budget.deadline)
             await self._global_limiter.acquire(self._sleeper, budget.deadline)
 
@@ -329,6 +358,9 @@ class LLMRouter:
                 prompt_tokens=usage.get("prompt_tokens"),
                 completion_tokens=usage.get("completion_tokens"),
             )
+            # Usage accounting is preserved for EVERY HTTP-200 attempt, even
+            # when structured-output validation subsequently fails.
+            budget.record_tokens(result)
             p.calls += 1
             logger.info(
                 "llm ok provider=%s model=%s duration=%.2fs prompt_tokens=%s completion_tokens=%s",
@@ -339,18 +371,20 @@ class LLMRouter:
                 result.completion_tokens,
             )
 
-            validated, schema_error = _validate_json_strict(content, schema_model)
+            validated, failure = _validate_json_strict(content, schema_model)
             if validated is not None:
                 budget.record_success(result)
                 return validated, result
-            # Strict validation failed: one repair attempt reusing the same provider
-            # slot budget; if retries exhausted the call fails loudly.
-            last_error = schema_error
+            # Strict validation failed: repair attempts reuse the same provider
+            # slot budget; if retries are exhausted the call fails loudly and
+            # categorically - malformed output is NEVER turned into findings.
+            last_error = failure
             logger.warning(
-                "llm provider=%s schema validation failed (%s); attempts=%d",
+                "llm provider=%s output validation failed (%s); attempt=%d/%d",
                 p.name,
-                schema_error,
+                failure,
                 attempts + 1,
+                max_attempts,
             )
             if attempts + 1 >= max_attempts:
                 break
@@ -360,10 +394,13 @@ class LLMRouter:
                 {
                     "role": "user",
                     "content": (
-                        "Your previous reply was NOT valid JSON for the required schema "
-                        f"({schema_error}). Respond again with ONLY a valid JSON object "
-                        "matching the schema. No markdown, no commentary."
-                    ),
+                        "You returned an EMPTY response."
+                        if failure.category == VC_EMPTY
+                        else
+                        "Your previous reply was NOT valid JSON for the required schema."
+                    )
+                    + f" (problem: {failure.detail}). Respond again with ONLY a valid "
+                    "JSON object matching the schema. No markdown, no commentary.",
                 },
             ]
             repair_provider = p
@@ -372,6 +409,11 @@ class LLMRouter:
         budget.record_failure()
         if isinstance(last_error, SchemaValidationError):
             raise last_error
+        if isinstance(last_error, ValidationFailure):
+            raise SchemaValidationError(
+                f"structured output failed after {max_attempts} attempts "
+                f"({last_error.category}): {last_error.detail}"
+            )
         raise ProviderUnavailableError(
             f"LLM call failed after {max_attempts} attempts: {last_error}"
         )
@@ -380,23 +422,76 @@ class LLMRouter:
 BaseModelT = TypeVar("BaseModelT", bound=BaseModel)
 
 
+def _extract_balanced(text: str) -> str | None:
+    """Locate the FIRST balanced JSON object/array in arbitrary text
+    (string-aware, escape-aware). Extraction only: bytes between the outermost
+    brackets are never modified, so no content is invented or repaired away."""
+    start = -1
+    for i, ch in enumerate(text):
+        if ch in "{[":
+            start = i
+            break
+    if start == -1:
+        return None
+    depth = 0
+    in_str = False
+    esc = False
+    for j in range(start, len(text)):
+        ch = text[j]
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch in "{[":
+            depth += 1
+        elif ch in "}]":
+            depth -= 1
+            if depth == 0:
+                return text[start : j + 1]
+    return None
+
+
 def _validate_json_strict(
     content: str, schema_model: type[BaseModelT]
-) -> tuple[BaseModelT | None, str | None]:
-    """Strict JSON validation. Fenced ```json blocks are unwrapped (standard LLM
-    formatting); anything else must parse cleanly. No regex content guessing."""
+) -> tuple[BaseModelT | None, ValidationFailure | None]:
+    """Strict structured-output validation with categorized failures.
+
+    Pipeline: empty check -> fenced ```json unwrapping (standard LLM
+    formatting) -> direct parse -> balanced-object extraction (for JSON
+    embedded in prose) -> pydantic schema validation. A failure returns a
+    ValidationFailure with a stable category; content is never guessed into
+    findings and no lenient regex repair is attempted.
+    """
     text = (content or "").strip()
+    if not text:
+        return None, ValidationFailure(VC_EMPTY, "empty response (0 usable chars)")
     if text.startswith("```"):
         first_newline = text.find("\n")
         if first_newline != -1:
             text = text[first_newline + 1 :]
         if text.rstrip().endswith("```"):
             text = text.rstrip()[:-3]
+        text = text.strip()
+    parsed = None
     try:
         parsed = json.loads(text)
-    except json.JSONDecodeError as exc:
-        return None, f"invalid JSON: {exc.msg}"
+    except json.JSONDecodeError:
+        candidate = _extract_balanced(text)
+        if candidate is not None:
+            try:
+                parsed = json.loads(candidate)
+            except json.JSONDecodeError:
+                parsed = None
+    if parsed is None:
+        detail = text[:120].replace("\n", " ")
+        return None, ValidationFailure(VC_INVALID_JSON, f"no parsable JSON object: {detail!r}")
     try:
         return schema_model.model_validate(parsed), None
     except Exception as exc:
-        return None, f"schema violation: {str(exc)[:300]}"
+        return None, ValidationFailure(VC_SCHEMA, str(exc)[:300])

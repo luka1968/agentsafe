@@ -15,6 +15,7 @@ import logging
 import re
 from collections.abc import Sequence
 from datetime import UTC, datetime
+from typing import Literal
 
 from agentsafe import CHAIN_ID, REPORT_DISCLAIMER
 from agentsafe.schemas import (
@@ -24,6 +25,7 @@ from agentsafe.schemas import (
     LLMUsage,
     ReportSummary,
     Severity,
+    ToolExecution,
 )
 
 logger = logging.getLogger("agentSAFE.report")
@@ -214,9 +216,11 @@ def build_report(
     limitations: Sequence[str],
     errors: Sequence[str],
     execution_time_seconds: float,
+    tool_executions: Sequence[ToolExecution] = (),
+    static_analysis_status: Literal["full", "partial", "unavailable", "skipped"] = "skipped",
 ) -> AuditReport:
     findings = merge_findings(tool_findings, llm_findings)
-    return AuditReport(
+    report = AuditReport(
         address=address,
         chain=CHAIN_ID,
         task_id=task_id,
@@ -224,6 +228,7 @@ def build_report(
         is_verified_source=is_verified_source,
         summary=summarize(findings, tools_executed, tools_failed),
         findings=findings,
+        tool_executions=list(tool_executions),
         tools_used=sorted(set(tools_executed) | set(tools_failed)),
         tool_versions=dict(tool_versions),
         llm_usage=llm_usage,
@@ -232,3 +237,5 @@ def build_report(
         execution_time_seconds=round(execution_time_seconds, 2),
         disclaimer=REPORT_DISCLAIMER,
     )
+    report.summary.static_analysis_status = static_analysis_status
+    return report

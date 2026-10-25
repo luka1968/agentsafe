@@ -46,8 +46,8 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
-from agentsafe.severity import assess, enrich_swc
 from agentsafe.schemas import Finding, FindingStatus, Severity
+from agentsafe.severity import assess, enrich_swc
 
 logger = logging.getLogger("agentSAFE.validation")
 
@@ -57,7 +57,9 @@ _MIN_TRACEABLE_EVIDENCE_CHARS = 20
 
 # --- category detectors ------------------------------------------------------
 _RE_REENTRANCY = re.compile(r"re[- ]?entran", re.IGNORECASE)
-_RE_OVERFLOW = re.compile(r"(?:integer\s+)?(?:over|under)flow|arithmetic\s+(?:over|under)flow", re.IGNORECASE)
+_RE_OVERFLOW = re.compile(
+    r"(?:integer\s+)?(?:over|under)flow|arithmetic\s+(?:over|under)flow", re.IGNORECASE
+)
 _RE_TRANSFER_DELEGATION = re.compile(r"transferFrom\s*\(\s*msg\.sender", re.IGNORECASE)
 _RE_ALLOWANCE = re.compile(r"allowance", re.IGNORECASE)
 _RE_ALLOWANCE_RACE = re.compile(r"race|front[- ]?run|reset", re.IGNORECASE)

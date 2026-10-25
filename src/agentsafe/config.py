@@ -39,6 +39,10 @@ class LLMProviderConfig(BaseModel):
     model: str = Field(min_length=1)
     rpm_limit: int = Field(ge=1, le=10_000)
     max_output_tokens: int | None = Field(default=None, ge=100, le=200_000)
+    # Opt-in structured-output mode: sends response_format={"type":
+    # "json_object"}. Only enable for providers verified to accept it;
+    # some OpenAI-compatible endpoints reject unknown request fields.
+    json_mode: bool = False
 
     @field_validator("base_url")
     @classmethod

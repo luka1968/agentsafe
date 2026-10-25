@@ -467,3 +467,114 @@ class TestParsersDirect:
     def test_parse_slither_empty_results(self):
         findings, err = _parse_slither(ProcResult(0, b'{"results": {"detectors": []}}', b""))
         assert findings == [] and err is None
+
+
+class TestSection5Diagnostics:
+    """Section 5: structured execution diagnostics (category, duration,
+    versions, output tails) captured for every tool attempt."""
+
+    async def test_success_run_records_duration_and_category_none(self):
+        result = await SourceAnalyzer(
+            runner=FakeRunner(_handler(slither=(0, SLITHER_OK), aderyn=(0, ADERYN_OK)))
+        ).analyze(_bundle())
+        slither_run = next(r for r in result.runs if r.tool == "slither")
+        assert slither_run.executed
+        assert slither_run.failure_category is None
+        assert slither_run.duration_seconds is not None and slither_run.duration_seconds >= 0
+        assert slither_run.compiler_version == "0.8.19"
+        assert slither_run.version == "0.10.4"
+        assert slither_run.raw_exit_code == 0
+
+    async def test_missing_tool_category(self):
+        result = await SourceAnalyzer(
+            runner=FakeRunner(_handler(slither=None, aderyn=(0, ADERYN_OK)))
+        ).analyze(_bundle())
+        slither_run = next(r for r in result.runs if r.tool == "slither")
+        assert not slither_run.executed
+        assert slither_run.failure_category == "not_installed"
+
+    async def test_timeout_category(self):
+        from agentsafe.analyzers.proc import ProcResult
+
+        result = await SourceAnalyzer(
+            runner=FakeRunner(
+                _handler(
+                    slither=ProcResult(None, b"", b"", timed_out=True, error="deadline"),
+                    aderyn=(0, ADERYN_OK),
+                )
+            )
+        ).analyze(_bundle())
+        slither_run = next(r for r in result.runs if r.tool == "slither")
+        assert slither_run.failure_category == "timeout"
+
+    async def test_silent_nonzero_without_stderr_is_no_output(self):
+        result = await SourceAnalyzer(
+            runner=FakeRunner(_handler(slither=(1, None), aderyn=(0, ADERYN_OK)))
+        ).analyze(_bundle())
+        slither_run = next(r for r in result.runs if r.tool == "slither")
+        assert slither_run.failure_category == "no_output"
+        assert "no_output" in (slither_run.error or "")
+
+    async def test_compile_error_detected_via_stderr_markers(self):
+        from agentsafe.analyzers.proc import ProcResult
+
+        stderr = b"Error compiling source: Source file requires different compiler version"
+        result = await SourceAnalyzer(
+            runner=FakeRunner(
+                _handler(slither=ProcResult(1, b"", stderr), aderyn=(0, ADERYN_OK))
+            )
+        ).analyze(_bundle())
+        slither_run = next(r for r in result.runs if r.tool == "slither")
+        assert slither_run.failure_category == "compile_error"
+        assert slither_run.stderr_tail and "compiler version" in slither_run.stderr_tail
+
+    async def test_nonzero_no_findings_category(self):
+        # stdout present and parsable, zero findings, nonzero exit -> the
+        # documented slither "crashed after emitting JSON" shape
+        empty_json = {"success": True, "error": None, "results": {"detectors": []}}
+        result = await SourceAnalyzer(
+            runner=FakeRunner(_handler(slither=(2, empty_json), aderyn=(2, None)))
+        ).analyze(_bundle())
+        slither_run = next(r for r in result.runs if r.tool == "slither")
+        assert slither_run.failure_category == "nonzero_exit_no_findings"
+        assert not slither_run.executed
+
+    async def test_tool_error_category(self):
+        err_json = {
+            "success": False,
+            "error": "compilation failed: solc 0.8.19 not found",
+            "results": {"detectors": []},
+        }
+        result = await SourceAnalyzer(
+            runner=FakeRunner(_handler(slither=(255, err_json), aderyn=(0, ADERYN_OK)))
+        ).analyze(_bundle())
+        slither_run = next(r for r in result.runs if r.tool == "slither")
+        assert slither_run.executed
+        assert slither_run.failure_category == "tool_error"
+
+    async def test_solc_provision_failure_recorded_as_note(self):
+        def handle(spec: ProcSpec) -> ProcResult:
+            if spec.args[:1] == ["--version"]:
+                return ProcResult(0, b"0.10.4", b"")
+            if spec.executable == "solc-select":
+                return ProcResult(3, b"", b"download failed")
+            if spec.executable == "slither":
+                return ProcResult(0, json.dumps(SLITHER_OK).encode(), b"")
+            if spec.executable == "aderyn":
+                (spec.cwd / "report.json").write_text(json.dumps(ADERYN_OK))
+                return ProcResult(0, b"", b"")
+            raise AssertionError("unexpected")
+
+        result = await SourceAnalyzer(runner=FakeRunner(handle)).analyze(_bundle())
+        assert result.solc_selected is None
+        assert result.solc_provision_note and "exit 3" in result.solc_provision_note
+        # analysis still proceeds and slither result is kept - the note just
+        # explains why pinning was skipped
+        assert result.runs[0].executed
+
+    async def test_solc_provision_success_records_version(self):
+        result = await SourceAnalyzer(
+            runner=FakeRunner(_handler(slither=(0, SLITHER_OK), aderyn=(0, ADERYN_OK)))
+        ).analyze(_bundle())
+        assert result.solc_selected == "0.8.19"
+        assert result.solc_provision_note is None

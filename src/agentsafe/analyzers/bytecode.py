@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
@@ -34,6 +35,16 @@ from .proc import (
     ProcSpec,
     SubprocessRunner,
     TempWorkspace,
+)
+from .source import (
+    CAT_NO_OUTPUT,
+    CAT_NONZERO_NO_FINDINGS,
+    CAT_NOT_INSTALLED,
+    CAT_PARSE_ERROR,
+    CAT_SIZE_POLICY,
+    CAT_SPAWN_ERROR,
+    CAT_TIMEOUT,
+    CAT_TOOL_ERROR,
 )
 
 logger = logging.getLogger("agentSAFE.bytecode")
@@ -107,6 +118,8 @@ class BytecodeToolRun:
     error: str | None = None
     version: str | None = None
     pseudo_sources: dict[str, str] = field(default_factory=dict)  # label -> content
+    failure_category: str | None = None
+    duration_seconds: float | None = None
 
 
 @dataclass
@@ -185,6 +198,7 @@ class BytecodeAnalyzer:
 
     async def _run_mythril(self, bytecode: str) -> BytecodeToolRun:
         run = BytecodeToolRun(tool="mythril", executed=False)
+        _t0 = time.monotonic()
         run.version = await self._version(self._mythril, "version")
         # Verified against the pinned mythril 0.24.3 sdist (interfaces/cli.py):
         # --code accepts 0x-prefixed hex; --bin-runtime marks the input as
@@ -208,26 +222,33 @@ class BytecodeAnalyzer:
                 max_output_bytes=self._max_output,
             )
         )
+        run.duration_seconds = round(time.monotonic() - _t0, 3)
         if res.missing:
+            run.failure_category = CAT_NOT_INSTALLED
             run.error = f"mythril not installed: {res.error}"
             return run
         if res.timed_out:
+            run.failure_category = CAT_TIMEOUT
             run.error = "mythril timed out (hard outer limit)"
             return run
         if res.error:
+            run.failure_category = CAT_SPAWN_ERROR
             run.error = f"mythril spawn error: {res.error}"
             return run
 
         try:
             findings, tool_err = _parse_mythril(res)
         except Exception as exc:
+            run.failure_category = CAT_PARSE_ERROR
             run.error = f"mythril output could not be parsed: {exc}"
             return run
         run.findings = findings
         run.executed = True
         if tool_err:
+            run.failure_category = CAT_TOOL_ERROR
             run.error = tool_err
         if res.exit_code not in (0, None) and not findings and not tool_err:
+            run.failure_category = CAT_NONZERO_NO_FINDINGS
             run.error = f"mythril exited with {res.exit_code} without JSON"
             run.executed = False
         return run
@@ -241,6 +262,7 @@ class BytecodeAnalyzer:
         run = BytecodeToolRun(tool="heimdall", executed=False)
         run.version = await self._version(self._heimdall, "--version")
         if len(bytecode) > 24_000:  # 12KB runtime cap
+            run.failure_category = CAT_SIZE_POLICY
             run.error = "bytecode exceeds 12KB; decompile skipped (size policy)"
             return run
 
@@ -260,12 +282,15 @@ class BytecodeAnalyzer:
                 )
             )
             if res.missing:
+                run.failure_category = CAT_NOT_INSTALLED
                 run.error = f"heimdall not installed: {res.error}"
                 return run
             if res.timed_out:
+                run.failure_category = CAT_TIMEOUT
                 run.error = "heimdall timed out"
                 return run
             if res.error:
+                run.failure_category = CAT_SPAWN_ERROR
                 run.error = f"heimdall spawn error: {res.error}"
                 return run
 
@@ -275,6 +300,7 @@ class BytecodeAnalyzer:
                 content = f.read_text(encoding="utf-8", errors="replace")
                 total += len(content.encode("utf-8", "replace"))
                 if total > self._max_pseudo:
+                    run.failure_category = CAT_SIZE_POLICY
                     run.error = "pseudo-source exceeded size policy; truncated set kept"
                     break
                 pseudo[f.name] = content
@@ -283,6 +309,7 @@ class BytecodeAnalyzer:
             if not pseudo:
                 # Tool ran but produced nothing usable: that is a tool-level
                 # failure, NOT "bytecode is clean".
+                run.failure_category = CAT_NO_OUTPUT
                 run.error = "heimdall produced no pseudo-source files"
         finally:
             ws.cleanup()

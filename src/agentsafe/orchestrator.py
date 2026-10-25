@@ -31,6 +31,7 @@ from agentsafe.schemas import (
     LLMUsage,
     StageState,
     StageStatus,
+    ToolExecution,
     normalize_address,
 )
 
@@ -126,6 +127,8 @@ class AuditOrchestrator:
         tools_executed: list[str] = []
         tools_failed: list[str] = []
         tool_versions: dict[str, str] = {}
+        tool_executions: list[ToolExecution] = []
+        static_status = "skipped"
         findings: list[Finding] = []
         budget: AuditBudget | None = None
         is_verified = False
@@ -193,6 +196,7 @@ class AuditOrchestrator:
                 # -- 4. verified-source static analysis -------------------------
                 start("static_analysis")
                 source_runs = []
+                static_status = "unavailable"
                 if bundle is not None:
                     try:
                         source_result = await self._source.analyze(bundle)
@@ -205,6 +209,35 @@ class AuditOrchestrator:
                             else:
                                 tools_failed.append(r.tool)
                                 errors.append(f"{r.tool}: {r.error or 'no result'}")
+                            tool_executions.append(
+                                ToolExecution(
+                                    tool=r.tool,
+                                    kind="source",
+                                    executed=r.executed and not r.error,
+                                    exit_code=r.raw_exit_code,
+                                    duration_seconds=r.duration_seconds,
+                                    tool_version=r.version,
+                                    compiler_version=r.compiler_version,
+                                    failure_category=r.failure_category,
+                                    error=(r.error or None) if r.error else None,
+                                    stderr_tail=r.stderr_tail,
+                                    stdout_tail=r.stdout_tail,
+                                    findings_count=len(r.findings),
+                                )
+                            )
+                        if source_result.solc_provision_note:
+                            limitations.append(
+                                f"solc provisioning: {source_result.solc_provision_note}"
+                            )
+                        executed_ct = sum(
+                            1 for r in source_runs if r.executed and not r.error
+                        )
+                        if executed_ct == len(source_runs) and source_runs:
+                            static_status = "full"
+                        elif executed_ct > 0:
+                            static_status = "partial"
+                        else:
+                            static_status = "unavailable"
                         if source_result.partial_failure:
                             limitations.append(
                                 "static analysis had partial failures; "
@@ -213,10 +246,21 @@ class AuditOrchestrator:
                     except Exception as exc:
                         errors.append(f"source analysis: {exc}")
                         tools_failed.extend(["slither", "aderyn"])
+                        static_status = "unavailable"
                         done("static_analysis", error_code="source_analysis_error", detail=str(exc))
                     else:
-                        done("static_analysis")
+
+                        def _run_label(r) -> str:
+                            ok = r.executed and not r.error
+                            return f"{r.tool}:{'ok' if ok else (r.failure_category or 'error')}"
+
+                        done(
+                            "static_analysis",
+                            detail="; ".join(_run_label(r) for r in source_runs)
+                            or "no tools",
+                        )
                 else:
+                    static_status = "skipped"
                     skip("static_analysis", "no verified source (closed-source path)")
 
                 # -- 5. bytecode tools (always run: independent second opinion) --
@@ -232,6 +276,18 @@ class AuditOrchestrator:
                         else:
                             tools_failed.append(br.tool)
                             errors.append(f"{br.tool}: {br.error or 'no result'}")
+                        tool_executions.append(
+                            ToolExecution(
+                                tool=br.tool,
+                                kind="bytecode",
+                                executed=br.executed and not br.error,
+                                tool_version=br.version,
+                                failure_category=br.failure_category,
+                                duration_seconds=br.duration_seconds,
+                                error=(br.error or None) if br.error else None,
+                                findings_count=len(br.findings),
+                            )
+                        )
                 except Exception as exc:
                     errors.append(f"bytecode analysis: {exc}")
                     tools_failed.extend(["mythril", "heimdall"])
@@ -355,6 +411,8 @@ class AuditOrchestrator:
                     tools_executed=tools_executed,
                     tools_failed=tools_failed,
                     tool_versions=tool_versions,
+                    tool_executions=tool_executions,
+                    static_analysis_status=static_status,
                     llm_usage=llm_usage,
                     limitations=limitations,
                     errors=errors,
