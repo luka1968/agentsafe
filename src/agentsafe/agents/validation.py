@@ -46,6 +46,7 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
+from agentsafe.severity import assess, enrich_swc
 from agentsafe.schemas import Finding, FindingStatus, Severity
 
 logger = logging.getLogger("agentSAFE.validation")
@@ -255,6 +256,12 @@ class ValidationAgent:
                 self._count(outcome, f)
                 continue
             nf = self._validate_llm_finding(f, tool_findings, source_segments, is_pseudo_source)
+            if is_pseudo_source:
+                nf.limitations = [
+                    *nf.limitations,
+                    "derived from decompiled pseudo-source; identifiers and "
+                    "line numbers are approximate",
+                ]
             outcome.findings.append(nf)
             self._count(outcome, nf)
         return outcome
@@ -273,6 +280,12 @@ class ValidationAgent:
                 self._count(outcome, f)
                 continue
             nf = self._validate_tool_finding(f, validated_llm, source_segments, is_pseudo_source)
+            if is_pseudo_source:
+                nf.limitations = [
+                    *nf.limitations,
+                    "derived from decompiled pseudo-source; identifiers and "
+                    "line numbers are approximate",
+                ]
             outcome.findings.append(nf)
             self._count(outcome, nf)
         return outcome
@@ -300,7 +313,7 @@ class ValidationAgent:
     ) -> Finding:
         # 1. evidence is mandatory for LLM claims
         if not (f.evidence or "").strip():
-            return self._set(
+            return self._finalize(
                 f, FindingStatus.REJECTED, "e0_missing_evidence",
                 "LLM finding carries no evidence quote; hypotheses without "
                 "evidence are rejected outright",
@@ -308,7 +321,7 @@ class ValidationAgent:
         # 2. line numbers are mandatory for real source (may be impossible
         #    for decompiled pseudo-source)
         if not is_pseudo and f.line_start is None:
-            return self._set(
+            return self._finalize(
                 f, FindingStatus.NEEDS_MANUAL_REVIEW, "l0_missing_line_number",
                 "no line number provided; the claim cannot be located in the "
                 "source for deterministic validation",
@@ -317,14 +330,14 @@ class ValidationAgent:
         src_text = self._source_for_finding(f, segments)
         if not is_pseudo and segments:
             if src_text is None:
-                return self._set(
+                return self._finalize(
                     f, FindingStatus.NEEDS_MANUAL_REVIEW, "e0_untraceable_location",
                     "referenced file not present in analyzed sources; claim "
                     "cannot be verified against provided code",
                 )
             frag = _longest_evidence_line(f.evidence)
             if len(frag) >= _MIN_TRACEABLE_EVIDENCE_CHARS and _norm(frag) not in _norm(src_text):
-                return self._set(
+                return self._finalize(
                     f, FindingStatus.NEEDS_MANUAL_REVIEW, "e0_evidence_not_in_code",
                     "evidence quote does not appear in the provided source; "
                     "possible paraphrase or hallucination - human check required",
@@ -345,25 +358,18 @@ class ValidationAgent:
                 _RE_IMPACT.search(claim_text)
             )
             if not has_path:
-                nf = self._set(
+                return self._finalize(
                     f, FindingStatus.INFORMATIONAL, "ov0_theoretical_only",
                     "overflow claim lacks a concrete attack path (no "
                     "attacker-controlled input reaching the arithmetic and no "
                     "demonstrated impact); the absence of compiler overflow "
                     "checks alone is informational, never critical",
                 )
-                nf.severity = Severity.INFO
-                return nf
-            if f.severity is Severity.CRITICAL:
-                nf = self._set(
-                    f, FindingStatus.POTENTIAL, "ov0_unconfirmed_critical",
-                    "attack path described but not independently corroborated; "
-                    "critical claims require corroboration, severity capped at high",
-                )
-                nf.severity = Severity.HIGH
-                return nf
+            # an uncorroborated critical falls through to potential; the
+            # severity rubric caps unvalidated claims at medium and preserves
+            # the original impact claim in proposed_severity
         if support is not None:
-            merged = self._set(
+            merged = self._finalize(
                 f, FindingStatus.CONFIRMED, "cr0_independent_support",
                 "independent tool evidence at the same location corroborates "
                 "the hypothesis",
@@ -373,9 +379,13 @@ class ValidationAgent:
             merged.metadata["validation"]["supporting_location"] = (
                 f"{support.file_path}:{support.line_start}"
             )
+            merged.supporting_evidence = [
+                f"tool:{','.join(support.source)}:{support.detector_id}"
+                f"@{support.file_path}:{support.line_start}"
+            ]
             return merged
         # 6. credible, complete, unverified -> potential
-        return self._set(
+        return self._finalize(
             f, FindingStatus.POTENTIAL, "pt0_default",
             "complete evidence, neither independently corroborated nor "
             "refuted by deterministic rules; treat as a credible hypothesis",
@@ -396,8 +406,8 @@ class ValidationAgent:
             if blocks:
                 block = _locate_function(blocks, src_text or "", f.evidence, f.line_start)
                 if block is not None and _cei_verdict(block) == "rejected":
-                    ordered = self._cei_evidence_lines(block)
-                    return self._set(
+                    ordered = self._cei_evidence_lines(block, f.file_path)
+                    nf = self._finalize(
                         f, FindingStatus.REJECTED, "re0_cei_satisfied",
                         "the flagged function follows Checks-Effects-Interactions: "
                         f"every caller-state update ({ordered['effect']}) precedes "
@@ -405,6 +415,11 @@ class ValidationAgent:
                         "reentrancy claim about this function is contradicted "
                         "by the source",
                     )
+                    nf.contradicting_evidence = [
+                        ordered["effect"],
+                        ordered["interaction"],
+                    ]
+                    return nf
 
         # -- ERC-20 transfer() delegating to transferFrom(msg.sender, ...) ----
         if (
@@ -420,14 +435,12 @@ class ValidationAgent:
                     and tf_block is not None
                     and _BALANCE_CHECK.search(tf_block.body_text)
                 ):
-                    nf = self._set(
+                    return self._finalize(
                         f, FindingStatus.INFORMATIONAL, "tr0_canonical_delegation",
                         "transfer() delegates to transferFrom(msg.sender, ...) "
                         "(the canonical ERC-20 pattern) and transferFrom enforces "
                         "the balance check; no defect identified in the delegation",
                     )
-                    nf.severity = Severity.INFO
-                    return nf
 
         # -- standard ERC-20 allowance race ----------------------------------
         if _RE_ALLOWANCE.search(title_desc) and _RE_ALLOWANCE_RACE.search(title_desc):
@@ -438,31 +451,41 @@ class ValidationAgent:
                 re.IGNORECASE,
             )
             if deviation is None:
-                nf = self._set(
+                return self._finalize(
                     f, FindingStatus.INFORMATIONAL, "al0_standard_behavior",
                     "the approve/transferFrom allowance race (SWC-114) is standard "
                     "ERC-20 semantics; no exploitable deviation is shown in the "
                     "evidence, so this is informational guidance for integrators",
                 )
-                nf.severity = Severity.INFO
-                return nf
 
         return None
 
-    def _cei_evidence_lines(self, block: _FuncBlock) -> dict[str, str]:
+    def _cei_evidence_lines(self, block: _FuncBlock, file_path: str | None) -> dict[str, str]:
         body_lines = block.body_text.splitlines()
-        eff = next(
+
+        def _fmt(idx: int, ln: str) -> str:
+            line_no = block.body_first + idx
+            loc = f"{file_path}:{line_no}" if file_path else f"line {line_no}"
+            return f"{ln.strip()} [{loc}]"
+
+        eff_idx = next(
             (
-                ln.strip()
-                for ln in body_lines
+                i
+                for i, ln in enumerate(body_lines)
                 if _CALLER_STATE_EFFECT.search(_strip_noise(ln))
             ),
-            "state update",
+            None,
         )
-        ext = next(
-            (ln.strip() for ln in body_lines if _EXTERNAL_CALL.search(_strip_noise(ln))),
-            "external call",
+        ext_idx = next(
+            (
+                i
+                for i, ln in enumerate(body_lines)
+                if _EXTERNAL_CALL.search(_strip_noise(ln))
+            ),
+            None,
         )
+        eff = _fmt(eff_idx, body_lines[eff_idx]) if eff_idx is not None else "state update"
+        ext = _fmt(ext_idx, body_lines[ext_idx]) if ext_idx is not None else "external call"
         return {"effect": eff, "interaction": ext}
 
     # ---------------------------------------------------------- tool findings
@@ -488,12 +511,15 @@ class ValidationAgent:
         ]
         if corroborating:
             lf = corroborating[0]
-            nf = self._set(
+            nf = self._finalize(
                 f, FindingStatus.CONFIRMED, "cr0_llm_corroboration",
                 "an independent LLM agent reported the same issue at the same "
                 "location with its own evidence",
             )
             nf.metadata["validation"]["corroborating_agent"] = list(lf.source)
+            nf.supporting_evidence = [
+                f"llm:{','.join(lf.source)}:{lf.title}@{lf.file_path}:{lf.line_start}"
+            ]
             return nf
         # overflow calibration for standalone tool claims (a corroborated
         # overflow is already confirmed above and never downgraded here)
@@ -503,20 +529,18 @@ class ValidationAgent:
                 _RE_IMPACT.search(claim_text)
             )
             if not has_path:
-                nf = self._set(
+                return self._finalize(
                     f, FindingStatus.INFORMATIONAL, "ov0_theoretical_only",
                     "detector claims overflow without a concrete attack path "
                     "in its own evidence; theoretical arithmetic risk is "
                     "informational, never critical",
                 )
-                nf.severity = Severity.INFO
-                return nf
         if f.severity is Severity.INFO:
-            return self._set(
+            return self._finalize(
                 f, FindingStatus.INFORMATIONAL, "if0_info_grade",
                 "informational-grade tool finding; no exploitability claimed",
             )
-        return self._set(
+        return self._finalize(
             f, FindingStatus.POTENTIAL, "pt0_default_tool",
             "detector-reported; not independently corroborated and not "
             "refuted; treat as a credible hypothesis",
@@ -576,3 +600,19 @@ class ValidationAgent:
             },
         }
         return merged
+
+    def _finalize(
+        self, f: Finding, status: FindingStatus, rule: str, reason: str
+    ) -> Finding:
+        """Single funnel for every terminal decision: state transition +
+        evidence-based severity assessment (documented rubric, Section 4) +
+        SWC enrichment + audit trail. LLM confidence never enters severity."""
+        nf = self._set(f, status, rule, reason)
+        nf.proposed_severity = f.severity  # preserve the original impact claim
+        new_sev, basis = assess(nf)
+        nf.severity = new_sev
+        nf.metadata["validation"]["severity_basis"] = basis
+        swc = enrich_swc(nf)
+        if swc:
+            nf.swc_id = swc
+        return nf

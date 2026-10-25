@@ -28,6 +28,10 @@ OUTPUT FORMAT - STRICT JSON, NO MARKDOWN, NO COMMENTARY:
       "description": "what the issue is and why it matters",
       "evidence": "EXACT code fragment copied character-for-character from the provided code",
       "recommendation": "concrete fix",
+      "swc_id": "SWC id when applicable (e.g. SWC-107 reentrancy, SWC-101 arithmetic), else null",
+      "preconditions": "what must be true to exploit (required privileges, state, token standard), else empty string",
+      "attack_scenario": "concrete step-by-step failure mode, else empty string",
+      "impact": "concrete damage (funds lost, minting, DoS, scope), else empty string",
       "file_path": "file path if known, else null",
       "line_start": integer line number in the provided file (MANDATORY),
       "line_end": integer ending line number if the issue spans lines, else null,
@@ -47,6 +51,13 @@ Rules:
 - Severity guidance: critical = direct loss of funds/total takeover;
   high = likely exploitable privilege or fund issue; medium = conditional
   exploit or logic hazard; low = hygiene issue; info = informational.
+- SEVERITY IS AN IMPACT CLAIM, NOT A CONFIDENCE SCORE. Your confidence
+  field never influences severity; the pipeline reassesses severity from
+  exploit prerequisites, attack complexity, privileges, affected assets,
+  financial impact, scope, and mitigating controls. Unvalidated claims are
+  capped at medium and your original claim is preserved separately, so do
+  not inflate to compensate. Do not report the same claim from multiple
+  angles to raise its weight - duplicates are merged, not accumulated.
 - Severity calibration - your severity claims will be machine-checked and
   unsupported claims are DOWNGRADED, so calibrate honestly:
   * REENTRANCY: before reporting reentrancy, verify the ordering in the

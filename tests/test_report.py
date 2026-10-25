@@ -99,9 +99,9 @@ class TestMerge:
     def test_severity_ordering_critical_first(self):
         out = merge_findings(
             [
-                _tool(check="low-x", sev="low"),
-                _tool(check="crit", sev="critical"),
-                _tool(check="med", sev="medium"),
+                _tool(check="low-x", sev="low", status=FindingStatus.CONFIRMED),
+                _tool(check="crit", sev="critical", status=FindingStatus.CONFIRMED),
+                _tool(check="med", sev="medium", status=FindingStatus.CONFIRMED),
             ],
             [],
         )
@@ -168,7 +168,7 @@ class TestBuildReport:
             address="0x" + "ab" * 20,
             task_id=None,
             is_verified_source=True,
-            tool_findings=[_tool(sev="high")],
+            tool_findings=[_tool(sev="high", status=FindingStatus.CONFIRMED)],
             llm_findings=[
                 _llm(sev="critical", status=FindingStatus.REJECTED, path="B.sol", line=9)
             ],
@@ -185,7 +185,7 @@ class TestBuildReport:
         assert len(report.findings) == 2
         assert report.summary.by_severity == {"high": 1}
         assert report.summary.by_status.get("rejected") == 1
-        assert report.summary.by_status.get("potential") == 1
+        assert report.summary.by_status.get("confirmed") == 1
         assert report.findings[-1].status is FindingStatus.REJECTED
 
     def test_zero_findings_report_still_has_disclaimer(self):

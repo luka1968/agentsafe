@@ -84,6 +84,29 @@ class TestAgentOutputSchema:
         with pytest.raises(ValidationError):
             LLMFindingsPayload.model_validate({"findings": [], "is_safe": True})
 
+    def test_payload_section3_fields_round_trip(self):
+        p = LLMFindingsPayload.model_validate(
+            {
+                "findings": [
+                    {
+                        "title": "t",
+                        "severity": "high",
+                        "description": "d",
+                        "evidence": "e",
+                        "swc_id": "SWC-107",
+                        "preconditions": "any caller, no auth",
+                        "attack_scenario": "call drain in a reentry",
+                        "impact": "total fund loss",
+                    }
+                ]
+            }
+        )
+        f = p.findings[0]
+        assert f.swc_id == "SWC-107"
+        assert f.preconditions == "any caller, no auth"
+        assert f.attack_scenario == "call drain in a reentry"
+        assert f.impact == "total fund loss"
+
 
 class TestAgentAnalysis:
     @respx.mock
@@ -266,6 +289,11 @@ class TestValidationAgent:
         assert f.metadata["validation"]["rule"] == "cr0_independent_support"
         assert f.metadata["validation"]["supporting_source"] == ["slither"]
         assert f.metadata["validation"]["supporting_detector"] == "missing-access-control"
+        # severity rubric: confirmed keeps the impact claim, evidence refs set
+        assert f.severity is Severity.HIGH
+        assert f.proposed_severity is Severity.HIGH
+        assert f.metadata["validation"]["severity_basis"] == "rubric:confirmed"
+        assert f.supporting_evidence
 
     def test_unsupported_finding_becomes_potential(self):
         v = ValidationAgent()
@@ -274,6 +302,11 @@ class TestValidationAgent:
         f = out.findings[0]
         assert f.status is FindingStatus.POTENTIAL
         assert f.metadata["validation"]["rule"] == "pt0_default"
+        # severity rubric: unvalidated claims capped at medium, original
+        # impact claim preserved in proposed_severity
+        assert f.severity is Severity.MEDIUM
+        assert f.proposed_severity is Severity.HIGH
+        assert f.metadata["validation"]["severity_basis"] == "rubric:unvalidated_capped_at_medium"
 
     def test_missing_evidence_is_rejected(self):
         v = ValidationAgent()
@@ -362,7 +395,20 @@ class TestValidationAgent:
         llm_out = v.validate([self._llm_finding()], [self._tool_finding()])
         tool_out = v.validate_tools([self._tool_finding()], llm_out.findings)
         assert tool_out.confirmed == 1
-        assert tool_out.findings[0].metadata["validation"]["rule"] == "cr0_llm_corroboration"
+        f = tool_out.findings[0]
+        assert f.metadata["validation"]["rule"] == "cr0_llm_corroboration"
+        assert f.supporting_evidence
+
+    def test_tool_finding_swc_enrichment(self):
+        v = ValidationAgent()
+        out = v.validate_tools([self._tool_finding(file_path="X.sol", line_start=7)], [])
+        # detector 'missing-access-control' is not in the conservative SWC map
+        assert out.findings[0].swc_id is None
+        out2 = v.validate_tools(
+            [self._tool_finding(file_path="X.sol", line_start=7, detector_id="reentrancy-eth")],
+            [],
+        )
+        assert out2.findings[0].swc_id == "SWC-107"
 
     def test_tool_info_finding_is_informational(self):
         v = ValidationAgent()

@@ -44,6 +44,7 @@ STAGES = (
     "bytecode_analysis",
     "llm_agents",
     "cross_validation",
+    "severity_assessment",
     "merge_report",
 )
 
@@ -321,7 +322,24 @@ class AuditOrchestrator:
                     tool_final = list(tool_findings)
                     skip("cross_validation", "no findings to validate")
 
-                # -- 8. merge + report -------------------------------------------
+                # -- 8. severity assessment (documented rubric) -----------------
+                start("severity_assessment")
+                assessed = [*tool_final, *findings]
+                if assessed:
+                    adjusted = sum(
+                        1
+                        for f in assessed
+                        if f.proposed_severity is not None
+                        and f.proposed_severity is not f.severity
+                    )
+                    done(
+                        "severity_assessment",
+                        detail=f"assessed={len(assessed)} adjusted={adjusted}",
+                    )
+                else:
+                    skip("severity_assessment", "no findings to assess")
+
+                # -- 9. dedupe + report -------------------------------------------
                 start("merge_report")
                 if tools_failed:
                     limitations.append(

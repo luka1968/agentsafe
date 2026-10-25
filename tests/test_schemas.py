@@ -85,6 +85,27 @@ class TestFindingSemantics:
         with pytest.raises(ValidationError):
             Finding(**_finding(status="proven"))
 
+    def test_finding_id_auto_generated_and_deterministic(self):
+        f1 = Finding(**_finding())
+        f2 = Finding(**_finding())
+        assert f1.finding_id == f2.finding_id
+        assert f1.finding_id.startswith("f-") and len(f1.finding_id) == 14
+        f3 = Finding(**_finding(title="Different claim"))
+        assert f3.finding_id != f1.finding_id
+
+    def test_section3_fields_default(self):
+        f = Finding(**_finding())
+        assert f.proposed_severity is None
+        assert f.swc_id is None and f.cwe_id is None
+        assert f.preconditions == "" and f.attack_scenario == "" and f.impact == ""
+        assert f.supporting_evidence == []
+        assert f.contradicting_evidence == []
+        assert f.limitations == []
+
+    def test_explicit_finding_id_preserved(self):
+        f = Finding(**_finding(finding_id="f-custom00001"))
+        assert f.finding_id == "f-custom00001"
+
     def test_entry_and_non_evidentiary_states_may_lack_evidence(self):
         for st in ("tool_detected", "llm_suggested", "rejected", "needs_manual_review"):
             f = Finding(**_finding(evidence="", status=st))

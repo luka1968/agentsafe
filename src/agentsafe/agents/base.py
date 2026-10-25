@@ -39,6 +39,11 @@ class LLMFindingPayload(BaseModel):
     description: str = Field(min_length=1)
     evidence: str = Field(min_length=1)
     recommendation: str = ""
+    swc_id: str | None = Field(default=None, max_length=16)
+    cwe_id: str | None = Field(default=None, max_length=16)
+    preconditions: str = ""
+    attack_scenario: str = ""
+    impact: str = ""
     file_path: str | None = None
     line_start: int | None = Field(default=None, ge=1)
     line_end: int | None = Field(default=None, ge=1)
@@ -199,9 +204,14 @@ object described in your instructions."""
             status=FindingStatus.LLM_SUGGESTED,
             source=[self.name],
             detector_id=None,
+            swc_id=p.swc_id,
+            cwe_id=p.cwe_id,
             description=p.description,
             evidence=p.evidence,
             recommendation=p.recommendation,
+            preconditions=p.preconditions,
+            attack_scenario=p.attack_scenario,
+            impact=p.impact,
             file_path=p.file_path or (label.split("#part")[0] or None),
             line_start=p.line_start,
             line_end=p.line_end,

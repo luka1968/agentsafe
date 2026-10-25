@@ -134,6 +134,12 @@ def _absorb_into(host: Finding, dup: Finding, *, cross: bool = False) -> None:
     )
     if _norm(dup.evidence) and _norm(dup.evidence) not in _norm(host.evidence):
         host.evidence = (host.evidence + "\n--- additional evidence ---\n" + dup.evidence)[:4000]
+    for ref in dup.supporting_evidence:
+        if ref not in host.supporting_evidence:
+            host.supporting_evidence.append(ref)
+    for ref in dup.contradicting_evidence:
+        if ref not in host.contradicting_evidence:
+            host.contradicting_evidence.append(ref)
     if dup.confidence is not None:
         host.confidence = max(host.confidence or 0.0, dup.confidence)
     if dup.status is FindingStatus.REJECTED:

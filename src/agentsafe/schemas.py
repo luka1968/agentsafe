@@ -6,12 +6,13 @@ MUST normalize to `Finding`. Status values never imply "contract is safe".
 
 from __future__ import annotations
 
+import hashlib
 import re
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from agentsafe import CHAIN_ID, REPORT_DISCLAIMER
 
@@ -102,18 +103,46 @@ class Finding(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     title: str = Field(min_length=1, max_length=300)
+    finding_id: str = Field(default="", max_length=32)
     severity: Severity
+    proposed_severity: Severity | None = None
     status: FindingStatus
     source: list[str] = Field(min_length=1)
     detector_id: str | None = None
+    swc_id: str | None = Field(default=None, max_length=16)
+    cwe_id: str | None = Field(default=None, max_length=16)
     description: str = Field(min_length=1)
     evidence: str = ""
     recommendation: str = ""
+    preconditions: str = ""
+    attack_scenario: str = ""
+    impact: str = ""
     file_path: str | None = None
     line_start: int | None = Field(default=None, ge=1)
     line_end: int | None = Field(default=None, ge=1)
     confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    supporting_evidence: list[str] = Field(default_factory=list)
+    contradicting_evidence: list[str] = Field(default_factory=list)
+    limitations: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _ensure_finding_id(self) -> "Finding":
+        """Every finding carries a unique, deterministic id derived from its
+        origin (source + detector + claim + location), so reports are
+        reproducible and duplicates are traceable across runs."""
+        if not self.finding_id:
+            basis = "|".join(
+                [
+                    ",".join(sorted(self.source)),
+                    self.detector_id or "",
+                    self.title,
+                    self.file_path or "",
+                    str(self.line_start or 0),
+                ]
+            )
+            self.finding_id = "f-" + hashlib.sha1(basis.encode()).hexdigest()[:12]
+        return self
 
     @field_validator("source")
     @classmethod

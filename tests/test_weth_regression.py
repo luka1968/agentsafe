@@ -180,8 +180,16 @@ class TestWETHFalsePositives:
         assert "high" not in report.summary.by_severity
         assert report.summary.by_status.get("rejected") == 1
         assert report.summary.by_status.get("informational") == 3
+        # every finding carries its original impact claim + assessed severity
+        assert all(f.proposed_severity is not None for f in report.findings)
+        assert all(
+            f.severity is Severity.INFO
+            for f in report.findings
+            if f.status is FindingStatus.INFORMATIONAL
+        )
         # rejected finding retained for auditability, sorts last
         assert report.findings[-1].status is FindingStatus.REJECTED
+        assert report.findings[-1].proposed_severity is Severity.HIGH
         # honesty rails intact
         blob = report.model_dump_json()
         assert "not a formal security audit" in report.disclaimer
@@ -206,7 +214,14 @@ class TestRealVulnerabilitiesNotSuppressed:
         assert out.rejected == 0, out.findings[0].metadata["validation"]
         res = out.findings[0]
         assert res.status is FindingStatus.POTENTIAL
-        assert res.severity is Severity.HIGH
+        # severity rubric: unvalidated claims never headline as critical/high;
+        # the original impact claim is preserved in proposed_severity
+        assert res.severity is Severity.MEDIUM
+        assert res.proposed_severity is Severity.HIGH
+        assert (
+            res.metadata["validation"]["severity_basis"]
+            == "rubric:unvalidated_capped_at_medium"
+        )
 
     def test_tool_corroborated_overflow_stays_confirmed_critical(self):
         v = ValidationAgent()
@@ -228,9 +243,13 @@ class TestRealVulnerabilitiesNotSuppressed:
         assert llm_out.confirmed == 1
         assert llm_out.findings[0].status is FindingStatus.CONFIRMED
         assert llm_out.findings[0].severity is Severity.CRITICAL
+        assert llm_out.findings[0].proposed_severity is Severity.CRITICAL
+        assert llm_out.findings[0].metadata["validation"]["severity_basis"] == "rubric:confirmed"
         assert llm_out.findings[0].metadata["validation"]["rule"] == "cr0_independent_support"
         assert tool_out.confirmed == 1
         assert tool_out.findings[0].metadata["validation"]["rule"] == "cr0_llm_corroboration"
+        # SWC enrichment from the detector id
+        assert tool_out.findings[0].swc_id == "SWC-101"
 
         # report level: both merge into one confirmed critical finding
         merged = merge_findings(tool_out.findings, llm_out.findings)
