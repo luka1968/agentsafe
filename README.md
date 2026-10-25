@@ -17,6 +17,29 @@ EVM smart-contract **AI risk screening** MCP server — Ethereum Mainnet, payabl
 - 🛡️ **Fail-closed** — payment verified on-chain before any audit is dispatched
 - ☁️ **Serverless persistent** — task state survives cold starts (Upstash Redis)
 
+## Validation Engine
+Every candidate finding passes a deterministic validation pipeline before it
+reaches the report:
+- **5-state machine** — `confirmed` (independent dual-source corroboration only),
+  `potential` (default exit), `informational` (standard behavior / theoretical),
+  `rejected` (deterministically refuted, e.g. Checks-Effects-Interactions verified
+  in source), `needs_manual_review` (evidence untraceable — hallucination guard).
+  Entry states (`tool_detected`/`llm_suggested`) never appear in final reports.
+- **Anti-hallucination gate** — LLM findings must carry an evidence quote that is
+  located verbatim in the analyzed source, with line numbers; otherwise they are
+  downgraded for manual review, never presented as fact.
+- **Evidence-based severity rubric** — severity is assessed from exploit
+  prerequisites and mitigating controls, never from LLM confidence or repetition:
+  unvalidated claims are capped at medium (the original claim is preserved in
+  `proposed_severity`), confirmed findings may only be downgraded (privilege
+  gates, pausable/timelock/guard controls), never upgraded.
+- **Full audit trail** — every state change records the rule that fired
+  (`re0_cei_satisfied`, `ov0_theoretical_only`, `cr0_independent_support`, …),
+  the reason, and supporting/contradicting code references with line numbers.
+
+> This is AI-assisted risk screening with deterministic falsification, not a
+> substitute for a formal audit.
+
 ## Pay-per-call Pricing
 | Tier | Price | Scope |
 |------|-------|-------|
