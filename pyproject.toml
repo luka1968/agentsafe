@@ -25,6 +25,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+report = [
+    "reportlab>=4.2",
+]
+
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",

@@ -74,11 +74,15 @@ class SourceBundle(BaseModel):
     implementation: str | None = None
 
 
-def parse_source_code(raw: str) -> tuple[list[SourceFile], dict[str, Any] | None, str]:
+def parse_source_code(
+    raw: str, default_filename: str = "contract.sol"
+) -> tuple[list[SourceFile], dict[str, Any] | None, str]:
     """Parse Etherscan's SourceCode field into files + settings + language.
 
     Handles: plain source, Standard JSON ``{...}``, and double-brace escaped
     Standard JSON ``{{...}}`` (multi-file). Never concatenates files.
+    Single-file sources are named after the verified contract (Section 7:
+    never invent locations; use the real filename when it is known).
     """
     s = (raw or "").strip()
     if not s:
@@ -113,8 +117,9 @@ def parse_source_code(raw: str) -> tuple[list[SourceFile], dict[str, Any] | None
         language = str(std.get("language") or "Solidity")
         return files, settings if isinstance(settings, dict) else None, language
 
-    # Plain single-file source
-    return [SourceFile(path="contract.sol", content=raw)], None, "Solidity"
+    # Plain single-file source: name it after the verified contract so
+    # findings reference a real filename instead of a generic placeholder.
+    return [SourceFile(path=default_filename, content=raw)], None, "Solidity"
 
 
 class EtherscanClient:
@@ -179,7 +184,9 @@ class EtherscanClient:
         if not source_raw.strip() or not contract_name:
             raise ContractNotVerifiedError(f"contract at {addr} is not verified")
 
-        files, settings, language = parse_source_code(source_raw)
+        files, settings, language = parse_source_code(
+            source_raw, default_filename=f"{contract_name}.sol"
+        )
         if not files:
             raise ContractNotVerifiedError(f"empty verified source for {addr}")
 

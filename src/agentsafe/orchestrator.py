@@ -413,6 +413,8 @@ class AuditOrchestrator:
                     tool_versions=tool_versions,
                     tool_executions=tool_executions,
                     static_analysis_status=static_status,
+                    compiler_version=(bundle.compiler_version if bundle is not None else ""),
+                    analyzed_files=([sf.path for sf in bundle.files] if bundle is not None else ()),
                     llm_usage=llm_usage,
                     limitations=limitations,
                     errors=errors,

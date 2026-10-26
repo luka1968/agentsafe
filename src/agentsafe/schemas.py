@@ -68,7 +68,7 @@ class FindingStatus(StrEnum):
     NEEDS_MANUAL_REVIEW = "needs_manual_review"
 
     @classmethod
-    def final_states(cls) -> frozenset["FindingStatus"]:
+    def final_states(cls) -> frozenset[FindingStatus]:
         """States valid in a customer-facing report."""
         return frozenset(
             {
@@ -120,6 +120,14 @@ class Finding(BaseModel):
     file_path: str | None = None
     line_start: int | None = Field(default=None, ge=1)
     line_end: int | None = Field(default=None, ge=1)
+    # Section 7 traceability marker, set by the validation agent:
+    #   verified   - location comes from a trusted analyzer mapping, or the
+    #                LLM evidence quote was located verbatim in that file/line
+    #   unverified - location plausibly correct but could not be verified
+    #                (decompiled pseudo-source, short evidence, no filename)
+    #   unavailable - no file and no line could be determined
+    # Never guessed; absent (None) means "not assessed".
+    location_status: Literal["verified", "unverified", "unavailable"] | None = None
     confidence: float | None = Field(default=None, ge=0.0, le=1.0)
     supporting_evidence: list[str] = Field(default_factory=list)
     contradicting_evidence: list[str] = Field(default_factory=list)
@@ -127,7 +135,7 @@ class Finding(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
-    def _ensure_finding_id(self) -> "Finding":
+    def _ensure_finding_id(self) -> Finding:
         """Every finding carries a unique, deterministic id derived from its
         origin (source + detector + claim + location), so reports are
         reproducible and duplicates are traceable across runs."""
@@ -328,8 +336,14 @@ class AuditReport(BaseModel):
     address: str
     chain: Literal["ethereum-mainnet"] = CHAIN_ID
     task_id: str | None = None
+    # Human-facing report identifier for the customer-facing HTML/PDF cover
+    # page (the task id when dispatched by the service, else a derived id).
+    report_id: str = ""
     timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
     is_verified_source: bool = False
+    # Scope/methodology data (Section 8): what was actually analyzed.
+    compiler_version: str = ""
+    analyzed_files: list[str] = Field(default_factory=list)
     summary: ReportSummary = Field(default_factory=ReportSummary)
     findings: list[Finding] = Field(default_factory=list)
     tool_executions: list[ToolExecution] = Field(default_factory=list)

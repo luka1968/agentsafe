@@ -56,6 +56,7 @@ from agentsafe.pricing import (
     count_source_lines,
     pricing_summary,
 )
+from agentsafe.report_render import ReportRenderError, render_html, render_pdf
 from agentsafe.rpc import EthRpcClient
 from agentsafe.schemas import AuditReport, TaskState, normalize_address
 from agentsafe.task_store import open_task_store
@@ -368,7 +369,7 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
                         try:
                             body = json.loads(base64.b64decode(required_header).decode("utf-8"))
                         except Exception:  # noqa: BLE001 - fall back to minimal body
-                            logger.warning("could not decode PAYMENT-REQUIRED header for body mirror")
+                            logger.warning("could not decode PAYMENT-REQUIRED header for body mirror")  # noqa: E501
                 return JSONResponse(body, status_code=instr.status, headers=headers)
             if result.type != "payment-verified" or result.payment_payload is None:
                 return JSONResponse(
@@ -403,6 +404,106 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
                 {"ok": False, "error_code": "internal_error", "error": "internal error"},
                 status_code=500,
             )
+
+    @app.custom_route("/api/audit/{task_id}/report", methods=["GET"])
+    async def _api_report_html(request: Request) -> Response:
+        """Customer-facing HTML report (Section 8). The task id acts as a
+        bearer capability: unknown ids 404, unpaid tasks get fail-closed 402
+        when payments are enabled."""
+        return await _serve_rendered_report(request, "html")
+
+    @app.custom_route("/api/audit/{task_id}/report.pdf", methods=["GET"])
+    async def _api_report_pdf(request: Request) -> Response:
+        """Customer-facing PDF report (Section 8). Optional dependency;
+        503 when the PDF renderer is not installed."""
+        return await _serve_rendered_report(request, "pdf")
+
+    async def _serve_rendered_report(request: Request, fmt: str) -> Response:
+        """Shared renderer endpoint: resolves the task, enforces the payment
+        binding (fail-closed), fetches the SAME validated report JSON the MCP
+        tool serves, and renders HTML/PDF from it. Never re-computes findings
+        and never leaks infrastructure internals."""
+        task_id = str(request.path_params.get("task_id", ""))
+        if not task_id or len(task_id) > 64:
+            return JSONResponse(
+                {"ok": False, "error_code": "invalid_task_id", "error": "task_id must be 1..64 chars"},  # noqa: E501
+                status_code=400,
+            )
+        task = task_store.get(task_id)
+        if task is None:
+            return JSONResponse(
+                {"ok": False, "error_code": "unknown_task", "error": "no such task (it may have expired or never existed)"},  # noqa: E501
+                status_code=404,
+            )
+        if task.run_id is None:
+            return JSONResponse(
+                {"ok": False, "error_code": "not_ready", "state": task.state.value,
+                 "error": "workflow dispatch pending or run not yet associated"},
+                status_code=409,
+            )
+        try:
+            run = await gh.get_run(task.run_id)
+        except GitHubClientError:
+            logger.exception("report endpoint: run lookup failed")
+            return JSONResponse(
+                {"ok": False, "error_code": "upstream_error", "error": "status lookup failed"},
+                status_code=502,
+            )
+        mapped = gh.map_run_status(run)
+        task_store.set_state(task_id, TaskState(mapped))
+        if mapped != "completed":
+            return JSONResponse(
+                {"ok": False, "error_code": "not_ready", "state": mapped,
+                 "error": "audit run is not completed yet"},
+                status_code=409,
+            )
+        if payment.enabled and not task.paid:
+            # Fail-closed: report withheld until a verified payment is bound.
+            # Payment is taken at dispatch (POST /api/audit), so this branch
+            # only fires on tampered/foreign tasks - point the client there.
+            return JSONResponse(
+                {"ok": False, "error_code": "payment_required",
+                 "error": "report withheld: no verified payment is bound to this task",
+                 "how_to_pay": f"POST {REST_AUDIT_PATH} with x402 payment to create a paid task",
+                 "price": settings.X402_REST_PRICE},
+                status_code=402,
+            )
+        try:
+            report = await gh.fetch_report(task.run_id, task_id)
+        except ArtifactExpiredError:
+            task_store.set_state(task_id, TaskState.EXPIRED, error_code="artifact_expired")
+            return JSONResponse(
+                {"ok": False, "error_code": "artifact_expired", "error": "report artifact expired; re-run the audit"},  # noqa: E501
+                status_code=410,
+            )
+        except GitHubClientError:
+            logger.exception("report endpoint: artifact fetch failed")
+            return JSONResponse(
+                {"ok": False, "error_code": "upstream_error", "error": "report unavailable"},
+                status_code=502,
+            )
+        try:
+            validated = AuditReport.model_validate(report)
+        except Exception:  # noqa: BLE001 - artifact content is not trusted
+            logger.exception("report endpoint: artifact payload failed validation")
+            return JSONResponse(
+                {"ok": False, "error_code": "invalid_report", "error": "stored report failed validation"},  # noqa: E501
+                status_code=502,
+            )
+        if fmt == "html":
+            return HTMLResponse(render_html(validated))
+        try:
+            pdf_bytes = render_pdf(validated)
+        except ReportRenderError as exc:
+            return JSONResponse(
+                {"ok": False, "error_code": "renderer_unavailable", "error": str(exc)},
+                status_code=503,
+            )
+        return Response(
+            pdf_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'inline; filename="agentsafe-{task_id}.pdf"'},
+        )
 
     async def _dispatch_audit_rest(
         request: Request,

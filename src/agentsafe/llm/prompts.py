@@ -32,7 +32,7 @@ OUTPUT FORMAT - STRICT JSON, NO MARKDOWN, NO COMMENTARY:
       "preconditions": "what must be true to exploit (required privileges, state, token standard), else empty string",
       "attack_scenario": "concrete step-by-step failure mode, else empty string",
       "impact": "concrete damage (funds lost, minting, DoS, scope), else empty string",
-      "file_path": "file path if known, else null",
+      "file_path": "the EXACT filename of the provided file (verbatim, including directories), or null ONLY when the code was provided without a filename",
       "line_start": integer line number in the provided file (MANDATORY),
       "line_end": integer ending line number if the issue spans lines, else null,
       "confidence": number between 0.0 and 1.0
@@ -46,7 +46,8 @@ Rules:
 - LINE NUMBERS: line_start is MANDATORY. It must be the line number inside
   the provided file where the evidence fragment appears. You may use null
   ONLY for decompiled pseudo-source when the line number is genuinely
-  unknown.
+  unknown. NEVER invent or guess line numbers or filenames: use the file
+  name exactly as it was given to you (e.g. "WETH9.sol", not "contract.sol").
 - If you cannot find issues, return {"findings": []}. Do NOT invent findings.
 - Severity guidance: critical = direct loss of funds/total takeover;
   high = likely exploitable privilege or fund issue; medium = conditional

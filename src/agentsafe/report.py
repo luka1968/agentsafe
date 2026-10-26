@@ -11,6 +11,7 @@ Dedup rules (Prompt 7):
 from __future__ import annotations
 
 import difflib
+import hashlib
 import logging
 import re
 from collections.abc import Sequence
@@ -29,6 +30,13 @@ from agentsafe.schemas import (
 )
 
 logger = logging.getLogger("agentSAFE.report")
+
+
+def _derived_report_id(address: str) -> str:
+    """Stable report id for audits run without a service task id (worker
+    mode). Never used for auth - purely a human-facing label."""
+    basis = f"{address}|{datetime.now(UTC).isoformat()}"
+    return "AS-" + hashlib.sha1(basis.encode()).hexdigest()[:12]
 
 _SEVERITY_ORDER = {
     Severity.CRITICAL: 0,
@@ -218,14 +226,19 @@ def build_report(
     execution_time_seconds: float,
     tool_executions: Sequence[ToolExecution] = (),
     static_analysis_status: Literal["full", "partial", "unavailable", "skipped"] = "skipped",
+    compiler_version: str = "",
+    analyzed_files: Sequence[str] = (),
 ) -> AuditReport:
     findings = merge_findings(tool_findings, llm_findings)
     report = AuditReport(
         address=address,
         chain=CHAIN_ID,
         task_id=task_id,
+        report_id=task_id or _derived_report_id(address),
         timestamp=datetime.now(UTC),
         is_verified_source=is_verified_source,
+        compiler_version=compiler_version,
+        analyzed_files=list(analyzed_files),
         summary=summarize(findings, tools_executed, tools_failed),
         findings=findings,
         tool_executions=list(tool_executions),

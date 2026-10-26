@@ -264,6 +264,7 @@ class ValidationAgent:
                     "derived from decompiled pseudo-source; identifiers and "
                     "line numbers are approximate",
                 ]
+            nf.location_status = _llm_location_status(nf, is_pseudo_source, source_segments)
             outcome.findings.append(nf)
             self._count(outcome, nf)
         return outcome
@@ -288,6 +289,7 @@ class ValidationAgent:
                     "derived from decompiled pseudo-source; identifiers and "
                     "line numbers are approximate",
                 ]
+            nf.location_status = _tool_location_status(nf)
             outcome.findings.append(nf)
             self._count(outcome, nf)
         return outcome
@@ -618,3 +620,40 @@ class ValidationAgent:
         if swc:
             nf.swc_id = swc
         return nf
+
+
+# ---------------------------------------------------------------------------
+# Location traceability (Section 7): mark how trustworthy a finding's source
+# location is. Never guessed - each status has a deterministic trigger.
+# ---------------------------------------------------------------------------
+
+
+def _llm_location_status(
+    f: Finding,
+    is_pseudo: bool,
+    segments: dict[str, str] | None,
+) -> str | None:
+    """LLM findings: 'verified' requires a filename + line AND an evidence
+    quote long enough to have been located verbatim in that source (the e0
+    gate ran and passed to reach a terminal state). Everything else is
+    honestly marked unverified/unavailable, never 'verified' by assumption."""
+    if not f.file_path and not f.line_start:
+        return "unavailable"
+    if is_pseudo or not segments:
+        return "unverified"
+    frag = _longest_evidence_line(f.evidence or "")
+    if f.file_path and f.line_start and len(frag) >= _MIN_TRACEABLE_EVIDENCE_CHARS:
+        return "verified"
+    return "unverified"
+
+
+def _tool_location_status(f: Finding) -> str | None:
+    """Tool findings: the analyzer's own source mapping is authoritative
+    (it comes from the AST, not a quoted claim). 'verified' when the tool
+    reported both file and line; line-only or file-only is 'unverified';
+    nothing at all is 'unavailable'."""
+    if f.file_path and f.line_start:
+        return "verified"
+    if f.file_path or f.line_start:
+        return "unverified"
+    return "unavailable"
