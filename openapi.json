@@ -129,6 +129,135 @@
           ]
         }
       }
+    },
+    "/api/audit/{task_id}/report": {
+      "get": {
+        "summary": "Retrieve the customer-facing HTML assessment report (task_id as bearer capability; never charges; never triggers a second audit)",
+        "operationId": "getReportHtml",
+        "tags": [
+          "report"
+        ],
+        "description": "Same validated AuditReport as the machine JSON and PDF views. Fail-closed: unpaid tasks 402, unknown 404, incomplete 409. Never exposes storage paths or secrets.",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Report rendered from the validated audit model"
+          },
+          "402": {
+            "description": "Payment required (fail-closed: report withheld without a bound verified payment)"
+          },
+          "404": {
+            "description": "Unknown task id"
+          },
+          "409": {
+            "description": "Audit run not completed"
+          },
+          "410": {
+            "description": "Report artifact expired"
+          },
+          "502": {
+            "description": "Upstream GitHub artifact failure"
+          },
+          "503": {
+            "description": "PDF renderer unavailable (PDF route only)"
+          }
+        }
+      }
+    },
+    "/api/audit/{task_id}/report.json": {
+      "get": {
+        "summary": "Retrieve the machine-readable JSON assessment report",
+        "operationId": "getReportJson",
+        "tags": [
+          "report"
+        ],
+        "description": "Machine-readable report identical in structure to the MCP check_audit_status report. Same fail-closed gates as the HTML/PDF routes.",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Report rendered from the validated audit model"
+          },
+          "402": {
+            "description": "Payment required (fail-closed: report withheld without a bound verified payment)"
+          },
+          "404": {
+            "description": "Unknown task id"
+          },
+          "409": {
+            "description": "Audit run not completed"
+          },
+          "410": {
+            "description": "Report artifact expired"
+          },
+          "502": {
+            "description": "Upstream GitHub artifact failure"
+          },
+          "503": {
+            "description": "PDF renderer unavailable (PDF route only)"
+          }
+        }
+      }
+    },
+    "/api/audit/{task_id}/report.pdf": {
+      "get": {
+        "summary": "Retrieve the customer-facing PDF assessment report (optional renderer)",
+        "operationId": "getReportPdf",
+        "tags": [
+          "report"
+        ],
+        "description": "PDF rendered from the same validated AuditReport. reportlab must be installed (requirements.txt); otherwise returns 503. Never executes scripts, never reads local files or network.",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Report rendered from the validated audit model"
+          },
+          "402": {
+            "description": "Payment required (fail-closed: report withheld without a bound verified payment)"
+          },
+          "404": {
+            "description": "Unknown task id"
+          },
+          "409": {
+            "description": "Audit run not completed"
+          },
+          "410": {
+            "description": "Report artifact expired"
+          },
+          "502": {
+            "description": "Upstream GitHub artifact failure"
+          },
+          "503": {
+            "description": "PDF renderer unavailable (PDF route only)"
+          }
+        }
+      }
     }
   },
   "components": {

@@ -20,7 +20,10 @@ from typing import Final
 
 from agentsafe.explorer import SourceBundle
 
-CUSTOM_PRICING_CONTACT_URL: Final[str] = "https://tally.so/r/laby7B"
+CUSTOM_PRICING_CONTACT_URL: Final[str] = (
+    "https://whispering-corleggy-16b.notion.site/"
+    "contact-agentsafe-3ff1a8f7d65480269e9add7d15332df4"
+)
 
 # (max_source_lines_inclusive, price) - ascending order
 AUDIT_PRICING_TIERS: Final[tuple[tuple[int, str], ...]] = (

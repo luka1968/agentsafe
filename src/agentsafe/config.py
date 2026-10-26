@@ -186,6 +186,10 @@ class Settings(BaseSettings):
     X402_SDK_VERSION: str = "2.25.0"
     X402_FACILITATOR_URL: str = "https://x402.org/facilitator"
     X402_PRICE: str = "$0.01"
+    # Price of STANDALONE verified-source retrieval (Section 10). Fetching
+    # the source internally as part of a paid audit never adds this charge;
+    # valid authorized report retrieval is free (never charges again).
+    X402_SOURCE_RETRIEVAL_PRICE: str = "$0.01"
     # Flat price advertised by the x402 REST discovery endpoint (POST
     # /api/audit, documented in openapi.json for x402scan indexing). This is
     # the endpoint's own flat fee, separate from the MCP tool's tiered

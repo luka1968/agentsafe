@@ -712,7 +712,7 @@ class TestTieredPricing:
         assert body["error"] == "ENTERPRISE_INQUIRY_REQUIRED"
         assert "5,000-line limit" in body["message"]
         assert "enterprise" in body["message"].lower()
-        assert body["inquiryUrl"] == "https://tally.so/r/laby7B"
+        assert body["inquiryUrl"] == "https://whispering-corleggy-16b.notion.site/contact-agentsafe-3ff1a8f7d65480269e9add7d15332df4"
         # no payment challenge and nothing dispatched
         assert routes["verify"].call_count == 0
         assert routes["settle"].call_count == 0

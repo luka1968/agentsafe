@@ -418,6 +418,13 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
         503 when the PDF renderer is not installed."""
         return await _serve_rendered_report(request, "pdf")
 
+    @app.custom_route("/api/audit/{task_id}/report.json", methods=["GET"])
+    async def _api_report_json(request: Request) -> Response:
+        """Machine-readable JSON report (Section 9). Same task-id capability,
+        same fail-closed gate as HTML/PDF: never charges, never dispatches a
+        second audit, never exposes storage paths or secrets."""
+        return await _serve_rendered_report(request, "json")
+
     async def _serve_rendered_report(request: Request, fmt: str) -> Response:
         """Shared renderer endpoint: resolves the task, enforces the payment
         binding (fail-closed), fetches the SAME validated report JSON the MCP
@@ -492,6 +499,8 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
             )
         if fmt == "html":
             return HTMLResponse(render_html(validated))
+        if fmt == "json":
+            return JSONResponse(validated.model_dump(mode="json"))
         try:
             pdf_bytes = render_pdf(validated)
         except ReportRenderError as exc:
@@ -882,6 +891,64 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
         except Exception as exc:
             info["etherscan_error"] = str(exc)
         return {"ok": True, **info}
+
+    @app.tool
+    async def get_source_code(address: str, ctx: Context) -> dict[str, Any] | ToolResult:
+        """Standalone verified-source retrieval at a flat $0.01 USDC (Section 10).
+
+        Priced and fail-closed exactly like the other paid MCP tools. When the
+        same source was already fetched internally as part of a paid audit, no
+        additional standalone charge applies (the audit tier already covers it)
+        - this tool is for clients that want ONLY the source text. In dev mode
+        (PAYMENTS_ENABLED=false) it is free, mirroring the other tools.
+
+        Returns the verified source file(s) verbatim, never a placeholder
+        filename, plus metadata already present on-chain (network, address).
+        No secrets, no storage paths, no compiler configuration internals.
+        """
+        try:
+            addr = normalize_address(address)
+        except ValueError as exc:
+            return {"ok": False, "error_code": "invalid_address", "error": str(exc)}
+
+        verified: VerifiedPayment | None = None
+        if payment.enabled:
+            # Flat standalone price (Section 10: $0.01 USDC), quoted before any
+            # work so the advertised amount is fixed and non-influenceable.
+            requirements = payment.requirements_for_price(settings.X402_SOURCE_RETRIEVAL_PRICE)
+            verified, deny = await payment.verify(
+                ctx, "get_source_code", requirements=requirements
+            )
+            if deny is not None:
+                return deny
+
+        try:
+            bundle = await explorer.get_verified_source(addr)
+        except ContractNotVerifiedError:
+            return {
+                "ok": False,
+                "error_code": "source_not_verified",
+                "error": "no verified source is available for this address",
+            }
+        except ExplorerError as exc:
+            return {
+                "ok": False,
+                "error_code": "source_retrieval_failed",
+                "error": f"could not retrieve source: {exc}",
+            }
+
+        files = [
+            {"path": sf.path, "content": sf.content} for sf in bundle.files
+        ]
+        return {
+            "ok": True,
+            "address": addr,
+            "network": "ethereum-mainnet",
+            "contract_name": bundle.contract_name,
+            "compiler_version": bundle.compiler_version,
+            "files": files,
+            "price_paid": settings.X402_SOURCE_RETRIEVAL_PRICE,
+        }
 
     return app
 
