@@ -1,10 +1,10 @@
-# agentSAFE — Privacy Policy
+# AgentSafe — Privacy Policy
 
 Version: 2.0 · Effective date: **October 21, 2026** · Operator: **workfern**
 (independent developer, Hong Kong)
 
 This policy is drafted to be consistent with the Hong Kong Personal Data
-(Privacy) Ordinance ("PDPO", Cap. 486) and describes what the agentSAFE
+(Privacy) Ordinance ("PDPO", Cap. 486) and describes what the AgentSafe
 service ("Service") actually collects. It is published at `/privacy` by the
 Service itself. `TODO — OWNER INPUT: final legal review by a Hong Kong
 practitioner before treating this policy as PDPO-certified.`

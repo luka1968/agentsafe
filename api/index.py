@@ -1,4 +1,4 @@
-"""Vercel Serverless Function for agentSAFE MCP server (ASGI entrypoint).
+"""Vercel Serverless Function for AgentSafe MCP server (ASGI entrypoint).
 
 The Vercel Python runtime requires a top-level ``app`` variable that is an
 ASGI callable. FastMCP's ``http_app()`` provides it, with two serverless

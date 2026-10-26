@@ -1,11 +1,11 @@
 ---
 name: agentsafe-audit
-description: AI-powered smart contract security audit with x402 payment.
+description: AgentSafe AI-Powered Smart Contract Security Intelligence with x402 payment.
 endpoint: https://x402.workfern.com/mcp
 transport: streamable-http
 ---
 
-# Agentsafe Audit Skill
+# AgentSafe Audit Skill
 
 ## 功能介绍
 当用户需要审计智能合约（尤其是闭源合约或需要深度逻辑分析的合约）时，使用此技能。

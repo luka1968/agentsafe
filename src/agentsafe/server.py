@@ -1,4 +1,4 @@
-"""FastMCP server - the agentSAFE MCP entry point.
+"""FastMCP server - the AgentSafe MCP entry point.
 
 Tools:
   audit_contract(address)        -> dispatch GitHub Actions audit, return task_id

@@ -1,4 +1,4 @@
-# agentSAFE — Terms of Service
+# AgentSafe — Terms of Service
 
 Version: 1.1 (owner-configured) · Effective date: **October 21, 2026** ·
 Status: draft for legal review
@@ -6,7 +6,7 @@ Status: draft for legal review
 Operator: **workfern** — an independent developer, Hong Kong. Governing
 jurisdiction: **Hong Kong**.
 
-These Terms of Service ("ToS") govern use of the agentSAFE MCP service
+These Terms of Service ("ToS") govern use of the AgentSafe MCP service
 ("Service"), an AI-assisted smart-contract risk-screening tool operated by
 workfern. By calling any Service tool, you ("you", "the user") accept these
 terms. If you do not accept them, do not use the Service.
@@ -19,7 +19,7 @@ terms. If you do not accept them, do not use the Service.
 
 ## 1. Service description and scope
 
-agentSAFE performs AI-assisted screening of Ethereum Mainnet smart
+AgentSafe performs AI-assisted screening of Ethereum Mainnet smart
 contracts. For a contract address you provide, the Service retrieves the
 verified source code, runs third-party static and symbolic analysis tools,
 and uses large language model ("LLM") agents to summarize potential risks.

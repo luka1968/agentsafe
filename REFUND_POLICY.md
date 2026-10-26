@@ -1,9 +1,9 @@
-# agentSAFE — Refund Policy
+# AgentSafe — Refund Policy
 
 Version: 1.0 · Effective date: **October 21, 2026** · Operator: **workfern**
 (Hong Kong)
 
-This policy is part of the agentSAFE Terms of Service (see
+This policy is part of the AgentSafe Terms of Service (see
 `TERMS_OF_SERVICE.md`, Section 8) and states the operator's confirmed
 business rule.
 

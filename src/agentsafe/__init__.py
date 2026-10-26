@@ -13,7 +13,7 @@ __version__ = "0.1.0"
 CHAIN_ID: Final = "ethereum-mainnet"
 
 REPORT_DISCLAIMER = (
-    "This report is AI-assisted risk screening, not a formal security audit. "
+    "This report is an AI-assisted security assessment by AgentSafe, not a formal security audit. "
     "Absence of findings does not mean the contract is safe. "
     "All findings marked tool_detected/llm_suggested require verification before action."
 )

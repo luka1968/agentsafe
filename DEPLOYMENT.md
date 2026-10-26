@@ -1,4 +1,4 @@
-# agentSAFE Deployment Guide
+# AgentSafe Deployment Guide
 
 This document describes how the service is architected, how to deploy it
 publicly, how to verify a deployment, and how to roll back.
@@ -6,7 +6,7 @@ publicly, how to verify a deployment, and how to roll back.
 ## Architecture
 
 ```
-MCP client ──x402 payment──▶ agentSAFE MCP service  ──workflow_dispatch──▶ GitHub Actions
+MCP client ──x402 payment──▶ AgentSafe MCP service  ──workflow_dispatch──▶ GitHub Actions
                              (FastMCP server)         (docker-audit.yml, ephemeral worker)
                                     ▲                              │
                                     └──── poll status ◀── report artifact ──┘
