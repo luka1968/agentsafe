@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "agentsafe"
 version = "0.1.0"
-description = "agentSAFE - EVM smart contract audit MCP server (Ethereum Mainnet, AI-assisted risk screening)"
+description = "AgentSafe - AI-Powered Smart Contract Security Intelligence (EVM smart contract audit MCP server, Ethereum Mainnet, x402 USDC micropayments on Base)"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }

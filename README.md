@@ -1,14 +1,21 @@
-# agentSAFE — AI Smart-Contract Audit MCP Server
+# AgentSafe — AI-Powered Smart Contract Security Intelligence
 
 [![x402 Pay-per-call](https://img.shields.io/badge/Payment-x402%20USDC%20on%20Base-00D395?style=flat-square&logo=ethereum)](https://www.x402scan.com)
 [![Network: Ethereum Mainnet](https://img.shields.io/badge/Network-Ethereum%20Mainnet-3C3C3D?style=flat-square&logo=ethereum)](https://ethereum.org)
 [![MCP Server](https://img.shields.io/badge/Protocol-MCP-5B5BD6?style=flat-square)](https://modelcontextprotocol.io)
 
-EVM smart-contract **AI risk screening** MCP server — Ethereum Mainnet, payable
-**per call** with **x402 micro-payments in USDC on Base**.
+Secure your Web3 journey with **intelligent vulnerability detection**,
+**multi-engine security analysis**, and **actionable risk insights**. AgentSafe
+combines advanced AI reasoning with industry-leading security tools to help
+developers and AI agents identify potential vulnerabilities in Ethereum smart
+contracts.
 
-> ⚠️ AI-assisted risk screening, **not** a formal security audit. Findings
-> require human verification before any action.
+Seamlessly integrated with **MCP** and powered by **x402 pay-per-use USDC
+micropayments on Base**.
+
+> 🔒 **Security Notice**: AgentSafe provides AI-assisted security assessments.
+> Results are informational, require independent verification, and do not
+> replace a professional security audit.
 
 ## Highlights
 - 🔍 **Closure-source / deep-logic analysis** — send any `0x` contract address
@@ -37,8 +44,8 @@ reaches the report:
   (`re0_cei_satisfied`, `ov0_theoretical_only`, `cr0_independent_support`, …),
   the reason, and supporting/contradicting code references with line numbers.
 
-> This is AI-assisted risk screening with deterministic falsification, not a
-> substitute for a formal audit.
+> AgentSafe delivers AI-assisted security assessment with deterministic
+> falsification — informational by design, not a substitute for a formal audit.
 
 ## Pay-per-call Pricing
 | Tier | Price | Scope |

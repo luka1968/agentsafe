@@ -1,7 +1,9 @@
-"""agentSAFE MCP - EVM smart contract audit MCP server.
+"""AgentSafe MCP - AI-Powered Smart Contract Security Intelligence.
 
-E-version scope: Ethereum Mainnet only. AI-assisted risk screening,
-NOT a formal security audit. Absence of findings never means "safe".
+EVM smart contract audit MCP server. E-version scope: Ethereum Mainnet only.
+AI-assisted security assessments, NOT a formal security audit. Results are
+informational and require independent verification. Absence of findings
+never means "safe".
 """
 
 from typing import Final
