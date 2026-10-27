@@ -168,8 +168,9 @@ jobs:
           INFURA_ETH_ENDPOINT: ${{ secrets.INFURA_ETH_ENDPOINT }}
           ETHERSCAN_API_KEY: ${{ secrets.ETHERSCAN_API_KEY }}
           LLM_PROVIDERS_JSON: ${{ secrets.LLM_PROVIDERS_JSON }}
-          LLM_GLOBAL_RPM: "10"
-          LLM_MAX_CALLS_PER_AUDIT: "12"
+          LLM_GLOBAL_RPM: "30"
+          LLM_MAX_CALLS_PER_AUDIT: "39"
+          LLM_REQUEST_TIMEOUT_SECONDS: "180"
           AUDIT_TIMEOUT_SECONDS: "900"
           LOG_LEVEL: "INFO"
         run: |
