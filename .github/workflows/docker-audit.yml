@@ -69,6 +69,7 @@ jobs:
             -e LLM_GLOBAL_RPM=30 \
             -e LLM_MAX_CALLS_PER_AUDIT=39 \
             -e LLM_REQUEST_TIMEOUT_SECONDS=180 \
+            -e LLM_MAX_OUTPUT_TOKENS=8000 \
             -e AUDIT_TIMEOUT_SECONDS=1800 \
             -e LOG_LEVEL=INFO \
             agentsafe:audit \
