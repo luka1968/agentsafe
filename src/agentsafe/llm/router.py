@@ -342,7 +342,15 @@ class LLMRouter:
 
             try:
                 data = resp.json()
-                content = data["choices"][0]["message"]["content"]
+                msg = data["choices"][0]["message"]
+                content = msg.get("content") or ""
+                # Some providers (reasoning models) return their answer in
+                # `reasoning_content` with an empty `content` when the prompt is
+                # long. Fall back to the reasoning output so the audit isn't
+                # lost to an empty_response (mirrors AgentLISA's approach of
+                # using whatever the model actually produced).
+                if not content.strip():
+                    content = msg.get("reasoning_content") or ""
                 usage = data.get("usage") or {}
             except (ValueError, KeyError, TypeError, IndexError):
                 self._cooldown(p, COOLDOWN_SERVER_ERROR_SECONDS, "malformed response body")
