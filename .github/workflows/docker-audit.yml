@@ -66,8 +66,9 @@ jobs:
             -e INFURA_ETH_ENDPOINT \
             -e ETHERSCAN_API_KEY \
             -e LLM_PROVIDERS_JSON \
-            -e LLM_GLOBAL_RPM=10 \
-            -e LLM_MAX_CALLS_PER_AUDIT=12 \
+            -e LLM_GLOBAL_RPM=30 \
+            -e LLM_MAX_CALLS_PER_AUDIT=39 \
+            -e LLM_REQUEST_TIMEOUT_SECONDS=180 \
             -e AUDIT_TIMEOUT_SECONDS=1800 \
             -e LOG_LEVEL=INFO \
             agentsafe:audit \
