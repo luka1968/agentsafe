@@ -39,3 +39,7 @@ report.json
 
 # local secrets - never commit
 llm_providers_for_vercel.txt
+
+# secret backups — never commit
+.env.bak*
+*.bak

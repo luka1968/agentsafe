@@ -15,6 +15,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from agentsafe.intel.render import render_intel_brief, render_kb_snippets
 from agentsafe.llm.prompts import (
     BASIC_SCAN_SUFFIX,
     DEEP_DIVE_SUFFIX,
@@ -82,6 +83,11 @@ class AnalysisMaterial:
     segments: dict[str, str]
     is_pseudo_source: bool = False
     bytecode: str | None = None
+    # Deterministic contract intelligence (None when unavailable — agents then
+    # fall back to raw-source analysis; never fabricated).
+    intel: Any = None
+    # Optional security knowledge base for mechanism retrieval (None disables).
+    kb: Any = None
 
     def total_chars(self) -> int:
         return sum(len(v) for v in self.segments.values())
@@ -133,7 +139,9 @@ class BaseAgent:
             chunks.append((f"{path}#part{part}", "".join(current)))
         return chunks
 
-    def _user_prompt(self, label: str, text: str, deep: bool) -> str:
+    def _user_prompt(self, label: str, text: str, deep: bool,
+                     intel_brief: str = "",
+                     kb_snippet: str = "") -> str:
         notice = (
             "NOTE: the following is decompiled PSEUDO-SOURCE recovered from "
             "bytecode, NOT the original Solidity. It is an approximate "
@@ -142,7 +150,19 @@ class BaseAgent:
             else ""
         )
         suffix = DEEP_DIVE_SUFFIX if deep else BASIC_SCAN_SUFFIX
-        return f"""{notice}
+        intel_section = (
+            f"\n=== UNTRUSTED STATIC INTEL (deterministic extraction; may be "
+            f"incomplete — verify every claim against the code) ===\n{intel_brief}"
+            f"\n=== END STATIC INTEL ===\n"
+            if intel_brief else ""
+        )
+        kb_section = (
+            f"\n=== UNTRUSTED KB CONTEXT: historical vulnerability mechanisms "
+            f"(reference data, not findings; explain applicability or discard) ===\n"
+            f"{kb_snippet}\n=== END KB CONTEXT ===\n"
+            if kb_snippet else ""
+        )
+        return f"""{notice}{intel_section}{kb_section}
 
 {suffix}
 
@@ -177,10 +197,30 @@ object described in your instructions."""
                 work.append((label, chunk))
                 total += len(chunk)
 
+        intel = getattr(material, "intel", None)
+        intel_brief = ""
+        try:
+            if intel is not None:
+                intel_brief = render_intel_brief(intel, self.focus)
+        except Exception as exc:  # intel is an optimization, never a blocker
+            logger.warning("intel render failed for %s: %s", self.name, exc)
+
         for label, chunk in work:
+            kb_snippet = ""
+            try:
+                kb = getattr(material, "kb", None)
+                if kb is not None:
+                    records = kb.search(
+                        query=chunk[:4000] + " " + " ".join(self.keywords),
+                        focus=self.focus, limit=2)
+                    kb_snippet = render_kb_snippets(records)
+            except Exception as exc:  # KB is context, never a blocker
+                logger.warning("kb search failed for %s: %s", self.name, exc)
             messages = [
                 {"role": "system", "content": system_prompt(self.focus)},
-                {"role": "user", "content": self._user_prompt(label, chunk, deep)},
+                {"role": "user", "content": self._user_prompt(
+                    label, chunk, deep, intel_brief=intel_brief,
+                    kb_snippet=kb_snippet)},
             ]
             try:
                 payload, call = await self._router.complete_json(

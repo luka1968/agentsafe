@@ -310,6 +310,28 @@ class AuditOrchestrator:
                             "analysis skipped (not evidence of safety)"
                         )
 
+                # -- contract intelligence + knowledge base (evidence layer) --
+                intel = None
+                kb = None
+                if bundle is not None:
+                    try:
+                        from agentsafe.intel import extract_contract_intel
+                        intel = extract_contract_intel(
+                            {f.path: f.content for f in bundle.files})
+                        if intel.extraction_warnings:
+                            logger.info("intel warnings: %s", intel.extraction_warnings)
+                    except Exception as exc:  # intel is an aid, never a blocker
+                        limitations.append(f"contract intel extraction failed: {exc}")
+                else:
+                    # pseudo-source: regex extraction would be misleading; skip
+                    # honestly rather than fabricate structure.
+                    pass
+                try:
+                    from agentsafe.knowledge import KnowledgeBase
+                    kb = KnowledgeBase.load_default()
+                except Exception as exc:
+                    limitations.append(f"security knowledge base unavailable: {exc}")
+
                 llm_usage = LLMUsage()
                 if self._router is not None and segments and self._agents:
                     budget = self._router.start_audit(
@@ -324,6 +346,8 @@ class AuditOrchestrator:
                         segments=segments,
                         is_pseudo_source=pseudo,
                         bytecode=code if bundle is None else None,
+                        intel=intel,
+                        kb=kb,
                     )
                     for agent in self._agents:
                         try:
