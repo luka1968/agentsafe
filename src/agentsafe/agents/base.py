@@ -26,7 +26,7 @@ from agentsafe.schemas import Finding, FindingStatus
 logger = logging.getLogger("agentSAFE.agents")
 
 MAX_SEGMENT_CHARS = 8_000  # per LLM call, ~2k tokens of code (AgentLISA-style: smallest relevant sample)
-MAX_TOTAL_ANALYZED_CHARS = 30_000  # per agent across whole audit (focused batches, not whole repo)
+MAX_TOTAL_ANALYZED_CHARS = 45_000  # per agent across whole audit (focused batches, not whole repo)
 
 
 class LLMFindingPayload(BaseModel):

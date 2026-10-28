@@ -69,7 +69,7 @@ def build_orchestrator(settings: Settings) -> AuditOrchestrator:
         validation_agent=ValidationAgent(),
         total_timeout_seconds=settings.AUDIT_TIMEOUT_SECONDS,
         llm_max_calls=settings.LLM_MAX_CALLS_PER_AUDIT,
-        llm_deadline_seconds=min(900.0, settings.AUDIT_TIMEOUT_SECONDS * 0.66),
+        llm_deadline_seconds=min(1200.0, settings.AUDIT_TIMEOUT_SECONDS * 0.66),
     )
 
 
