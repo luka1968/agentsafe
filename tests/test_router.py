@@ -211,6 +211,32 @@ class TestRouterCalls:
         assert payload.answer == "extracted"
 
     @respx.mock
+    async def test_reasoning_content_fallback_when_content_empty(self):
+        """Section 8: reasoning models returning content='' with reasoning_content
+        still yield a parsed payload (AgentLISA-style long-prompt fix)."""
+        clock = FakeClock()
+        sleep = SleepRecorder(clock)
+        router = _router(clock=clock, sleeper=sleep, retries=1)
+        budget = router.start_audit(max_calls=5, deadline_seconds=60)
+        body = {
+            "choices": [{
+                "message": {
+                    "content": "",
+                    "reasoning_content": 'We need answer JSON only. {"answer": "from_reasoning"}',
+                }
+            }],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 20},
+        }
+        route = respx.post("https://a.test/v1/chat/completions").mock(
+            return_value=httpx.Response(200, json=body)
+        )
+        payload, _ = await router.complete_json(
+            budget, [{"role": "user", "content": "hi"}], OkPayload
+        )
+        assert payload.answer == "from_reasoning"
+        assert route.call_count == 1
+
+    @respx.mock
     async def test_json_mode_sets_response_format(self):
         """Section 6: structured-output mode is opt-in per provider."""
         clock = FakeClock()

@@ -69,7 +69,7 @@ class AuditOrchestrator:
         validation_agent: ValidationAgent,
         total_timeout_seconds: float = 900.0,
         llm_max_calls: int = 12,
-        llm_deadline_seconds: float = 600.0,
+        llm_deadline_seconds: float = 900.0,
         clock: Callable[[], float] | None = None,
     ) -> None:
         self._rpc = rpc
