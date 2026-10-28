@@ -22,6 +22,9 @@ dependencies = [
     "x402[evm]==2.25.0",
     # Redis client for Upstash/Redis task store (serverless deployments)
     "redis>=5.0",
+    # Postgres driver for the Neon knowledge-base storage layer (G+). Binary
+    # wheel avoids a build step in the slim worker image and Vercel runtime.
+    "psycopg[binary]>=3.2",
 ]
 
 [project.optional-dependencies]

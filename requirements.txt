@@ -9,6 +9,9 @@ fastmcp>=2.3
 markdown>=3.6
 x402[evm]==2.25.0
 redis>=5.0
+# Postgres driver for the Neon knowledge-base storage layer (G+). Mirror of
+# pyproject.toml (kept in sync for @vercel/python builds of api/index.py).
+psycopg[binary]>=3.2
 # Optional customer-facing PDF export (Section 8) - lazily imported by
 # report_render.render_pdf; the core audit pipeline never requires it.
 reportlab>=4.2

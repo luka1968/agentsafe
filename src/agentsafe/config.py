@@ -173,6 +173,21 @@ class Settings(BaseSettings):
             return self.TASK_STORE
         return "redis" if self.effective_redis_url else "sqlite"
 
+    # --- Security Knowledge Base (AgentSafe G+) ---
+    # Storage: 'neon' (persistent Postgres + pgvector) when NEON_DATABASE_URL is
+    # set, else 'jsonl' (the shipped in-repo dataset, in-memory lexical only).
+    # The worker image falls back to 'jsonl' when Neon is unreachable so an
+    # audit is never blocked by the retrieval layer.
+    NEON_DATABASE_URL: str = ""
+    KB_STORAGE: str = ""  # '' auto -> 'neon' if URL present else 'jsonl'
+    KB_VECTOR_DIM: int = Field(default=384, ge=8, le=4096)
+
+    @property
+    def resolved_kb_storage(self) -> str:
+        if self.KB_STORAGE:
+            return self.KB_STORAGE
+        return "neon" if self.NEON_DATABASE_URL.strip() else "jsonl"
+
     # --- HTTP access log (PRIVACY_POLICY.md: IP + time, 30-day retention) ---
     ACCESS_LOG_DB_PATH: str = "data/access_log.db"
 

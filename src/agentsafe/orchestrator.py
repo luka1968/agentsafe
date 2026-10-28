@@ -71,6 +71,7 @@ class AuditOrchestrator:
         llm_max_calls: int = 12,
         llm_deadline_seconds: float = 1200.0,
         clock: Callable[[], float] | None = None,
+        kb_store_factory: Callable[[], Any] | None = None,
     ) -> None:
         self._rpc = rpc
         self._explorer = explorer
@@ -83,6 +84,7 @@ class AuditOrchestrator:
         self._llm_max_calls = llm_max_calls
         self._llm_deadline = llm_deadline_seconds
         self._clock = clock or time.monotonic
+        self._kb_store_factory = kb_store_factory
 
     async def run(
         self,
@@ -327,8 +329,11 @@ class AuditOrchestrator:
                     # honestly rather than fabricate structure.
                     pass
                 try:
-                    from agentsafe.knowledge import KnowledgeBase
-                    kb = KnowledgeBase.load_default()
+                    if self._kb_store_factory is not None:
+                        kb = self._kb_store_factory()
+                    else:
+                        from agentsafe.knowledge import KnowledgeBase
+                        kb = KnowledgeBase.load_default()
                 except Exception as exc:
                     limitations.append(f"security knowledge base unavailable: {exc}")
 

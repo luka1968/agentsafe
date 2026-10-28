@@ -29,6 +29,7 @@ from agentsafe.analyzers.bytecode import BytecodeAnalyzer  # noqa: E402
 from agentsafe.analyzers.source import SourceAnalyzer  # noqa: E402
 from agentsafe.config import Settings, validate_runtime_settings  # noqa: E402
 from agentsafe.explorer import EtherscanClient  # noqa: E402
+from agentsafe.knowledge import get_knowledge_store  # noqa: E402
 from agentsafe.llm.router import LLMRouter  # noqa: E402
 from agentsafe.orchestrator import AuditOrchestrator, OrchestratorError  # noqa: E402
 from agentsafe.rpc import EthRpcClient  # noqa: E402
@@ -70,6 +71,7 @@ def build_orchestrator(settings: Settings) -> AuditOrchestrator:
         total_timeout_seconds=settings.AUDIT_TIMEOUT_SECONDS,
         llm_max_calls=settings.LLM_MAX_CALLS_PER_AUDIT,
         llm_deadline_seconds=min(1200.0, settings.AUDIT_TIMEOUT_SECONDS * 0.66),
+        kb_store_factory=lambda: get_knowledge_store(settings),
     )
 
 
