@@ -1,0 +1,284 @@
+{
+  "env": {
+    "python": "3.12.3",
+    "datasets": {
+      "lisabench": {
+        "source": "agentlisa/bench",
+        "url_template": "https://raw.githubusercontent.com/{repo}/main/dataset/{n:05d}.json",
+        "license": "MIT",
+        "subset_size": 6,
+        "seed": 42,
+        "ids": [
+          13,
+          58,
+          72,
+          115,
+          126,
+          141
+        ],
+        "fetched_at": "2026-10-29T12:36:59.845661+00:00"
+      }
+    }
+  },
+  "args": {
+    "mode": "e2e",
+    "rag": "off",
+    "llm": "probe",
+    "n_retrieval": 20,
+    "n_detection": 4,
+    "n_e2e": 2,
+    "seed": 42
+  },
+  "detection_rag=off": {
+    "mode": "detection",
+    "rag": false,
+    "llm": "probe",
+    "n_samples": 4,
+    "tp": 0,
+    "fp": 7,
+    "fn": 5,
+    "precision": 0.0,
+    "recall": 0.0,
+    "f1": null,
+    "false_positive_rate": 1.0,
+    "severity_accuracy": {
+      "n_labeled": 2,
+      "n_exact": 0,
+      "accuracy": 0.0
+    },
+    "cross_function": {
+      "n_gt": 0,
+      "detected": 0
+    },
+    "tool_execution": {
+      "n_runs": 16,
+      "success_rate": 0.25,
+      "n_success": 4
+    },
+    "runtime": {
+      "n": 4,
+      "mean_seconds": 0.856,
+      "median_seconds": 0.763,
+      "min_seconds": 0.744,
+      "max_seconds": 1.153
+    },
+    "samples": [
+      {
+        "bench_id": 13,
+        "title": "M-1: Corruptible Upgradability Pattern",
+        "rag": false,
+        "gt_categories": [],
+        "gt_severity": "medium",
+        "gt_cross_function": false,
+        "predicted_categories": [
+          "unhandled_exception"
+        ],
+        "predicted_severity": "low",
+        "tp": [],
+        "fp": [
+          "unhandled_exception"
+        ],
+        "fn": [],
+        "n_findings": 7,
+        "cross_function_paths": 3,
+        "cross_function_detected": null,
+        "evidence_traceability": {
+          "n": 1,
+          "traceable": 0
+        },
+        "runtime_seconds": 0.766,
+        "audit_error": [
+          "slither: slither not installed: executable not found: slither",
+          "aderyn: aderyn not installed: executable not found: aderyn",
+          "mythril: not installed",
+          "heimdall: not installed"
+        ]
+      },
+      {
+        "bench_id": 58,
+        "title": "Ignoring `caseId`value when season is below peg",
+        "rag": false,
+        "gt_categories": [
+          "accounting"
+        ],
+        "gt_severity": null,
+        "gt_cross_function": false,
+        "predicted_categories": [
+          "arithmetic",
+          "unhandled_exception"
+        ],
+        "predicted_severity": "low",
+        "tp": [],
+        "fp": [
+          "arithmetic",
+          "unhandled_exception"
+        ],
+        "fn": [
+          "accounting"
+        ],
+        "n_findings": 16,
+        "cross_function_paths": 2,
+        "cross_function_detected": null,
+        "evidence_traceability": {
+          "n": 1,
+          "traceable": 0
+        },
+        "runtime_seconds": 0.76,
+        "audit_error": [
+          "slither: slither not installed: executable not found: slither",
+          "aderyn: aderyn not installed: executable not found: aderyn",
+          "mythril: not installed",
+          "heimdall: not installed"
+        ]
+      },
+      {
+        "bench_id": 126,
+        "title": "Consolidate unnecessary code duplication in `ConvertFacet::_withdrawTokens`",
+        "rag": false,
+        "gt_categories": [
+          "accounting"
+        ],
+        "gt_severity": null,
+        "gt_cross_function": false,
+        "predicted_categories": [
+          "arithmetic",
+          "unhandled_exception"
+        ],
+        "predicted_severity": "low",
+        "tp": [],
+        "fp": [
+          "arithmetic",
+          "unhandled_exception"
+        ],
+        "fn": [
+          "accounting"
+        ],
+        "n_findings": 7,
+        "cross_function_paths": 2,
+        "cross_function_detected": null,
+        "evidence_traceability": {
+          "n": 1,
+          "traceable": 0
+        },
+        "runtime_seconds": 0.744,
+        "audit_error": [
+          "slither: slither not installed: executable not found: slither",
+          "aderyn: aderyn not installed: executable not found: aderyn",
+          "mythril: not installed",
+          "heimdall: not installed"
+        ]
+      },
+      {
+        "bench_id": 141,
+        "title": "H-7: `LenderCommitmentGroup_Smart` picks the wrong Uniswap price, allowing borrowing at a discount b",
+        "rag": false,
+        "gt_categories": [
+          "accounting",
+          "oracle",
+          "reentrancy"
+        ],
+        "gt_severity": "high",
+        "gt_cross_function": false,
+        "predicted_categories": [
+          "arithmetic",
+          "unhandled_exception"
+        ],
+        "predicted_severity": "low",
+        "tp": [],
+        "fp": [
+          "arithmetic",
+          "unhandled_exception"
+        ],
+        "fn": [
+          "accounting",
+          "oracle",
+          "reentrancy"
+        ],
+        "n_findings": 32,
+        "cross_function_paths": 24,
+        "cross_function_detected": null,
+        "evidence_traceability": {
+          "n": 1,
+          "traceable": 0
+        },
+        "runtime_seconds": 1.153,
+        "audit_error": [
+          "slither: slither not installed: executable not found: slither",
+          "aderyn: aderyn not installed: executable not found: aderyn",
+          "mythril: not installed",
+          "heimdall: not installed"
+        ]
+      }
+    ]
+  },
+  "e2e_rag=off": {
+    "mode": "e2e",
+    "rag": false,
+    "llm": "probe",
+    "runtime": {
+      "n": 2,
+      "mean_seconds": 1.078,
+      "median_seconds": 1.078,
+      "min_seconds": 1.051,
+      "max_seconds": 1.105
+    },
+    "llm_cost_usd": 0.0,
+    "validation_success_rate": 1.0,
+    "per_contract": [
+      {
+        "bench_id": 20,
+        "runtime_seconds": 1.051,
+        "n_findings": 26,
+        "stages_completed": [
+          "validate_address",
+          "fetch_source",
+          "classify",
+          "static_analysis",
+          "bytecode_analysis",
+          "cross_function_paths",
+          "llm_agents",
+          "cross_validation",
+          "severity_assessment",
+          "merge_report"
+        ],
+        "stages_failed": [],
+        "validation_statuses": [
+          "potential"
+        ],
+        "audit_error": [
+          "slither: slither not installed: executable not found: slither",
+          "aderyn: aderyn not installed: executable not found: aderyn",
+          "mythril: not installed",
+          "heimdall: not installed"
+        ]
+      },
+      {
+        "bench_id": 147,
+        "runtime_seconds": 1.105,
+        "n_findings": 31,
+        "stages_completed": [
+          "validate_address",
+          "fetch_source",
+          "classify",
+          "static_analysis",
+          "bytecode_analysis",
+          "cross_function_paths",
+          "llm_agents",
+          "cross_validation",
+          "severity_assessment",
+          "merge_report"
+        ],
+        "stages_failed": [],
+        "validation_statuses": [
+          "potential"
+        ],
+        "audit_error": [
+          "slither: slither not installed: executable not found: slither",
+          "aderyn: aderyn not installed: executable not found: aderyn",
+          "mythril: not installed",
+          "heimdall: not installed"
+        ]
+      }
+    ]
+  }
+}

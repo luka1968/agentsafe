@@ -1,0 +1,27 @@
+{
+  "lisabench": {
+    "source": "agentlisa/bench",
+    "url_template": "https://raw.githubusercontent.com/{repo}/main/dataset/{n:05d}.json",
+    "license": "MIT",
+    "subset_size": 1,
+    "seed": 8,
+    "ids": [
+      117
+    ],
+    "fetched_at": "2026-10-29T13:15:11.862538+00:00"
+  },
+  "known_safe_oz": {
+    "source": "OpenZeppelin/openzeppelin-contracts",
+    "url": "https://raw.githubusercontent.com/OpenZeppelin/openzeppelin-contracts/v5.0.0/contracts/token/ERC20/ERC20.sol",
+    "version": "v5.0.0",
+    "license": "MIT",
+    "contracts": [
+      "ERC20.sol"
+    ],
+    "note": "reference implementations, widely audited, NOT formally verified",
+    "sha256": {
+      "ERC20.sol": "2d874da1c1478ed2"
+    },
+    "fetched_at": "2026-10-29T13:19:26.208059+00:00"
+  }
+}

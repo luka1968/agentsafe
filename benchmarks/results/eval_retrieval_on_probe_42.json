@@ -1,0 +1,319 @@
+{
+  "env": {
+    "python": "3.11.16",
+    "datasets": {
+      "lisabench": {
+        "source": "agentlisa/bench",
+        "url_template": "https://raw.githubusercontent.com/{repo}/main/dataset/{n:05d}.json",
+        "license": "MIT",
+        "subset_size": 2,
+        "seed": 43,
+        "ids": [
+          20,
+          147
+        ],
+        "fetched_at": "2026-10-29T12:37:31.262556+00:00"
+      }
+    }
+  },
+  "args": {
+    "mode": "retrieval",
+    "rag": "on",
+    "llm": "probe",
+    "n_retrieval": 12,
+    "n_detection": 4,
+    "n_e2e": 2,
+    "seed": 42
+  },
+  "retrieval": {
+    "mode": "retrieval",
+    "pool": "neon speca-code4rena",
+    "n_queries": 12,
+    "by_leg": {
+      "vector": {
+        "recall@1": 0.6667,
+        "recall@3": 0.6667,
+        "recall@5": 0.75,
+        "mrr": 0.7061
+      },
+      "lexical": {
+        "recall@1": 0.5833,
+        "recall@3": 0.5833,
+        "recall@5": 0.5833,
+        "mrr": 0.5926
+      },
+      "rrf": {
+        "recall@1": 0.5,
+        "recall@3": 0.6667,
+        "recall@5": 0.8333,
+        "mrr": 0.6395
+      }
+    },
+    "per_query": [
+      {
+        "gt": "code4rena:2022-02-hubble-findings:104",
+        "q": "Chainlink latestRoundData validation",
+        "vector": {
+          "recall@1": 0,
+          "recall@3": 0,
+          "recall@5": 1,
+          "mrr": 0.2
+        },
+        "lexical": {
+          "recall@1": 0,
+          "recall@3": 0,
+          "recall@5": 0,
+          "mrr": 0.1111
+        },
+        "rrf": {
+          "recall@1": 0,
+          "recall@3": 1,
+          "recall@5": 1,
+          "mrr": 0.5
+        }
+      },
+      {
+        "gt": "code4rena:2022-01-timeswap-findings:166#chunk1",
+        "q": "`TimeswapPair.sol#borrow()` Attacker can increase `pool.state.y` to an",
+        "vector": {
+          "recall@1": 1,
+          "recall@3": 1,
+          "recall@5": 1,
+          "mrr": 1.0
+        },
+        "lexical": {
+          "recall@1": 1,
+          "recall@3": 1,
+          "recall@5": 1,
+          "mrr": 1.0
+        },
+        "rrf": {
+          "recall@1": 1,
+          "recall@3": 1,
+          "recall@5": 1,
+          "mrr": 1.0
+        }
+      },
+      {
+        "gt": "code4rena:2022-04-backd-findings:134#chunk1",
+        "q": "Chainlink data could get unintended stale price",
+        "vector": {
+          "recall@1": 1,
+          "recall@3": 1,
+          "recall@5": 1,
+          "mrr": 1.0
+        },
+        "lexical": {
+          "recall@1": 0,
+          "recall@3": 0,
+          "recall@5": 0,
+          "mrr": 0.0
+        },
+        "rrf": {
+          "recall@1": 0,
+          "recall@3": 0,
+          "recall@5": 0,
+          "mrr": 0.1111
+        }
+      },
+      {
+        "gt": "code4rena:2022-04-abranft-findings:55",
+        "q": "Mistake while checking LTV to lender accepted LTV",
+        "vector": {
+          "recall@1": 1,
+          "recall@3": 1,
+          "recall@5": 1,
+          "mrr": 1.0
+        },
+        "lexical": {
+          "recall@1": 1,
+          "recall@3": 1,
+          "recall@5": 1,
+          "mrr": 1.0
+        },
+        "rrf": {
+          "recall@1": 0,
+          "recall@3": 1,
+          "recall@5": 1,
+          "mrr": 0.5
+        }
+      },
+      {
+        "gt": "code4rena:2022-04-abranft-findings:166",
+        "q": "Malicious lender can change price oracle for outstanding loan",
+        "vector": {
+          "recall@1": 1,
+          "recall@3": 1,
+          "recall@5": 1,
+          "mrr": 1.0
+        },
+        "lexical": {
+          "recall@1": 1,
+          "recall@3": 1,
+          "recall@5": 1,
+          "mrr": 1.0
+        },
+        "rrf": {
+          "recall@1": 1,
+          "recall@3": 1,
+          "recall@5": 1,
+          "mrr": 1.0
+        }
+      },
+      {
+        "gt": "code4rena:2022-02-hubble-findings:51",
+        "q": "AMM Cannot Be `initialize()` Except By Governance",
+        "vector": {
+          "recall@1": 1,
+          "recall@3": 1,
+          "recall@5": 1,
+          "mrr": 1.0
+        },
+        "lexical": {
+          "recall@1": 1,
+          "recall@3": 1,
+          "recall@5": 1,
+          "mrr": 1.0
+        },
+        "rrf": {
+          "recall@1": 1,
+          "recall@3": 1,
+          "recall@5": 1,
+          "mrr": 1.0
+        }
+      },
+      {
+        "gt": "code4rena:2022-02-anchor-findings:47#chunk4",
+        "q": "[WP-H3] `money-market-contracts/oracle#feed_prices()` delayed transact",
+        "vector": {
+          "recall@1": 1,
+          "recall@3": 1,
+          "recall@5": 1,
+          "mrr": 1.0
+        },
+        "lexical": {
+          "recall@1": 1,
+          "recall@3": 1,
+          "recall@5": 1,
+          "mrr": 1.0
+        },
+        "rrf": {
+          "recall@1": 1,
+          "recall@3": 1,
+          "recall@5": 1,
+          "mrr": 1.0
+        }
+      },
+      {
+        "gt": "code4rena:2022-01-yield-findings:2#chunk1",
+        "q": "Chainlink's latestRoundData might return stale or incorrect results",
+        "vector": {
+          "recall@1": 0,
+          "recall@3": 0,
+          "recall@5": 0,
+          "mrr": 0.0909
+        },
+        "lexical": {
+          "recall@1": 0,
+          "recall@3": 0,
+          "recall@5": 0,
+          "mrr": 0.0
+        },
+        "rrf": {
+          "recall@1": 0,
+          "recall@3": 0,
+          "recall@5": 1,
+          "mrr": 0.25
+        }
+      },
+      {
+        "gt": "code4rena:2022-04-backed-findings:75#chunk1",
+        "q": "Protocol doesn't handle fee on transfer tokens",
+        "vector": {
+          "recall@1": 1,
+          "recall@3": 1,
+          "recall@5": 1,
+          "mrr": 1.0
+        },
+        "lexical": {
+          "recall@1": 1,
+          "recall@3": 1,
+          "recall@5": 1,
+          "mrr": 1.0
+        },
+        "rrf": {
+          "recall@1": 1,
+          "recall@3": 1,
+          "recall@5": 1,
+          "mrr": 1.0
+        }
+      },
+      {
+        "gt": "code4rena:2022-01-yield-findings:138",
+        "q": "Chainlink oracles might return stale data",
+        "vector": {
+          "recall@1": 0,
+          "recall@3": 0,
+          "recall@5": 0,
+          "mrr": 0.0909
+        },
+        "lexical": {
+          "recall@1": 0,
+          "recall@3": 0,
+          "recall@5": 0,
+          "mrr": 0.0
+        },
+        "rrf": {
+          "recall@1": 0,
+          "recall@3": 0,
+          "recall@5": 0,
+          "mrr": 0.0625
+        }
+      },
+      {
+        "gt": "code4rena:2022-01-timeswap-findings:166#chunk4",
+        "q": "`TimeswapPair.sol#borrow()` Attacker can increase `pool.state.y` to an",
+        "vector": {
+          "recall@1": 1,
+          "recall@3": 1,
+          "recall@5": 1,
+          "mrr": 1.0
+        },
+        "lexical": {
+          "recall@1": 1,
+          "recall@3": 1,
+          "recall@5": 1,
+          "mrr": 1.0
+        },
+        "rrf": {
+          "recall@1": 1,
+          "recall@3": 1,
+          "recall@5": 1,
+          "mrr": 1.0
+        }
+      },
+      {
+        "gt": "code4rena:2022-01-yield-findings:2#chunk4",
+        "q": "Chainlink's latestRoundData might return stale or incorrect results",
+        "vector": {
+          "recall@1": 0,
+          "recall@3": 0,
+          "recall@5": 0,
+          "mrr": 0.0909
+        },
+        "lexical": {
+          "recall@1": 0,
+          "recall@3": 0,
+          "recall@5": 0,
+          "mrr": 0.0
+        },
+        "rrf": {
+          "recall@1": 0,
+          "recall@3": 0,
+          "recall@5": 1,
+          "mrr": 0.25
+        }
+      }
+    ]
+  }
+}

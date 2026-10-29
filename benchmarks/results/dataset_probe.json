@@ -1,0 +1,447 @@
+{
+  "search:LISABench": [],
+  "search:SCAR smart contract audit": [],
+  "search:C4Audit": [
+    {
+      "id": "samscrack/c4-audit-findings",
+      "downloads": 20,
+      "likes": 0,
+      "license": null,
+      "lastModified": "2026-01-12T07:33:46.000Z",
+      "description_head": ""
+    }
+  ],
+  "search:code4rena audit findings": [],
+  "search:lisabench": [],
+  "search:smart contract audit benchmark": [],
+  "search:scar solidity": [],
+  "search:solidity vulnerability dataset": [
+    {
+      "id": "GitmateAI/solidity_vulnerability_audit_dataset",
+      "downloads": 79,
+      "likes": 4,
+      "license": null,
+      "lastModified": "2025-05-21T12:56:57.000Z",
+      "description_head": "\n\t\n\t\t\n\t\n\t\n\t\tSolidity Vulnerability Audit Dataset\n\t\n\n\nOrganization: gitmate AI\n\n\n\t\n\t\t\n\t\n\t\n\t\tDataset Summary\n\t\n\nThe Solidi"
+    },
+    {
+      "id": "xj210/solidity_vulnerability_audit_dataset",
+      "downloads": 41,
+      "likes": 1,
+      "license": null,
+      "lastModified": "2026-03-09T03:48:03.000Z",
+      "description_head": "\n\t\n\t\t\n\t\n\t\n\t\tSolidity Vulnerability Audit Dataset\n\t\n\n\nOrganization: gitmate AI\n\n\n\t\n\t\t\n\t\n\t\n\t\tDataset Summary\n\t\n\nThe Solidi"
+    },
+    {
+      "id": "jhsu12/solidity-vulnerability-eval-dataset",
+      "downloads": 21,
+      "likes": 1,
+      "license": null,
+      "lastModified": "2026-04-24T19:37:47.000Z",
+      "description_head": ""
+    }
+  ],
+  "probe:NyxFoundation/vulnerability-reports": {
+    "dataset": "NyxFoundation/vulnerability-reports",
+    "splits": [
+      {
+        "config": "default",
+        "split": "train",
+        "num_rows": null
+      }
+    ],
+    "default_config": "default",
+    "default_split": "train",
+    "total_rows": null,
+    "fields": [
+      "id",
+      "source_platform",
+      "contest",
+      "issue_id",
+      "severity",
+      "title",
+      "description",
+      "source_url",
+      "domain",
+      "scraped_at"
+    ],
+    "sample": [
+      {
+        "id": "code4rena:2022-01-behodler-findings:102",
+        "source_platform": "code4rena",
+        "contest": "2022-01-behodler-findings",
+        "issue_id": "#102",
+        "severity": "Medium",
+        "title": "Calling `generateFLNQuote` twice in every block prevents any migration",
+        "description": "# Handle\n\ncamden\n\n\n# Vulnerability details\n\n# Impact and PoC\nhttps://github.com/code-423n4/2022-01-behodler/blob/71d8e0cfd9388f975d6a90dffba9b502b222bdfe/contracts/UniswapHelper.sol#L138\nIn the Uniswap helper, `generateFLNQuote` is public, so any user can generate the latest quote. If you call this twice in any block, then the two latest flan quotes will have a `blockProduced` value of the current block's number.\n\nThese quotes are used in the `_ensurePriceStability` function. The last require statement here is key:\nhttps://github.com/code-423n4/2022-01-behodler/blob/71d8e0cfd9388f975d6a90dffba9b502b222bdfe/contracts/UniswapHelper.sol#L283-L285\n\nThis function will revert if this statement is false:\n```\nlocalFlanQuotes[0].blockProduced - localFlanQuotes[1].blockProduced > VARS.minQuoteWaitDuration\n```\nSince `VARS.minQuoteWaitDuration` is a `uint256`, it is at least 0\n```\nlocalFlanQuotes[0].blockProduced - localFlanQuotes[1].blockProduced > 0\n```\nBut, as we've shown above, we can create a transaction in every block that will make `localFlanQuotes[0].blockProduced - localFlanQuotes[1].blockProduced == 0`. In any block we can make any call to `_ensurePriceStability` revert.\n\n`_ensurePriceStability` is called in the `ensurePriceStability` modifier:\nhttps://github.com/code-423n4/2022-01-behodler/blob/71d8e0cfd9388f975d6a90dffba9b502b222bdfe/contracts/UniswapHelper.sol#L70\n\nThis modifier is used in `stabilizeFlan`: \nhttps://github.com/code-423n4/2022-01-behodler/blob/71d8e0cfd9388f975d6a90dffba9b502b222bdfe/contracts/UniswapHelper.sol#L162\n\nLastly, `stabilizeFlan` is used in `migrate` in `Limbo.sol`\nhttps://github.com/code-423n4/2022-01-behodler/blob/71d8e0cfd9388f975d6a90dffba9b502b222bdfe/contracts/Limbo.sol#L234\n\nTherefore, we can grief a migration in any block. In reality, the `minQuoteWaitDuration` would be set to a much higher value than 0, making this even easier to grief for people (you only need to call `generateFLNQuote` every `minQuoteWaitDuration - 1` blocks to be safe).\n\n# Mitigation\nMitigation is to just use a time weighted oracle for uniswap.",
+        "source_url": "https://github.com/code-423n4/2022-01-behodler-findings/issues/102",
+        "domain": "defi",
+        "scraped_at": "2026-05-08T04:37:49Z"
+      }
+    ],
+    "sample_sizes": {
+      "id": 39,
+      "source_platform": 9,
+      "contest": 25,
+      "issue_id": 4,
+      "severity": 6,
+      "title": 70,
+      "description": 2085,
+      "source_url": 66,
+      "domain": 4,
+      "scraped_at": 20
+    },
+    "license": "mit",
+    "downloads": 78,
+    "likes": 1,
+    "tags": [
+      "language:en",
+      "license:mit",
+      "size_categories:1K<n<10K",
+      "format:parquet",
+      "modality:text",
+      "library:datasets",
+      "library:pandas",
+      "library:polars",
+      "library:mlcroissant",
+      "region:us",
+      "security",
+      "smart-contracts"
+    ],
+    "description_head": "\n\t\n\t\t\n\t\n\t\n\t\tSPECA Vulnerability Reports\n\t\n\nA normalized corpus of public smart-contract audit findings, curated by\nthe SPECA project. Each row is\none expert-judged audit issue, deduplicated across pub"
+  },
+  "probe:GitmateAI/solidity_vulnerability_audit_dataset": {
+    "dataset": "GitmateAI/solidity_vulnerability_audit_dataset",
+    "splits": [
+      {
+        "config": "default",
+        "split": "train",
+        "num_rows": null
+      }
+    ],
+    "default_config": "default",
+    "default_split": "train",
+    "total_rows": null,
+    "fields": [
+      "instruction",
+      "input",
+      "output"
+    ],
+    "sample": [
+      {
+        "instruction": "Identify vulnerabilities in the following Solidity code from TheDAO.",
+        "input": "// SPDX-License-Identifier: MIT\npragma solidity ^0.4.17;\ncontract TheDAO {\n    mapping(address => uint) public balances;\n    function withdraw(uint _amount) public {\n        if (balances[msg.sender] >= _amount) {\n            msg.sender.call.value(_amount)();\n            balances[msg.sender] -= _amount;\n        }\n    }\n}",
+        "output": "- Reentrancy vulnerability: External call before state update allows attacker to recursively call withdraw and drain funds.\n- No reentrancy guard: Lacks checks-effects-interactions pattern or mutex."
+      }
+    ],
+    "sample_sizes": {
+      "instruction": 68,
+      "input": 321,
+      "output": 198
+    },
+    "license": "apache-2.0",
+    "downloads": 79,
+    "likes": 4,
+    "tags": [
+      "task_categories:text-classification",
+      "task_categories:question-answering",
+      "language:en",
+      "license:apache-2.0",
+      "size_categories:n<1K",
+      "format:json",
+      "modality:text",
+      "library:datasets",
+      "library:pandas",
+      "library:mlcroissant",
+      "library:polars",
+      "region:us"
+    ],
+    "description_head": "\n\t\n\t\t\n\t\n\t\n\t\tSolidity Vulnerability Audit Dataset\n\t\n\n\nOrganization: gitmate AI\n\n\n\t\n\t\t\n\t\n\t\n\t\tDataset Summary\n\t\n\nThe Solidity Vulnerability Audit Dataset is a curated collection of Solidity smart contrac"
+  },
+  "github:LISABench": [
+    {
+      "full_name": "agentlisa/bench",
+      "stars": 20,
+      "license": "MIT",
+      "description": "LISABench - Smart Contract Vulnerability Detection Benchmark"
+    },
+    {
+      "full_name": "gwbenchmark/lisabenchmark",
+      "stars": 4,
+      "license": "MIT",
+      "description": "Benckmark for space based gravitational wave detectors such as LISA."
+    },
+    {
+      "full_name": "kieslee/lisabench",
+      "stars": 1,
+      "license": null,
+      "description": "benchmark measurement"
+    }
+  ],
+  "github:SCAR smart contract audit": [
+    {
+      "full_name": "scarai-xyz/scar-retrieval",
+      "stars": 1,
+      "license": "Apache-2.0",
+      "description": "SCAR: sparse retrieval for smart-contract audit findings. Benchmark datasets, corpus, training and evaluation code, research checkpoints."
+    },
+    {
+      "full_name": "IlhamQasse/SCAR",
+      "stars": 0,
+      "license": null,
+      "description": "A dataset and tool to crawl smart contract security audit reports"
+    },
+    {
+      "full_name": "2024ISSRE/SCareGPT",
+      "stars": 1,
+      "license": "MIT",
+      "description": "Tool configuration information and experimental datasets for the paper 'Knowledge Retrieval-Based GPT for Smart Contract Auditing: Enhancing Security "
+    }
+  ],
+  "github:C4Audit": [
+    {
+      "full_name": "koshkina4aitests-maker/c4auditor",
+      "stars": 0,
+      "license": null,
+      "description": ""
+    },
+    {
+      "full_name": "lucianasi/C4Audit",
+      "stars": 1,
+      "license": null,
+      "description": ""
+    }
+  ],
+  "github:smart contract audit benchmark solidity": [
+    {
+      "full_name": "paradigmxyz/evmbench",
+      "stars": 467,
+      "license": "Apache-2.0",
+      "description": "Collab with OpenAI. A benchmark and harness for finding and exploiting smart contract bugs"
+    },
+    {
+      "full_name": "mishoko/solidity-auditor-pulse",
+      "stars": 3,
+      "license": "MIT",
+      "description": "A benchmark harness that measures how well Claude Code skills perform at smart-contract security auditing. Run the benchmark with as many skills/codeb"
+    },
+    {
+      "full_name": "vinzabe/smart-contract-auditor",
+      "stars": 0,
+      "license": "MIT",
+      "description": "Solidity static auditor with a MEASURED false-positive rate: detectors tested against safe near-misses, with precision/recall published by a benchmark"
+    },
+    {
+      "full_name": "atahabilder1/SmartContractAuditToolsEvaluation",
+      "stars": 0,
+      "license": "MIT",
+      "description": "Benchmark suite for smart contract vulnerability detection tools across 7 categories: static analysis, symbolic execution, fuzzing, formal verificatio"
+    },
+    {
+      "full_name": "DefiAudit0x/smart-contract-auditor",
+      "stars": 0,
+      "license": "MIT",
+      "description": "Enterprise-grade smart contract security auditor: multi-pass LLM analysis, 7 parallel static pre-scan modules, CVSS 4.0 scoring, Foundry-verified benc"
+    }
+  ],
+  "github-repo:agentlisa/bench": {
+    "repo": "agentlisa/bench",
+    "description": "LISABench - Smart Contract Vulnerability Detection Benchmark",
+    "license": "MIT",
+    "stars": 20,
+    "size_kb": 53404,
+    "default_branch": "main",
+    "created": "2025-12-04T02:29:27Z",
+    "updated": "2026-09-02T08:22:02Z",
+    "archived": false,
+    "file_count": 10197,
+    "extensions": {
+      "json": 10187,
+      "py": 5,
+      "gitignore": 1,
+      "(none)": 1,
+      "md": 1,
+      "example": 1,
+      "txt": 1
+    },
+    "sample_paths": [
+      ".gitignore",
+      "LICENSE",
+      "README.md",
+      "dataset/00001.json",
+      "dataset/00002.json",
+      "dataset/00003.json",
+      "dataset/00004.json",
+      "dataset/00005.json",
+      "dataset/00006.json",
+      "dataset/00007.json",
+      "dataset/00008.json",
+      "dataset/00009.json",
+      "dataset/00010.json",
+      "dataset/00011.json",
+      "dataset/00012.json",
+      "dataset/00013.json",
+      "dataset/00014.json",
+      "dataset/00015.json",
+      "dataset/00016.json",
+      "dataset/00017.json",
+      "dataset/00018.json",
+      "dataset/00019.json",
+      "dataset/00020.json",
+      "dataset/00021.json",
+      "dataset/00022.json",
+      "dataset/00023.json",
+      "dataset/00024.json",
+      "dataset/00025.json",
+      "dataset/00026.json",
+      "dataset/00027.json",
+      "dataset/00028.json",
+      "dataset/00029.json",
+      "dataset/00030.json",
+      "dataset/00031.json",
+      "dataset/00032.json",
+      "dataset/00033.json",
+      "dataset/00034.json",
+      "dataset/00035.json",
+      "dataset/00036.json",
+      "dataset/00037.json"
+    ]
+  },
+  "github-repo:scarai-xyz/scar-retrieval": {
+    "repo": "scarai-xyz/scar-retrieval",
+    "description": "SCAR: sparse retrieval for smart-contract audit findings. Benchmark datasets, corpus, training and evaluation code, research checkpoints.",
+    "license": "Apache-2.0",
+    "stars": 1,
+    "size_kb": 1269,
+    "default_branch": "main",
+    "created": "2026-04-26T17:19:20Z",
+    "updated": "2026-10-08T06:28:53Z",
+    "archived": false,
+    "file_count": 22,
+    "extensions": {
+      "py": 13,
+      "md": 4,
+      "gitignore": 1,
+      "cff": 1,
+      "(none)": 1,
+      "png": 1,
+      "txt": 1
+    },
+    "sample_paths": [
+      ".gitignore",
+      "CITATION.cff",
+      "LICENSE",
+      "README.md",
+      "assets/08_data_sources.png",
+      "data/README.md",
+      "data/data_pipeline_v2.py",
+      "data/pipeline.py",
+      "data/scar_data_pipeline.py",
+      "data/scar_solodit_api.py",
+      "examples/inspect_weights.py",
+      "requirements.txt",
+      "scripts/README.md",
+      "scripts/README_modal.md",
+      "scripts/step5_sae.py",
+      "scripts/step6_retrieval.py",
+      "scripts/step8_evmbench.py",
+      "scripts/step9_evaluation.py",
+      "utils/__init__.py",
+      "utils/hf_utils.py",
+      "utils/pair_builder.py",
+      "utils/solidity_utils.py"
+    ]
+  },
+  "github-repo:lucianasi/C4Audit": {
+    "repo": "lucianasi/C4Audit",
+    "description": null,
+    "license": null,
+    "stars": 1,
+    "size_kb": 44,
+    "default_branch": "main",
+    "created": "2025-11-10T17:52:55Z",
+    "updated": "2026-10-07T10:17:54Z",
+    "archived": false,
+    "file_count": 8,
+    "extensions": {
+      "py": 4,
+      "txt": 2,
+      "ds_store": 1,
+      "md": 1
+    },
+    "sample_paths": [
+      ".DS_Store",
+      "README.md",
+      "fetch/get_reports.py",
+      "metrics/classify_files.py",
+      "metrics/run_lizard.py",
+      "parser/parse_code4rena_reports.py",
+      "reports_code4rena.txt",
+      "requirements.txt"
+    ]
+  },
+  "github-repo:IlhamQasse/SCAR": {
+    "repo": "IlhamQasse/SCAR",
+    "description": "A dataset and tool to crawl smart contract security audit reports",
+    "license": null,
+    "stars": 0,
+    "size_kb": 55,
+    "default_branch": "main",
+    "created": "2025-11-18T09:57:19Z",
+    "updated": "2026-02-01T06:28:45Z",
+    "archived": false,
+    "file_count": 61,
+    "extensions": {
+      "py": 52,
+      "md": 3,
+      "ds_store": 1,
+      "dockerignore": 1,
+      "gitignore": 1,
+      "yml": 1,
+      "(none)": 1,
+      "txt": 1
+    },
+    "sample_paths": [
+      ".DS_Store",
+      ".dockerignore",
+      ".gitignore",
+      "README.md",
+      "analysis.md",
+      "analyze.py",
+      "analyzers/base/analyzer.py",
+      "analyzers/code4rena/analyzer.py",
+      "analyzers/code4rena/helper.py",
+      "analyzers/consensys/analyzer.py",
+      "analyzers/consensys/helper.py",
+      "analyzers/openzeppelin/analyzer.py",
+      "analyzers/openzeppelin/helper.py",
+      "analyzers/quantstamp/analyzer.py",
+      "analyzers/quantstamp/helper.py",
+      "configs/base/github.py",
+      "configs/base/types.py",
+      "configs/code4rena/analyzer.py",
+      "configs/code4rena/project.py",
+      "configs/code4rena/repo.py",
+      "configs/code4rena/report.py",
+      "configs/consensys/analyzer.py",
+      "configs/consensys/project.py",
+      "configs/consensys/repo.py",
+      "configs/consensys/report.py",
+      "configs/openzeppelin/analyzer.py",
+      "configs/openzeppelin/project.py",
+      "configs/openzeppelin/repo.py",
+      "configs/openzeppelin/report.py",
+      "configs/quantstamp/analyzer.py",
+      "configs/quantstamp/project.py",
+      "configs/quantstamp/repo.py",
+      "configs/quantstamp/report.py",
+      "crawl.py",
+      "crawler.md",
+      "crawlers/base/github.py",
+      "crawlers/base/repo.py",
+      "crawlers/base/report.py",
+      "crawlers/code4rena/project.py",
+      "crawlers/code4rena/repo.py"
+    ]
+  }
+}

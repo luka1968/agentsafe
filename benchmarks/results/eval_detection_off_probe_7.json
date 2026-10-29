@@ -1,0 +1,275 @@
+{
+  "env": {
+    "python": "3.12.3",
+    "datasets": {
+      "lisabench": {
+        "source": "agentlisa/bench",
+        "url_template": "https://raw.githubusercontent.com/{repo}/main/dataset/{n:05d}.json",
+        "license": "MIT",
+        "subset_size": 2,
+        "seed": 7,
+        "ids": [
+          78,
+          166
+        ],
+        "fetched_at": "2026-10-29T12:30:19.226473+00:00"
+      }
+    }
+  },
+  "args": {
+    "mode": "detection",
+    "rag": "off",
+    "llm": "probe",
+    "n_retrieval": 20,
+    "n_detection": 6,
+    "n_e2e": 2,
+    "seed": 7
+  },
+  "detection_rag=off": {
+    "mode": "detection",
+    "rag": false,
+    "llm": "probe",
+    "n_samples": 6,
+    "tp": 5,
+    "fp": 4,
+    "fn": 3,
+    "precision": 0.5555555555555556,
+    "recall": 0.625,
+    "f1": 0.5882352941176471,
+    "false_positive_rate": 0.4444,
+    "severity_accuracy": {
+      "n_labeled": 2,
+      "n_exact": 0,
+      "accuracy": 0.0
+    },
+    "cross_function": {
+      "n_gt": 0,
+      "detected": 0
+    },
+    "tool_execution": {
+      "n_runs": 24,
+      "success_rate": 0.25,
+      "n_success": 6
+    },
+    "runtime": {
+      "n": 6,
+      "mean_seconds": 0.886,
+      "median_seconds": 0.823,
+      "min_seconds": 0.737,
+      "max_seconds": 1.301
+    },
+    "samples": [
+      {
+        "bench_id": 25,
+        "title": "M-1: Accounting will be broken if `output` token is one of the `lpTokens`",
+        "rag": false,
+        "gt_categories": [
+          "accounting"
+        ],
+        "gt_severity": "medium",
+        "gt_cross_function": false,
+        "predicted_categories": [
+          "arithmetic",
+          "unhandled_exception"
+        ],
+        "predicted_severity": "low",
+        "tp": [],
+        "fp": [
+          "arithmetic",
+          "unhandled_exception"
+        ],
+        "fn": [
+          "accounting"
+        ],
+        "n_findings": 34,
+        "cross_function_paths": 24,
+        "cross_function_detected": null,
+        "evidence_traceability": {
+          "n": 1,
+          "traceable": 0
+        },
+        "runtime_seconds": 1.301,
+        "audit_error": [
+          "slither: slither not installed: executable not found: slither",
+          "aderyn: aderyn not installed: executable not found: aderyn",
+          "mythril: not installed",
+          "heimdall: not installed"
+        ]
+      },
+      {
+        "bench_id": 38,
+        "title": "Makers May Profit off of Takers via Malicious makerPermit Extension",
+        "rag": false,
+        "gt_categories": [
+          "accounting",
+          "unhandled_exception"
+        ],
+        "gt_severity": null,
+        "gt_cross_function": false,
+        "predicted_categories": [
+          "arithmetic",
+          "unhandled_exception"
+        ],
+        "predicted_severity": "low",
+        "tp": [
+          "unhandled_exception"
+        ],
+        "fp": [
+          "arithmetic"
+        ],
+        "fn": [
+          "accounting"
+        ],
+        "n_findings": 36,
+        "cross_function_paths": 14,
+        "cross_function_detected": null,
+        "evidence_traceability": {
+          "n": 1,
+          "traceable": 0
+        },
+        "runtime_seconds": 0.86,
+        "audit_error": [
+          "slither: slither not installed: executable not found: slither",
+          "aderyn: aderyn not installed: executable not found: aderyn",
+          "mythril: not installed",
+          "heimdall: not installed",
+          "targeted tests: list index out of range"
+        ]
+      },
+      {
+        "bench_id": 78,
+        "title": "Enum Elements Sorting Is Not Consistent",
+        "rag": false,
+        "gt_categories": [],
+        "gt_severity": null,
+        "gt_cross_function": false,
+        "predicted_categories": [],
+        "predicted_severity": null,
+        "tp": [],
+        "fp": [],
+        "fn": [],
+        "n_findings": 0,
+        "cross_function_paths": 0,
+        "cross_function_detected": null,
+        "evidence_traceability": {
+          "n": 1,
+          "traceable": 0
+        },
+        "runtime_seconds": 0.737,
+        "audit_error": [
+          "slither: slither not installed: executable not found: slither",
+          "aderyn: aderyn not installed: executable not found: aderyn",
+          "mythril: not installed",
+          "heimdall: not installed"
+        ]
+      },
+      {
+        "bench_id": 166,
+        "title": "Absence of reserves length check during pump initialization can lead to storage corruption.",
+        "rag": false,
+        "gt_categories": [
+          "arithmetic",
+          "unhandled_exception"
+        ],
+        "gt_severity": null,
+        "gt_cross_function": false,
+        "predicted_categories": [
+          "arithmetic",
+          "unhandled_exception"
+        ],
+        "predicted_severity": "low",
+        "tp": [
+          "arithmetic",
+          "unhandled_exception"
+        ],
+        "fp": [],
+        "fn": [],
+        "n_findings": 7,
+        "cross_function_paths": 3,
+        "cross_function_detected": null,
+        "evidence_traceability": {
+          "n": 1,
+          "traceable": 0
+        },
+        "runtime_seconds": 0.772,
+        "audit_error": [
+          "slither: slither not installed: executable not found: slither",
+          "aderyn: aderyn not installed: executable not found: aderyn",
+          "mythril: not installed",
+          "heimdall: not installed"
+        ]
+      },
+      {
+        "bench_id": 203,
+        "title": "M-9: Time calculation issues with exponential decay",
+        "rag": false,
+        "gt_categories": [
+          "accounting"
+        ],
+        "gt_severity": "medium",
+        "gt_cross_function": false,
+        "predicted_categories": [
+          "arithmetic"
+        ],
+        "predicted_severity": "low",
+        "tp": [],
+        "fp": [
+          "arithmetic"
+        ],
+        "fn": [
+          "accounting"
+        ],
+        "n_findings": 5,
+        "cross_function_paths": 5,
+        "cross_function_detected": null,
+        "evidence_traceability": {
+          "n": 1,
+          "traceable": 0
+        },
+        "runtime_seconds": 0.83,
+        "audit_error": [
+          "slither: slither not installed: executable not found: slither",
+          "aderyn: aderyn not installed: executable not found: aderyn",
+          "mythril: not installed",
+          "heimdall: not installed"
+        ]
+      },
+      {
+        "bench_id": 275,
+        "title": "Silent overflow in `TrimmedAmount::shift` could result in rate limiter being bypassed",
+        "rag": false,
+        "gt_categories": [
+          "arithmetic",
+          "unhandled_exception"
+        ],
+        "gt_severity": null,
+        "gt_cross_function": false,
+        "predicted_categories": [
+          "arithmetic",
+          "unhandled_exception"
+        ],
+        "predicted_severity": "low",
+        "tp": [
+          "arithmetic",
+          "unhandled_exception"
+        ],
+        "fp": [],
+        "fn": [],
+        "n_findings": 21,
+        "cross_function_paths": 12,
+        "cross_function_detected": null,
+        "evidence_traceability": {
+          "n": 1,
+          "traceable": 0
+        },
+        "runtime_seconds": 0.817,
+        "audit_error": [
+          "slither: slither not installed: executable not found: slither",
+          "aderyn: aderyn not installed: executable not found: aderyn",
+          "mythril: not installed",
+          "heimdall: not installed"
+        ]
+      }
+    ]
+  }
+}

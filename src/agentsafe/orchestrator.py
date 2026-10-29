@@ -531,7 +531,7 @@ class AuditOrchestrator:
                     )
                     done("llm_agents",
                          detail=(f"{llm_usage.total_calls} calls; "
-                                 f"{len(scheduler_meta.get('aggregate', {}).get('agents_run', []))} specialists")
+                                 f"{scheduler_meta.get('aggregate', {}).get('agents_run', 0)} specialists")
                          if scheduler_meta else f"{llm_usage.total_calls} calls")
                 else:
                     skip("llm_agents", "no LLM router configured or no material")

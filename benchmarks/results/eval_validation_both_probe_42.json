@@ -1,0 +1,64 @@
+{
+  "env": {
+    "python": "3.12.3",
+    "datasets": {
+      "lisabench": {
+        "source": "agentlisa/bench",
+        "url_template": "https://raw.githubusercontent.com/{repo}/main/dataset/{n:05d}.json",
+        "license": "MIT",
+        "subset_size": 2,
+        "seed": 43,
+        "ids": [
+          20,
+          147
+        ],
+        "fetched_at": "2026-10-29T12:37:31.262556+00:00"
+      }
+    }
+  },
+  "args": {
+    "mode": "validation",
+    "rag": "both",
+    "llm": "probe",
+    "n_retrieval": 20,
+    "n_detection": 4,
+    "n_e2e": 2,
+    "seed": 42
+  },
+  "validation": {
+    "mode": "validation",
+    "accuracy": 1.0,
+    "per_class": {
+      "confirmed": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "total": 1
+      },
+      "potential": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "total": 1
+      },
+      "informational": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "total": 2
+      },
+      "rejected": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "total": 2
+      },
+      "needs_manual_review": {
+        "precision": null,
+        "recall": null,
+        "total": 0
+      }
+    },
+    "false_positive_rate": 0.0,
+    "regression": {
+      "pass": true,
+      "guards": []
+    }
+  }
+}
