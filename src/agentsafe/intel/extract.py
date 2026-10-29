@@ -40,7 +40,7 @@ _CONTRACT_RE = re.compile(
 _STATE_VAR_RE = re.compile(
     r"^\s*((?:mapping\s*\(.+?\)|[A-Za-z_][\w\.\[\]]*(?:\s*\[[^\]]*\])?)\s+)"
     r"(?:immutable\s+|constant\s+|override\s+|transient\s+)*"
-    r"(public|private|internal)\s+([A-Za-z_]\w*)\s*(?:=|;)",
+    r"(public|private|internal)?\s*([A-Za-z_]\w*)\s*(?:=|;)",
     re.MULTILINE,
 )
 _EVENT_RE = re.compile(r"\bevent\s+([A-Za-z_]\w*)\s*\(")
@@ -70,6 +70,7 @@ _INIT_RE = re.compile(r"\b(initialize|initializer|reinitializer|disableInitializ
                       r"_disableInitializers)\b")
 _PROXY_HINT_RE = re.compile(
     r"(Proxy|Upgradeable|TransparentUpgradeableProxy|BeaconProxy|UUPS)")
+_PRAGMA_RE = re.compile(r"pragma\s+solidity\s+([^;]+);")
 _KEYWORD_TAIL = re.compile(
     r"\b(?:public|private|internal|external|view|pure|payable|virtual|"
     r"override|returns|nonpayable)\b"
@@ -111,6 +112,7 @@ class FunctionIntel:
     unchecked: int = 0
     guards: list[str] = field(default_factory=list)
     emits: list[str] = field(default_factory=list)
+    body: str = ""  # verified source slice (for evidence; never invented)
 
     def to_dict(self) -> dict[str, Any]:
         d = self.__dict__.copy()
@@ -149,6 +151,9 @@ class ContractIntel:
     unresolved_externals: set[str] = field(default_factory=set)
     slither_detectors: list[dict[str, Any]] = field(default_factory=list)
     extraction_warnings: list[str] = field(default_factory=list)
+    pragma: list[str] = field(default_factory=list)  # pragma solidity versions
+    missing_sources: list[str] = field(default_factory=list)  # referenced but not provided
+    source_files: list[str] = field(default_factory=list)
 
     # -- graph helpers -----------------------------------------------------
     def callers_of(self, fn: str) -> list[str]:
@@ -184,6 +189,9 @@ class ContractIntel:
             "unresolved_externals": sorted(self.unresolved_externals),
             "slither_detector_count": len(self.slither_detectors),
             "extraction_warnings": self.extraction_warnings,
+            "pragma": self.pragma,
+            "missing_sources": sorted(set(self.missing_sources)),
+            "source_files": sorted(set(self.source_files)),
         }
 
 
@@ -305,15 +313,20 @@ def _extract_contract(src: str, body: str, kind: str, name: str,
         fi.line_end = fi.line_start + fbody.count("\n") + 1
         for sv in entry.state_vars:
             if re.search(rf"\b{re.escape(sv)}\b", fbody):
+                # read-modify-write ops (-=, +=, *=, /=) both read AND write
                 if re.search(
                     rf"(?:\b{re.escape(sv)}\b\s*(?:\[[^\]]*\])?\s*"
                     rf"(?:=|\+=|-=|\*=|/=)|\bdelete\s+{re.escape(sv)}\b)",
                     fbody,
                 ):
                     fi.writes.add(sv)
+                    if re.search(rf"\b{re.escape(sv)}\b\s*(?:\[[^\]]*\])?\s*"
+                                 rf"(?:\+=|-=|\*=|/=)", fbody):
+                        fi.reads.add(sv)  # rw reads the prior value
                 else:
                     fi.reads.add(sv)
         _analyze_body(fi, fbody, entry, intel)
+        fi.body = fbody
         entry.functions.append(fi)
     return entry
 
@@ -328,6 +341,18 @@ def extract_contract_intel(files: dict[str, str]) -> ContractIntel:
     for path, content in files.items():
         try:
             src = _strip_comments(content)
+            intel.source_files.append(path)
+            for pm in _PRAGMA_RE.finditer(src):
+                intel.pragma.append(pm.group(1).strip())
+            # Track imports to files not provided in the source set (honest
+            # accounting; never assume their bodies). Supports both
+            # `import "./X.sol";` and `import {A} from "./X.sol";`.
+            for imp in re.finditer(
+                    r'import\s+(?:\{[^}]*\}\s+from\s+)?"([^"]+)"', content):
+                target = imp.group(1)
+                if not any(target.endswith(p) or p.endswith(target)
+                           for p in files):
+                    intel.missing_sources.append(target)
             found_any = False
             for m in _CONTRACT_RE.finditer(src):
                 found_any = True

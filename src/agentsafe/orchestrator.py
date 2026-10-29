@@ -324,6 +324,25 @@ class AuditOrchestrator:
                             logger.info("intel warnings: %s", intel.extraction_warnings)
                     except Exception as exc:  # intel is an aid, never a blocker
                         limitations.append(f"contract intel extraction failed: {exc}")
+                    if intel is not None:
+                        # G+ Stage 4: attach structural graphs (call graph, state
+                        # deps, evidence, proxy posture, sinks) as a reusable
+                        # contract representation for downstream agents.
+                        try:
+                            from agentsafe.intel.graph import (
+                                call_graph,
+                                classify_proxy_pattern,
+                                sink_inventory,
+                                state_change_evidence,
+                                state_dependency_graph,
+                            )
+                            intel.call_graph = call_graph(intel)
+                            intel.state_deps = state_dependency_graph(intel)
+                            intel.state_evidence = state_change_evidence(intel)
+                            intel.proxy_patterns = classify_proxy_pattern(intel)
+                            intel.sinks = sink_inventory(intel)
+                        except Exception as exc:  # graphs are an aid, never a blocker
+                            limitations.append(f"intel graph construction failed: {exc}")
                 else:
                     # pseudo-source: regex extraction would be misleading; skip
                     # honestly rather than fabricate structure.

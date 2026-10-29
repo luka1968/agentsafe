@@ -146,6 +146,32 @@ def render_intel_brief(intel: "ContractIntel | None", focus: str,
     if intel.extraction_warnings:
         out.append("INTEL WARNINGS: " + "; ".join(intel.extraction_warnings[:4]))
 
+    # -- structural graphs (G+ Stage 4, when available) -----------------------
+    cg = getattr(intel, "call_graph", None)
+    sdg = getattr(intel, "state_deps", None)
+    sinks = getattr(intel, "sinks", None)
+    pats = getattr(intel, "proxy_patterns", None)
+    if cg:
+        edges = [f"{a}->{b}" for a, bs in list(cg.items())[:14]
+                 for b in bs[:3]]
+        if edges:
+            out.append("CALL GRAPH: " + "; ".join(edges[:12]))
+    if sdg:
+        deps = [f"{v} W[{','.join(d['writers'][:3])}] R[{','.join(d['readers'][:3])}]"
+                for v, d in list(sdg.items())[:10]]
+        if deps:
+            out.append("STATE DEPS: " + "; ".join(deps[:8]))
+    if sinks:
+        sks = [f"{s['fn']} [{','.join(s['ops'][:4])}]".replace(
+            " ", "_") for s in sinks[:12]]
+        if sks:
+            out.append("SINKS: " + "; ".join(sks[:10]))
+    if pats:
+        pp = [f"{p.contract}={p.kind}" + (f"[gap]" if p.storage_gap_present else "")
+              + (f"[init:{','.join(p.initializer_chain)}]" if p.initializer_chain else "")
+              for p in pats[:6]]
+        out.append("PROXY PATTERNS: " + "; ".join(pp))
+
     return _cap("\n".join(out), INTEL_BUDGET_CHARS)
 
 
