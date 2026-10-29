@@ -85,8 +85,6 @@ CREATE TABLE IF NOT EXISTS knowledge_embeddings (
     content_hash    text,
     created_at      timestamptz DEFAULT now()
 );
-CREATE INDEX IF NOT EXISTS ke_hnsw_idx ON knowledge_embeddings
-    USING hnsw (embedding vector_cosine_ops);
 CREATE INDEX IF NOT EXISTS ke_knowledge_idx ON knowledge_embeddings (knowledge_id);
 
 CREATE TABLE IF NOT EXISTS knowledge_import_jobs (
@@ -139,12 +137,23 @@ def _row_to_record(row: Any) -> dict[str, Any]:
     return out
 
 
-def _connect(dsn: str):
+def _connect(dsn: str, *, retries: int = 3):
+    import time as _t
+
     import psycopg
 
     from psycopg.rows import dict_row
 
-    return psycopg.connect(dsn, connect_timeout=15, row_factory=dict_row)
+    last: Exception | None = None
+    for attempt in range(1, retries + 1):
+        try:
+            return psycopg.connect(dsn, connect_timeout=15,
+                                   row_factory=dict_row)
+        except Exception as exc:
+            last = exc
+            if attempt < retries:
+                _t.sleep(1.5 * attempt)
+    raise last  # type: ignore[misc]
 
 
 # ---------------------------------------------------------------------------
@@ -166,7 +175,28 @@ class NeonKnowledgeStore:
             with conn.cursor() as cur:
                 cur.execute("create extension if not exists vector")
                 cur.execute(_DROP_OLD)
+                # Dimension change: drop stale embeddings so the HNSW index is
+                # rebuilt with the configured dim (records stay; vectors reseed).
+                cur.execute(
+                    "SELECT a.atttypmod AS dim FROM pg_attribute a "
+                    "JOIN pg_class c ON c.oid=a.attrelid "
+                    "WHERE c.relname='knowledge_embeddings' AND a.attname='embedding'")
+                row = cur.fetchone()
+                if row:
+                    old_dim = row.get("dim") if isinstance(row, dict) else row[0]
+                    if old_dim and int(old_dim) != int(self.vector_dim):
+                        logger.info("embedding dim %s -> %s; dropping stale vectors",
+                                    old_dim, self.vector_dim)
+                        cur.execute("DROP TABLE knowledge_embeddings CASCADE")
                 cur.execute(_SCHEMA.replace("{DIM}", str(self.vector_dim)))
+                # HNSW has a hard 2000-dim cap in pgvector. For higher dims
+                # (e.g. nemotron 2048) skip the index — exact sequential-scan
+                # cosine is used, which is MORE accurate (no ANN approximation).
+                if int(self.vector_dim) <= 2000:
+                    cur.execute(
+                        "CREATE INDEX IF NOT EXISTS ke_hnsw_idx "
+                        "ON knowledge_embeddings USING hnsw "
+                        "(embedding vector_cosine_ops)")
 
     _VK_SELECT = """
         SELECT vk.*, src.name AS source_name, src.url AS source_url_explicit
@@ -182,31 +212,43 @@ class NeonKnowledgeStore:
     )
 
     def search(self, query: str, focus: str = "", limit: int = 3) -> list[dict[str, Any]]:
+        """Hybrid retrieval: pgvector cosine + PostgreSQL full-text, fused with
+        Reciprocal Rank Fusion (RRF): score(d) = sum 1/(K + rank_i(d)), K=60
+        (standard RRF constant). Rank-fusion is documented, not BM25: full-text
+        uses ts_rank, which is NOT BM25 — no such claim is made.
+        Falls back to lexical-only when no embedder is configured."""
         if not query or not query.strip():
             return []
+        K = 60
+        vec_hits: list[tuple[Any, float]] = []  # (record, rank0-based)
+        lex_hits: list[tuple[Any, float]] = []
         with self._connect() as conn:
             with conn.cursor() as cur:
                 if self.embedding_model is not None:
-                    vec = self.embedding_model(query)
-                    if vec:
-                        qv = [float(x) for x in vec[: self.vector_dim]]
-                        cur.execute(
-                            f"""
-                            SELECT vk.*, src.name AS source_name,
-                                   src.url AS source_url_explicit,
-                                   (1 - (ke.embedding <=> %s::vector)) AS score
-                            FROM knowledge_embeddings ke
-                            JOIN vulnerability_knowledge vk ON vk.id = ke.knowledge_id
-                            JOIN knowledge_sources src ON src.name = vk.source_id
-                            WHERE ke.embedding IS NOT NULL
-                            ORDER BY score DESC
-                            LIMIT %s
-                            """,
-                            (qv, limit),
-                        )
-                        rows = cur.fetchall()
-                        if rows:
-                            return [_row_to_record(r) for r in rows]
+                    try:
+                        if hasattr(self.embedding_model, "embed_query"):
+                            vec = self.embedding_model.embed_query(query)
+                        else:
+                            vec = self.embedding_model(query)  # type: ignore[operator]
+                        if vec:
+                            qv = [float(x) for x in vec[: self.vector_dim]]
+                            cur.execute(
+                                f"""
+                                SELECT vk.*, src.name AS source_name,
+                                       src.url AS source_url_explicit,
+                                       (1 - (ke.embedding <=> %s::vector)) AS score
+                                FROM knowledge_embeddings ke
+                                JOIN vulnerability_knowledge vk ON vk.id = ke.knowledge_id
+                                JOIN knowledge_sources src ON src.name = vk.source_id
+                                WHERE ke.embedding IS NOT NULL
+                                ORDER BY score DESC
+                                LIMIT %s
+                                """,
+                                (qv, limit * 3),
+                            )
+                            vec_hits = [(r, i) for i, r in enumerate(cur.fetchall())]
+                    except Exception as exc:
+                        logger.warning("vector leg failed (%s); lexical only", exc)
                 cur.execute(
                     f"""
                     SELECT vk.*, src.name AS source_name,
@@ -219,9 +261,36 @@ class NeonKnowledgeStore:
                     ORDER BY score DESC
                     LIMIT %s
                     """,
-                    (query, query, limit),
+                    (query, query, limit * 3),
                 )
-                return [_row_to_record(r) for r in cur.fetchall()]
+                lex_hits = [(r, i) for i, r in enumerate(cur.fetchall())]
+        if not vec_hits and not lex_hits:
+            return []
+        # RRF fusion keyed on content_hash (stable dedup across legs)
+        def key(r: dict[str, Any]) -> str:
+            return str(r.get("content_hash") or r.get("id") or id(r))
+        rrf: dict[str, float] = {}
+        best: dict[str, dict[str, Any]] = {}
+        legs: dict[str, list[int]] = {}
+        for hits in (vec_hits, lex_hits):
+            for row, rank in hits:
+                k = key(row)
+                rrf[k] = rrf.get(k, 0.0) + 1.0 / (K + rank + 1)
+                legs.setdefault(k, []).append(rank)
+                if k not in best:
+                    best[k] = row
+        fused = sorted(best.values(), key=lambda r: rrf[key(r)], reverse=True)
+        out = []
+        for r in fused[:limit]:
+            rec = _row_to_record(r)
+            rec["_retrieval"] = {
+                "rrf_score": round(rrf[key(r)], 6),
+                "vector_rank": min(legs[key(r)]) if key(r) in legs else None,
+                "matched_legs": sum(1 for h in (vec_hits, lex_hits)
+                                    if any(key(x[0]) == key(r) for x in h)),
+            }
+            out.append(rec)
+        return out
 
     def records(self) -> list[dict[str, Any]]:
         with self._connect() as conn:

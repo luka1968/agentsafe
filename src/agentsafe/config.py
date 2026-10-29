@@ -180,7 +180,7 @@ class Settings(BaseSettings):
     # audit is never blocked by the retrieval layer.
     NEON_DATABASE_URL: str = ""
     KB_STORAGE: str = ""  # '' auto -> 'neon' if URL present else 'jsonl'
-    KB_VECTOR_DIM: int = Field(default=384, ge=8, le=4096)
+    KB_VECTOR_DIM: int = Field(default=2048, ge=8, le=4096)
 
     @property
     def resolved_kb_storage(self) -> str:

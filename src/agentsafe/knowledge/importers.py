@@ -149,11 +149,15 @@ def _embed_in_batches(embedder: Callable[[str], list[float]] | None,
     for i in range(0, len(texts), batch_size):
         batch = texts[i:i + batch_size]
         try:
-            vecs = embedder(batch)  # allow list-in/list-out embedders
+            # Support both callable(batch)->vectors and .embed(batch) objects.
+            if hasattr(embedder, "embed"):
+                vecs = embedder.embed(batch)
+            else:
+                vecs = embedder(batch)  # type: ignore[operator]
             if isinstance(vecs, list) and vecs and isinstance(vecs[0], list):
                 out.extend(vecs)
                 continue
-            out.extend([embedder(t) for t in batch])
+            out.extend([None] * len(batch))
         except Exception as exc:
             logger.warning("embedding batch failed: %s", exc)
             out.extend([None] * len(batch))
@@ -195,9 +199,12 @@ def run_import(
         texts.append(body)
 
     embeddings = _embed_in_batches(embedder, texts, batch_size)
+    # Compute embeddings BEFORE opening the DB transaction: Neon poolers kill
+    # idle-in-transaction sessions, and remote embedding calls are slow.
 
     with store._connect() as conn:
         with conn.cursor() as cur:
+            conn.autocommit = False
             cur.execute(
                 """
                 INSERT INTO knowledge_sources (name, version, url, license,
@@ -261,6 +268,15 @@ def run_import(
                     summary.errors.append(str(exc)[:160])
                     continue
                 if emb is not None:
+                    # Reuse: skip re-embedding when this content_hash already
+                    # has a vector from a prior import (unchanged content).
+                    cur.execute(
+                        "SELECT 1 FROM knowledge_embeddings WHERE content_hash=%s",
+                        (ch,))
+                    if cur.fetchone():
+                        summary.skipped_embed = getattr(summary,
+                                                        "skipped_embed", 0) + 1
+                        continue
                     cur.execute(
                         "SELECT id FROM vulnerability_knowledge WHERE content_hash=%s",
                         (ch,))
