@@ -132,6 +132,13 @@ def _row_to_record(row: Any) -> dict[str, Any]:
         "remediation": r.get("remediation"),
         "source": r.get("source_name"),
         "url": r.get("source_url") or r.get("source_url_explicit"),
+        # extra provenance/severity surfaces (renderer keeps its keys;
+        # these enrich retrieval output without breaking consumers)
+        "severity": r.get("severity"),
+        "title": r.get("title"),
+        "external_record_id": r.get("external_record_id"),
+        "source_url": r.get("source_url") or r.get("source_url_explicit"),
+        "metadata": r.get("metadata") or {},
     }
     out["_neon_score"] = r.pop("score", None)
     return out
