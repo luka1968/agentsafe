@@ -35,6 +35,22 @@ class Severity(StrEnum):
     INFO = "info"
 
 
+class FindingCategory(StrEnum):
+    """Stage 9: stable finding taxonomy (subset of SWC topics, evidence-driven
+    assignment by the proposing agent or mapped from detector ids)."""
+
+    ACCESS_CONTROL = "access_control"
+    REENTRANCY = "reentrancy"
+    ARITHMETIC = "arithmetic"
+    ACCOUNTING = "accounting"
+    LOGIC_ERROR = "logic_error"
+    ORACLE = "oracle"
+    PROXY = "proxy"
+    TOKEN = "token"
+    UNHANDLED_EXCEPTION = "unhandled_exception"
+    UNKNOWN = "unknown"
+
+
 class FindingStatus(StrEnum):
     """Finding lifecycle states (strict state machine).
 
@@ -97,6 +113,23 @@ class StageState(StrEnum):
     SKIPPED = "skipped"
 
 
+class KnowledgeReference(BaseModel):
+    """Stage 9: structured knowledge-base reference attached to a finding.
+
+    Provenance only — a reference records which historical case or document
+    the agent consulted, never a verdict and never a confidence signal.
+    Unknown subfields are omitted (None), never invented.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    knowledge_id: str | None = None
+    source_name: str | None = None
+    source_url: str | None = None
+    title: str | None = None
+    relevance_reason: str | None = None
+
+
 class Finding(BaseModel):
     """A single normalized audit finding. See E_VERSION_PLAN section 5."""
 
@@ -136,6 +169,17 @@ class Finding(BaseModel):
     # a current vulnerability and NOT a confidence signal. A reference may be
     # a KB record id or a source_url when the store does not expose ids.
     knowledge_references: list[str] = Field(default_factory=list)
+    # Stage 9: structured KB references (superset of knowledge_references;
+    # populated when the store exposes structured metadata). Provenance only.
+    knowledge_reference_details: list[KnowledgeReference] = Field(default_factory=list)
+    # Stage 9: structured taxonomy/location/validation fields. All optional
+    # with safe defaults so existing consumers keep working.
+    category: FindingCategory = FindingCategory.UNKNOWN
+    affected_functions: list[str] = Field(default_factory=list)
+    state_dependencies: list[str] = Field(default_factory=list)
+    invariant_violated: str | None = None
+    validation_method: str | None = None   # e.g. "deterministic_rules" | "independent_tool_corroboration" | "targeted_test" | "manual_review"
+    validation_result: str | None = None   # e.g. "not_executed" | "passed" | "failed" | "needs_manual_review"
     limitations: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
@@ -364,6 +408,9 @@ class AuditReport(BaseModel):
     # not_applicable). Evidence-backed; never presented as findings.
     invariant_checks: list[dict[str, Any]] = Field(default_factory=list)
     attack_paths: list[dict[str, Any]] = Field(default_factory=list)
+    # Stage 8: targeted test runs (isolated sandbox). never treated as proof
+    # when not_executed; failed != unsafe (honesty by construction).
+    targeted_test_results: list[dict[str, Any]] = Field(default_factory=list)
 
     @field_validator("address")
     @classmethod

@@ -56,7 +56,12 @@ from agentsafe.pricing import (
     count_source_lines,
     pricing_summary,
 )
-from agentsafe.report_render import ReportRenderError, render_html, render_pdf
+from agentsafe.report_render import (
+    ReportRenderError,
+    render_html,
+    render_markdown,
+    render_pdf,
+)
 from agentsafe.rpc import EthRpcClient
 from agentsafe.schemas import AuditReport, TaskState, normalize_address
 from agentsafe.task_store import open_task_store
@@ -425,6 +430,12 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
         second audit, never exposes storage paths or secrets."""
         return await _serve_rendered_report(request, "json")
 
+    @app.custom_route("/api/audit/{task_id}/report.md", methods=["GET"])
+    async def _api_report_markdown(request: Request) -> Response:
+        """Markdown report (Stage 9) from the SAME validated report data as
+        JSON/HTML/PDF — all formats agree by construction."""
+        return await _serve_rendered_report(request, "md")
+
     async def _serve_rendered_report(request: Request, fmt: str) -> Response:
         """Shared renderer endpoint: resolves the task, enforces the payment
         binding (fail-closed), fetches the SAME validated report JSON the MCP
@@ -499,6 +510,11 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
             )
         if fmt == "html":
             return HTMLResponse(render_html(validated))
+        if fmt == "md":
+            return HTMLResponse(
+                render_markdown(validated),
+                media_type="text/markdown; charset=utf-8",
+            )
         if fmt == "json":
             return JSONResponse(validated.model_dump(mode="json"))
         try:

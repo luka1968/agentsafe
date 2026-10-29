@@ -233,6 +233,7 @@ def build_report(
     analyzed_files: Sequence[str] = (),
     invariant_checks: Sequence[dict[str, Any]] = (),
     attack_paths: Sequence[dict[str, Any]] = (),
+    targeted_test_results: Sequence[dict[str, Any]] = (),
 ) -> AuditReport:
     findings = merge_findings(tool_findings, llm_findings)
     report = AuditReport(
@@ -256,6 +257,7 @@ def build_report(
         disclaimer=REPORT_DISCLAIMER,
         invariant_checks=list(invariant_checks),
         attack_paths=list(attack_paths),
+        targeted_test_results=list(targeted_test_results),
     )
     report.summary.static_analysis_status = static_analysis_status
     return report

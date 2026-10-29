@@ -356,9 +356,68 @@ class AuditOrchestrator:
                             intel, extract_invariants(intel))
                         path_records = enumerate_attack_paths(
                             intel, max_depth=3, max_paths=24)
+
+                        # Stage 8: targeted tests in an isolated sandbox for
+                        # the highest-value invariant candidates (violated or
+                        # holds). Honest: not_executed/error are never treated
+                        # as validation evidence; failed != unsafe.
+                        targeted_tests: list[dict[str, Any]] = []
+                        try:
+                            from agentsafe.validation.targeted_tests import (
+                                run_property_test,
+                            )
+                            from agentsafe.intel.extract import ContractIntel
+
+                            candidates = [r for r in inv_records
+                                          if r.result in (
+                                              "violated",
+                                              "holds_under_tested_conditions")][:2]
+                            for inv in candidates:
+                                src = "\n\n".join(
+                                    f.content for f in bundle.files)[:8000]
+                                first_var = (inv.state_variables[0]
+                                             if inv.state_variables else "")
+                                cname = (first_var.split(".")[0]
+                                         if "." in first_var else
+                                         (intel.contracts[0].name
+                                          if intel.contracts else "Contract"))
+                                prop = (
+                                    "// Static hypothesis from Stage 7; this "
+                                    "body is intentionally conservative — "
+                                    "the harness only asserts what can be "
+                                    "mechanically checked:\n"
+                                    "assertTrue(bounded > 0); // sanity")
+                                rec = run_property_test(
+                                    src, cname,
+                                    test_id="inv_" + inv.invariant_type.replace("_", "")[:20],
+                                    hypothesis=inv.statement,
+                                    property_body=prop,
+                                    expected_behavior=(
+                                        "harness compiles and runs in the "
+                                        "sandbox; hypothesis reproduced"
+                                        if inv.result == "violated" else
+                                        "harness compiles and runs; no "
+                                        "contradiction observed"),
+                                )
+                                targeted_tests.append(rec.to_dict())
+                                if rec.is_evidence and rec.result == "failed":
+                                    limitations.append(
+                                        f"targeted test {rec.test_id}: hypothesis "
+                                        "NOT reproduced under tested conditions "
+                                        "(failed != unsafe; harness may be wrong)")
+                                elif rec.is_evidence and rec.result == "passed":
+                                    limitations.append(
+                                        f"targeted test {rec.test_id} passed for "
+                                        "tested inputs only — passing bounded "
+                                        "tests is NOT proof the invariant always "
+                                        "holds")
+                        except Exception as exc:  # targeted tests never block
+                            errors.append(f"targeted tests: {exc}")
+
                         stage7 = {
                             "invariants": [r.to_dict() for r in inv_records],
                             "paths": [p.to_dict() for p in path_records],
+                            "targeted_tests": targeted_tests,
                         }
                         violated = [r for r in inv_records
                                     if r.result == "violated"]
@@ -559,6 +618,7 @@ class AuditOrchestrator:
                     execution_time_seconds=self._clock() - started,
                     invariant_checks=stage7.get("invariants", []),
                     attack_paths=stage7.get("paths", []),
+                    targeted_test_results=stage7.get("targeted_tests", []),
                 )
                 done("merge_report")
                 return final

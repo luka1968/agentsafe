@@ -356,22 +356,24 @@ class ValidationAgent:
         #     a tool-corroborated real overflow must NOT be suppressed by weak
         #     LLM prose, while an uncorroborated theoretical claim must NOT
         #     headline the report as critical/high.
-        if _RE_OVERFLOW.search(f"{f.title} {f.description}") and support is None:
+        if _RE_OVERFLOW.search(f"{f.title} {f.description}"):
             claim_text = f"{f.description} {f.evidence}"
             has_path = bool(_RE_ATTACK_INPUT.search(claim_text)) and bool(
                 _RE_IMPACT.search(claim_text)
             )
+            # Stage 10 regression guard: even a tool-corroborated overflow is
+            # informational unless a concrete attack path (attacker-controlled
+            # input -> arithmetic -> demonstrated impact) is shown. A detector
+            # flag alone is never proof of exploitability.
             if not has_path:
                 return self._finalize(
                     f, FindingStatus.INFORMATIONAL, "ov0_theoretical_only",
                     "overflow claim lacks a concrete attack path (no "
                     "attacker-controlled input reaching the arithmetic and no "
                     "demonstrated impact); the absence of compiler overflow "
-                    "checks alone is informational, never critical",
+                    "checks alone is informational, never critical — even when "
+                    "a detector flags the arithmetic",
                 )
-            # an uncorroborated critical falls through to potential; the
-            # severity rubric caps unvalidated claims at medium and preserves
-            # the original impact claim in proposed_severity
         if support is not None:
             merged = self._finalize(
                 f, FindingStatus.CONFIRMED, "cr0_independent_support",
@@ -619,6 +621,11 @@ class ValidationAgent:
         swc = enrich_swc(nf)
         if swc:
             nf.swc_id = swc
+        # Stage 8/9: record HOW this finding was validated and its result.
+        # The method is derived from the rule id (never claimed); a static
+        # analyzer warning or LLM confidence is never treated as proof.
+        nf.validation_method = _method_for_rule(rule)
+        nf.validation_result = status.value
         return nf
 
 
@@ -657,3 +664,19 @@ def _tool_location_status(f: Finding) -> str | None:
     if f.file_path or f.line_start:
         return "unverified"
     return "unavailable"
+
+
+def _method_for_rule(rule: str) -> str:
+    """Map a validation rule id to a documented validation method. The method
+    is derived from the rule that fired, never self-declared by an agent.
+    Static-analyzer warnings and LLM confidence never enter this mapping."""
+    if rule.startswith("cr0_"):
+        return "independent_tool_corroboration"
+    if rule in ("re0_cei_satisfied", "tr0_canonical_delegation",
+                "al0_standard_behavior", "ov0_theoretical_only",
+                "if0_info_grade"):
+        return "deterministic_source_rules"
+    if rule in ("e0_missing_evidence", "e0_untraceable_location",
+                "e0_evidence_not_in_code", "l0_missing_line_number"):
+        return "evidence_traceability"
+    return "evidence_state_machine"

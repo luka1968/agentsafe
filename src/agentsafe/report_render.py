@@ -329,7 +329,21 @@ def render_html(report: AuditReport) -> str:
             f"{_esc(f.severity.value)}</span> · "
             f"{_esc(_STATUS_LABELS.get(f.status.value, f.status.value))} · "
             f"{_esc(_location(f))}</div>"
-            "<div class='dl'>"
+            + (
+                f"<div><b>Category</b> {_esc(f.category.value)}</div>"
+                if f.category is not None else ""
+            )
+            + (
+                "<div><b>Affected functions</b> "
+                + ", ".join(f"<span class='mono'>{_esc(x)}</span>" for x in f.affected_functions)
+                + "</div>"
+                if f.affected_functions else ""
+            )
+            + (
+                f"<div><b>Validation</b> method: {_esc(f.validation_method or 'n/a')} · "
+                f"result: {_esc(f.validation_result or f.status.value)}</div>"
+            )
+            + "<div class='dl'>"
             f"<div><b>Description</b> {_esc(f.description)}</div>"
             + (f"<div><b>Affected code</b></div><pre class='code'>{_esc(f.evidence)}</pre>" if f.evidence else "")  # noqa: E501
             + (
@@ -351,6 +365,21 @@ def render_html(report: AuditReport) -> str:
                 + "".join(f"<li class='mono'>{_esc(r)}</li>" for r in f.knowledge_references)
                 + "</ul></div>"
                 if f.knowledge_references
+                else ""
+            )
+            + (
+                "<div><b>Knowledge references (context only, not proof)</b><ul>"
+                + "".join(
+                    "<li>"
+                    f"<b>{_esc(kr.title or kr.knowledge_id or 'reference')}</b> "
+                    f"<span class='mono'>(source: {_esc(kr.source_name or 'n/a')})</span> "
+                    f"<span class='mono'>({_esc(kr.knowledge_id or 'no-id')})</span> "
+                    f"<span class='mono'>{_esc(kr.relevance_reason or '')}</span>"
+                    "</li>"
+                    for kr in f.knowledge_reference_details
+                )
+                + "</ul></div>"
+                if f.knowledge_reference_details
                 else ""
             )
             + (f"<div><b>Preconditions</b> {_esc(f.preconditions)}</div>" if f.preconditions else "")  # noqa: E501
@@ -444,6 +473,128 @@ def render_html(report: AuditReport) -> str:
 # PDF export (Section 8): OPTIONAL dependency, never required by the core
 # audit execution. reportlab is imported lazily inside render_pdf only.
 # ---------------------------------------------------------------------------
+
+
+def render_markdown(report: AuditReport) -> str:
+    """Markdown rendering from the SAME validated report data as HTML/PDF.
+    All formats agree on findings, severity, validation status, and
+    limitations by construction — they share one AuditReport instance."""
+    parts: list[str] = []
+    parts.append(f"# agentSAFE Audit Report — {_esc(report.address)}")
+    parts.append("")
+    parts.append(f"- Report ID: `{_esc(report.report_id or 'n/a')}`")
+    parts.append(f"- Task ID: `{_esc(report.task_id or 'n/a')}`")
+    parts.append(f"- Assessment date: {_esc(_fmt_ts(report.timestamp))}")
+    parts.append(f"- Verified source: {'yes' if report.is_verified_source else 'no'}")
+    parts.append(f"- Execution time: {_esc(report.execution_time_seconds if report.execution_time_seconds is not None else 'n/a')}s")
+    parts.append("")
+
+    # summary
+    parts.append("## Summary")
+    parts.append("")
+    parts.append(f"Total findings: {report.summary.total_findings}")
+    sev = report.summary.by_severity or {}
+    st = report.summary.by_status or {}
+    if sev:
+        parts.append(f"By severity: {', '.join(f'{k}={v}' for k, v in sorted(sev.items()))}")
+    if st:
+        parts.append(f"By status: {', '.join(f'{k}={v}' for k, v in sorted(st.items()))}")
+    parts.append(f"Tools executed: {', '.join(report.summary.tools_executed) or 'none'}")
+    parts.append(f"Static analysis status: {report.summary.static_analysis_status}")
+    parts.append("")
+
+    # findings
+    parts.append("## Findings")
+    parts.append("")
+    actionable = [f for f in report.findings if f.status is not FindingStatus.REJECTED]
+    if not actionable:
+        parts.append(
+            "No actionable findings. Rejected candidates are listed in the "
+            "appendix with the deterministic rule that refuted them.")
+    for f in actionable:
+        v = f.metadata.get("validation", {}) if isinstance(f.metadata, dict) else {}
+        parts.append(f"### {f.finding_id}: {_esc(f.title)}")
+        parts.append("")
+        parts.append(f"- **Severity**: `{_esc(f.severity.value)}`")
+        parts.append(f"- **Status**: `{_esc(_STATUS_LABELS.get(f.status.value, f.status.value))}`")
+        loc = _location(f)
+        if loc:
+            parts.append(f"- **Location**: `{_esc(loc)}`")
+        if f.category is not None:
+            parts.append(f"- **Category**: `{_esc(f.category.value)}`")
+        parts.append(f"- **Validation method**: `{_esc(f.validation_method or 'not recorded')}`")
+        parts.append(f"- **Validation result**: `{_esc(f.validation_result or f.status.value)}`")
+        parts.append("")
+        parts.append(f"**Description:** {_esc(f.description)}")
+        if f.affected_functions:
+            parts.append("")
+            parts.append(f"**Affected functions:** {', '.join(f'`{_esc(x)}`' for x in f.affected_functions)}")
+        if f.preconditions:
+            parts.append("")
+            parts.append(f"**Preconditions:** {_esc(f.preconditions)}")
+        if f.attack_scenario:
+            parts.append("")
+            parts.append(f"**Attack scenario:** {_esc(f.attack_scenario)}")
+        if f.evidence:
+            parts.append("")
+            parts.append("**Affected code:**")
+            parts.append("")
+            parts.append("```solidity")
+            parts.append(_esc(f.evidence))
+            parts.append("```")
+        if f.supporting_evidence:
+            parts.append("")
+            parts.append("**Corroborating evidence:**")
+            parts.append("".join(f"- `{_esc(r)}`\n" for r in f.supporting_evidence))
+        if f.contradicting_evidence:
+            parts.append("")
+            parts.append("**Contradicting evidence:**")
+            parts.append("".join(f"- `{_esc(r)}`\n" for r in f.contradicting_evidence))
+        if f.knowledge_reference_details:
+            parts.append("")
+            parts.append("**Knowledge references (context only, not proof):**")
+            for kr in f.knowledge_reference_details:
+                parts.append(
+                    f"- {_esc(kr.title or kr.knowledge_id or 'reference')} "
+                    f"(source: {_esc(kr.source_name or 'n/a')}, "
+                    f"{_esc(kr.relevance_reason or 'relevance not stated')})")
+        elif f.knowledge_references:
+            parts.append("")
+            parts.append("**Knowledge references (context only, not proof):**")
+            parts.append("".join(f"- `{_esc(r)}`\n" for r in f.knowledge_references))
+        if f.impact:
+            parts.append("")
+            parts.append(f"**Impact:** {_esc(f.impact)}")
+        if f.recommendation:
+            parts.append("")
+            parts.append(f"**Recommended fix:** {_esc(f.recommendation)}")
+        if f.limitations:
+            parts.append("")
+            parts.append("**Limitations:**")
+            parts.append("".join(f"- {_esc(x)}\n" for x in f.limitations))
+        parts.append("")
+        parts.append("---")
+        parts.append("")
+
+    # rejected appendix
+    rejected = [f for f in report.findings if f.status is FindingStatus.REJECTED]
+    if rejected:
+        parts.append("## Appendix: Rejected findings (auditability)")
+        parts.append("")
+        for f in rejected:
+            rule = (f.metadata.get("validation", {}) or {}).get("rule", "deterministic validation")
+            parts.append(f"- `{_esc(f.finding_id)}` {_esc(f.title)} — refuted by `{_esc(rule)}`")
+        parts.append("")
+
+    # limitations
+    parts.append("## Known limitations")
+    parts.append("")
+    for lim in report.limitations:
+        parts.append(f"- {_esc(lim)}")
+    parts.append("")
+    parts.append(f"> {_esc(report.disclaimer)}")
+    parts.append("")
+    return "\n".join(parts)
 
 
 def render_pdf(report: AuditReport) -> bytes:

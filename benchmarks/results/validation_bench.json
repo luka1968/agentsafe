@@ -1,0 +1,83 @@
+{
+  "dataset": "validation_bench",
+  "n_cases": 6,
+  "accuracy": 1.0,
+  "per_class": {
+    "confirmed": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "total": 1
+    },
+    "potential": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "total": 1
+    },
+    "informational": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "total": 2
+    },
+    "rejected": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "total": 2
+    },
+    "needs_manual_review": {
+      "precision": null,
+      "recall": null,
+      "total": 0
+    }
+  },
+  "false_positive_count": 0,
+  "false_positive_rate": 0.0,
+  "regression": {
+    "pass": true,
+    "guards": []
+  },
+  "rows": [
+    {
+      "title": "Reentrancy in withdraw",
+      "label": "rejected",
+      "predicted": "rejected",
+      "correct": true,
+      "rule": "re0_cei_satisfied"
+    },
+    {
+      "title": "Reentrancy: external call before state update",
+      "label": "confirmed",
+      "predicted": "confirmed",
+      "correct": true,
+      "rule": "cr0_independent_support"
+    },
+    {
+      "title": "transfer delegates to transferFrom(msg.sender)",
+      "label": "informational",
+      "predicted": "informational",
+      "correct": true,
+      "rule": "tr0_canonical_delegation"
+    },
+    {
+      "title": "Integer overflow in addition",
+      "label": "informational",
+      "predicted": "informational",
+      "correct": true,
+      "rule": "ov0_theoretical_only"
+    },
+    {
+      "title": "Claim with no evidence",
+      "label": "rejected",
+      "predicted": "rejected",
+      "correct": true,
+      "rule": "e0_missing_evidence"
+    },
+    {
+      "title": "Missing zero-address validation in setAdmin",
+      "label": "potential",
+      "predicted": "potential",
+      "correct": true,
+      "rule": "pt0_default"
+    }
+  ],
+  "generated": "/mnt/d/360/git/agentsafe1/benchmarks/validation_bench.py"
+}
