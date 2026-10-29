@@ -60,6 +60,15 @@ def build_orchestrator(settings: Settings) -> AuditOrchestrator:
         default_max_output_tokens=settings.LLM_MAX_OUTPUT_TOKENS,
     )
     agents = [AccessControlAgent(router), FundFlowAgent(router), BusinessLogicAgent(router)]
+    # Stage 6: dynamic specialist scheduler (classify -> select -> run with
+    # bounded concurrency + shared budget + per-agent metrics). Falls back to
+    # the legacy sequential agents when construction fails.
+    from agentsafe.agents.scheduler import MultiAgentScheduler
+    from agentsafe.agents.specialists import SPECIALIST_REGISTRY
+    scheduler = MultiAgentScheduler(
+        router, registry=SPECIALIST_REGISTRY,
+        kb_store_factory=lambda: get_knowledge_store(settings),
+    )
     return AuditOrchestrator(
         rpc=rpc,
         explorer=explorer,
@@ -72,6 +81,7 @@ def build_orchestrator(settings: Settings) -> AuditOrchestrator:
         llm_max_calls=settings.LLM_MAX_CALLS_PER_AUDIT,
         llm_deadline_seconds=min(1200.0, settings.AUDIT_TIMEOUT_SECONDS * 0.66),
         kb_store_factory=lambda: get_knowledge_store(settings),
+        scheduler=scheduler,
     )
 
 

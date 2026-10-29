@@ -123,6 +123,95 @@ Business logic and economic-attack analysis:
 - Misused modifiers, conditions that can be bypassed
 Report ONLY issues you can ground in quoted code evidence."""
 
+
+REENTRANCY_FOCUS = """\
+Reentrancy and external-interaction analysis:
+- Single-function reentrancy: external call before state update, missing
+  CEI (checks-effects-interactions) ordering.
+- Cross-function reentrancy: attacker re-entering a DIFFERENT function
+  that shares state, bypassing guards applied only in the first function.
+- Callback behavior: token hooks (ERC-777/ERC-1155), receive/fallback
+  sinks, delegatecall targets that re-enter.
+- Token hooks: transfer/transferFrom callbacks into the same contract.
+- Cross-contract interactions and state consistency around external calls.
+MANDATORY: an external call ALONE is NOT proof of reentrancy. You must show
+an exploitable re-entry path (attacker-controlled callback that re-enters
+before a relevant state update) with concrete code evidence.
+Report ONLY issues you can ground in quoted code evidence."""
+
+
+ACCOUNTING_FOCUS = """\
+Accounting and asset-flow analysis:
+- Deposit/withdrawal accounting errors (balances vs totalSupply drift).
+- Share-to-asset conversions: previewRedeem/convertToShares rounding,
+  first-depositor inflation attacks, share price manipulation.
+- Fee calculations, rounding in favor of the wrong party, precision loss.
+- Balance discrepancies: donor balance assumptions, missing updates.
+- Loss or locking of funds: stuck tokens, dust, inaccessible paths.
+- Fee-on-transfer tokens breaking balance-based accounting.
+Report ONLY issues you can ground in quoted code evidence."""
+
+
+CROSS_FUNCTION_FOCUS = """\
+Cross-function logic analysis:
+- Interactions among functions that read or modify the same shared state.
+- Generate targeted operation sequences (call chains) that may bypass
+  per-function restrictions (e.g. check in function A, state changed by
+  function B, effect inconsistent with A's assumption).
+- Order-of-operations hazards: deposit-then-withdraw, approve-then-burn,
+  flashable state transitions.
+- Invariant violations reachable only through multi-call sequences.
+Report ONLY issues where you can show the actual multi-function path with
+concrete code evidence for each step."""
+
+
+DEFI_LOGIC_FOCUS = """\
+DeFi protocol logic analysis (relevant when protocol-ish features exist):
+- Oracle assumptions: manipulable spot prices, stale feeds, wrong source.
+- Collateral and solvency: under-collateralization, health-factor math.
+- Liquidations: incentive errors, bad-debt paths, liquidation griefing.
+- Interest/debt accounting: precision, compounding, bad debt.
+- Flash-loan-assisted attack paths and share-price manipulation.
+- Sanity: protocol economics must be attackable in THIS code, not in
+  general DeFi lore. Report ONLY issues you can ground in quoted code."""
+
+
+ARITHMETIC_FOCUS = """\
+Arithmetic and boundary analysis:
+- Overflow/underflow (incl. Solidity >=0.8 checked vs <0.8 unchecked).
+- Rounding: division before multiplication, truncation, fee rounding.
+- Unit/decimal mismatches: wei/gwei, 18 vs 6 decimals, mixed units.
+- Boundary conditions: off-by-one, zero denominators, max values.
+- Unsafe conversions: int<->uint, narrow casts, downcasts.
+- Compiler-specific behavior: for Solidity <0.8 arithmetic is unchecked by
+  default. MANDATORY: older Solidity arithmetic behavior ALONE does NOT
+  prove exploitability; show a concrete value path reaching the overflow.
+Report ONLY issues you can ground in quoted code evidence."""
+
+
+PROXY_UPGRADE_FOCUS = """\
+Proxy and upgradeability analysis:
+- Storage layout: declared vars must match implementation; gaps honored.
+- Initialization: unprotected initialize(), missing init, reinitialization
+  races (constructor can't run in delegatecall context).
+- Upgrade authorization: who can call upgradeTo/AndCall; admin key risk.
+- delegatecall semantics and msg.sender preservation in proxies.
+- Upgrade validation: no sanity checks before switching implementations.
+- Timelock/governance bypasses around upgrades.
+Report ONLY issues you can ground in quoted code evidence."""
+
+
+GENERAL_DISCOVERY_FOCUS = """\
+General business-logic discovery:
+- Explore logic beyond the specialist categories without merely repeating
+  their findings: protocol invariants, economic assumptions, authorization
+  oddities, edge-case state machines, governance quirks.
+- Prioritize novel, code-grounded issues over re-reporting known patterns.
+- If everything looks covered by other specialists, return {"findings": []}
+  rather than inventing duplicates.
+Report ONLY issues you can ground in quoted code evidence."""
+
+
 VALIDATION_FOCUS = """\
 You verify hypotheses produced by other analyst agents against concrete
 evidence. For each candidate finding you receive:

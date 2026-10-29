@@ -72,6 +72,7 @@ class AuditOrchestrator:
         llm_deadline_seconds: float = 1200.0,
         clock: Callable[[], float] | None = None,
         kb_store_factory: Callable[[], Any] | None = None,
+        scheduler: Any | None = None,
     ) -> None:
         self._rpc = rpc
         self._explorer = explorer
@@ -85,6 +86,7 @@ class AuditOrchestrator:
         self._llm_deadline = llm_deadline_seconds
         self._clock = clock or time.monotonic
         self._kb_store_factory = kb_store_factory
+        self._scheduler = scheduler
 
     async def run(
         self,
@@ -357,7 +359,8 @@ class AuditOrchestrator:
                     limitations.append(f"security knowledge base unavailable: {exc}")
 
                 llm_usage = LLMUsage()
-                if self._router is not None and segments and self._agents:
+                scheduler_meta: dict[str, Any] = {}
+                if self._router is not None and segments:
                     budget = self._router.start_audit(
                         max_calls=self._llm_max_calls,
                         deadline_seconds=min(
@@ -373,16 +376,38 @@ class AuditOrchestrator:
                         intel=intel,
                         kb=kb,
                     )
-                    for agent in self._agents:
-                        try:
-                            ares = await agent.analyze(budget, material)
-                        except LLMRouterError as exc:
-                            errors.append(f"{agent.name}: {exc}")
-                            continue
-                        findings.extend(ares.findings)
-                        errors.extend(ares.errors)
-                        if ares.skipped_reason:
-                            limitations.append(f"{agent.name}: {ares.skipped_reason}")
+                    # Stage 6: dynamic specialist scheduling — classify,
+                    # select, bounded-concurrency run, focus, validate.
+                    if self._scheduler is not None:
+                        sres = await self._scheduler.run(
+                            budget, material, validation=self._validation)
+                        findings.extend(sres.candidates)
+                        validated_findings = sres.validated
+                        errors.extend(sres.errors)
+                        if sres.routing_summary:
+                            limitations.append(
+                                f"specialist routing: {sres.routing_summary.splitlines()[0]}")
+                        scheduler_meta = {
+                            "routing": sres.routing_summary,
+                            "per_agent": [s.to_dict() for s in sres.per_agent],
+                            "aggregate": sres.aggregate(),
+                        }
+                        for r in sres.validated:
+                            # validated findings replace their candidate seeds
+                            # (deduped by id downstream); expose contribution
+                            pass
+                    else:
+                        # legacy path (no scheduler wired)
+                        for agent in self._agents:
+                            try:
+                                ares = await agent.analyze(budget, material)
+                            except LLMRouterError as exc:
+                                errors.append(f"{agent.name}: {exc}")
+                                continue
+                            findings.extend(ares.findings)
+                            errors.extend(ares.errors)
+                            if ares.skipped_reason:
+                                limitations.append(f"{agent.name}: {ares.skipped_reason}")
                     u = budget.usage_summary()
                     llm_usage = LLMUsage(
                         total_calls=u["total_calls"],
@@ -392,9 +417,12 @@ class AuditOrchestrator:
                         models_used=u["models_used"],
                         failed_calls=u["failed_calls"],
                     )
-                    done("llm_agents", detail=f"{llm_usage.total_calls} calls")
+                    done("llm_agents",
+                         detail=(f"{llm_usage.total_calls} calls; "
+                                 f"{len(scheduler_meta.get('aggregate', {}).get('agents_run', []))} specialists")
+                         if scheduler_meta else f"{llm_usage.total_calls} calls")
                 else:
-                    skip("llm_agents", "no LLM router/agents configured or no material")
+                    skip("llm_agents", "no LLM router configured or no material")
 
                 # -- 7. cross validation ----------------------------------------
                 start("cross_validation")
@@ -449,6 +477,15 @@ class AuditOrchestrator:
                     limitations.append(
                         "partial failures: some analysis tools failed or did not "
                         "run; their missing output is not evidence of safety"
+                    )
+                if scheduler_meta:
+                    agg = scheduler_meta.get("aggregate", {})
+                    limitations.append(
+                        f"specialist scheduler: {agg.get('agents_run')} agents run, "
+                        f"{agg.get('agents_failed')} failed (isolated), "
+                        f"{agg.get('candidates')} candidates, "
+                        f"{agg.get('validated')} validated; "
+                        f"{agg.get('total_llm_calls')} LLM calls"
                     )
                 final = report_mod.build_report(
                     address=addr,
