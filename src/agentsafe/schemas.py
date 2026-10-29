@@ -359,6 +359,11 @@ class AuditReport(BaseModel):
     errors: list[str] = Field(default_factory=list)
     execution_time_seconds: float | None = None
     disclaimer: str = REPORT_DISCLAIMER
+    # Stage 7: cross-function path hypotheses + candidate invariants with
+    # explicit results (holds_under_tested_conditions/violated/inconclusive/
+    # not_applicable). Evidence-backed; never presented as findings.
+    invariant_checks: list[dict[str, Any]] = Field(default_factory=list)
+    attack_paths: list[dict[str, Any]] = Field(default_factory=list)
 
     @field_validator("address")
     @classmethod

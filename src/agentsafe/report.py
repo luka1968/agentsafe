@@ -231,6 +231,8 @@ def build_report(
     static_analysis_status: Literal["full", "partial", "unavailable", "skipped"] = "skipped",
     compiler_version: str = "",
     analyzed_files: Sequence[str] = (),
+    invariant_checks: Sequence[dict[str, Any]] = (),
+    attack_paths: Sequence[dict[str, Any]] = (),
 ) -> AuditReport:
     findings = merge_findings(tool_findings, llm_findings)
     report = AuditReport(
@@ -252,6 +254,8 @@ def build_report(
         errors=list(errors),
         execution_time_seconds=round(execution_time_seconds, 2),
         disclaimer=REPORT_DISCLAIMER,
+        invariant_checks=list(invariant_checks),
+        attack_paths=list(attack_paths),
     )
     report.summary.static_analysis_status = static_analysis_status
     return report

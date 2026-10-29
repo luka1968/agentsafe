@@ -142,7 +142,8 @@ class BaseAgent:
 
     def _user_prompt(self, label: str, text: str, deep: bool,
                      intel_brief: str = "",
-                     kb_snippet: str = "") -> str:
+                     kb_snippet: str = "",
+                     stage7_section: str = "") -> str:
         notice = (
             "NOTE: the following is decompiled PSEUDO-SOURCE recovered from "
             "bytecode, NOT the original Solidity. It is an approximate "
@@ -163,7 +164,14 @@ class BaseAgent:
             f"{kb_snippet}\n=== END KB CONTEXT ===\n"
             if kb_snippet else ""
         )
-        return f"""{notice}{intel_section}{kb_section}
+        stage7_section = (
+            f"\n=== STATIC CROSS-FUNCTION HYPOTHESES (Stage 7; inferred paths "
+            f"and candidate invariants — investigate, confirm or refute with "
+            f"code evidence; they are hypotheses, not findings) ===\n"
+            f"{stage7_section}\n=== END CROSS-FUNCTION HYPOTHESES ===\n"
+            if stage7_section else ""
+        )
+        return f"""{notice}{intel_section}{kb_section}{stage7_section}
 
 {suffix}
 
@@ -206,6 +214,25 @@ object described in your instructions."""
         except Exception as exc:  # intel is an optimization, never a blocker
             logger.warning("intel render failed for %s: %s", self.name, exc)
 
+        # Stage 7: static cross-function hypotheses (inferred paths + candidate
+        # invariants) attached to the material by the orchestrator. Injected
+        # as an investigate/refute hint — never as findings.
+        stage7_section = ""
+        try:
+            paths = getattr(material, "paths", None) or []
+            invariants = getattr(material, "invariants", None) or []
+            if paths or invariants:
+                from agentsafe.intel.invariants import render_invariants
+                from agentsafe.intel.paths import render_paths
+                parts = []
+                if paths:
+                    parts.append(render_paths(paths))
+                if invariants:
+                    parts.append(render_invariants(invariants))
+                stage7_section = "\n\n".join(parts)
+        except Exception as exc:  # Stage 7 hints are optional context
+            logger.warning("stage7 render failed for %s: %s", self.name, exc)
+
         for label, chunk in work:
             kb_snippet = ""
             kb_refs: list[str] = []
@@ -230,7 +257,7 @@ object described in your instructions."""
                 {"role": "system", "content": system_prompt(self.focus)},
                 {"role": "user", "content": self._user_prompt(
                     label, chunk, deep, intel_brief=intel_brief,
-                    kb_snippet=kb_snippet)},
+                    kb_snippet=kb_snippet, stage7_section=stage7_section)},
             ]
             try:
                 payload, call = await self._router.complete_json(

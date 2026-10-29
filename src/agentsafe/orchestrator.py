@@ -43,6 +43,7 @@ STAGES = (
     "classify",
     "static_analysis",
     "bytecode_analysis",
+    "cross_function_paths",
     "llm_agents",
     "cross_validation",
     "severity_assessment",
@@ -299,22 +300,9 @@ class AuditOrchestrator:
                 else:
                     done("bytecode_analysis")
 
-                # -- 6. bounded multi-agent LLM analysis ------------------------
-                start("llm_agents")
-                segments: dict[str, str] = {}
-                pseudo = False
-                if bundle is not None:
-                    segments = split_segments(bundle.files)
-                elif byte_result is not None:
-                    segments = byte_result.pseudo_source_segments()
-                    pseudo = True
-                    if not segments:
-                        limitations.append(
-                            "no pseudo-source could be recovered; LLM bytecode "
-                            "analysis skipped (not evidence of safety)"
-                        )
-
                 # -- contract intelligence + knowledge base (evidence layer) --
+                # Built BEFORE Stage 7 so path/invariant analysis and the LLM
+                # agent material share one deterministic representation.
                 intel = None
                 kb = None
                 if bundle is not None:
@@ -349,6 +337,68 @@ class AuditOrchestrator:
                     # pseudo-source: regex extraction would be misleading; skip
                     # honestly rather than fabricate structure.
                     pass
+
+                # -- 5b. cross-function paths + candidate invariants (Stage 7) --
+                # Deterministic; never blocks the audit. Output feeds the agent
+                # material (targeted path hypotheses) and the report.
+                start("cross_function_paths")
+                stage7: dict[str, Any] = {}
+                if bundle is not None and intel is not None and intel.contracts:
+                    try:
+                        from agentsafe.intel.invariants import (
+                            extract_invariants,
+                            validate_invariants,
+                        )
+                        from agentsafe.intel.paths import enumerate_attack_paths
+                        from agentsafe.intel.render import render_intel_brief
+
+                        inv_records = validate_invariants(
+                            intel, extract_invariants(intel))
+                        path_records = enumerate_attack_paths(
+                            intel, max_depth=3, max_paths=24)
+                        stage7 = {
+                            "invariants": [r.to_dict() for r in inv_records],
+                            "paths": [p.to_dict() for p in path_records],
+                        }
+                        violated = [r for r in inv_records
+                                    if r.result == "violated"]
+                        held = [r for r in inv_records
+                                if r.result == "holds_under_tested_conditions"]
+                        if violated:
+                            limitations.append(
+                                f"invariant check: {len(violated)} candidate "
+                                f"violation(s) from static path enumeration — "
+                                "require test-level confirmation before reporting")
+                        done(
+                            "cross_function_paths",
+                            detail=(f"paths={len(path_records)} "
+                                    f"invariants={len(inv_records)} "
+                                    f"held={len(held)} violated={len(violated)}"),
+                        )
+                    except Exception as exc:  # never blocks the audit
+                        errors.append(f"cross-function paths: {exc}")
+                        done("cross_function_paths",
+                             error_code="stage7_error", detail=str(exc))
+                else:
+                    skip("cross_function_paths",
+                         "no verified source (closed-source path)")
+
+                # -- 6. bounded multi-agent LLM analysis ------------------------
+                start("llm_agents")
+                segments: dict[str, str] = {}
+                pseudo = False
+                if bundle is not None:
+                    segments = split_segments(bundle.files)
+                elif byte_result is not None:
+                    segments = byte_result.pseudo_source_segments()
+                    pseudo = True
+                    if not segments:
+                        limitations.append(
+                            "no pseudo-source could be recovered; LLM bytecode "
+                            "analysis skipped (not evidence of safety)"
+                        )
+
+                # -- knowledge base (evidence layer; intel built before Stage 7) --
                 try:
                     if self._kb_store_factory is not None:
                         kb = self._kb_store_factory()
@@ -376,6 +426,9 @@ class AuditOrchestrator:
                         intel=intel,
                         kb=kb,
                     )
+                    if stage7:
+                        material.paths = stage7.get("paths", [])
+                        material.invariants = stage7.get("invariants", [])
                     # Stage 6: dynamic specialist scheduling — classify,
                     # select, bounded-concurrency run, focus, validate.
                     if self._scheduler is not None:
@@ -504,6 +557,8 @@ class AuditOrchestrator:
                     limitations=limitations,
                     errors=errors,
                     execution_time_seconds=self._clock() - started,
+                    invariant_checks=stage7.get("invariants", []),
+                    attack_paths=stage7.get("paths", []),
                 )
                 done("merge_report")
                 return final

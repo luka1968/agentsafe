@@ -161,6 +161,10 @@ Cross-function logic analysis:
 - Order-of-operations hazards: deposit-then-withdraw, approve-then-burn,
   flashable state transitions.
 - Invariant violations reachable only through multi-call sequences.
+-- When the input includes STATIC CROSS-FUNCTION HYPOTHESES (Stage 7):
+  investigate each path/invariant, confirm or refute it with code evidence,
+  and report ONLY the subset you can substantiate. A hypothesis is a hint,
+  not a finding.
 Report ONLY issues where you can show the actual multi-function path with
 concrete code evidence for each step."""
 

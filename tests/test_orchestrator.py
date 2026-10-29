@@ -203,6 +203,12 @@ class TestVerifiedSourcePath:
         assert {t.tool for t in report.tool_executions} >= {"slither", "aderyn", "mythril"}
         sl = next(t for t in report.tool_executions if t.tool == "slither")
         assert sl.executed and sl.kind == "source" and sl.findings_count >= 1
+        # Stage 7: cross-function stage ran; invariant/attack-path output is
+        # deterministic (may be empty when source has no security-relevant
+        # patterns, but must not crash and must be reportable)
+        assert any(s == "cross_function_paths" for s, _v in stages)
+        assert isinstance(report.invariant_checks, list)
+        assert isinstance(report.attack_paths, list)
 
     @respx.mock
     async def test_invalid_address_fails_fast(self):
