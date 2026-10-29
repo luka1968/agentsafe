@@ -1,0 +1,185 @@
+{
+ "mode": "rrf",
+ "seed": 42,
+ "summary": {
+  "n": 10,
+  "recall@1": 0.6,
+  "recall@3": 0.7,
+  "recall@5": 0.8,
+  "mrr": 0.67,
+  "hits": 8,
+  "misses": 2
+ },
+ "results": [
+  {
+   "gt": "code4rena:2022-02-hubble-findings:104",
+   "q": "Chainlink latestRoundData validation",
+   "top": [
+    "code4rena:2022-02-hubble-findings:123",
+    "code4rena:2022-02-hubble-findings:123#chunk1",
+    "code4rena:2022-04-backd-findings:220",
+    "code4rena:2022-01-yield-findings:90",
+    "code4rena:2022-02-hubble-findings:104#chunk1"
+   ],
+   "hit": true,
+   "rank": 5,
+   "recall1": 0,
+   "recall3": 0,
+   "recall5": 1,
+   "mrr": 0.2
+  },
+  {
+   "gt": "code4rena:2022-01-timeswap-findings:166#chunk1",
+   "q": "`TimeswapPair.sol#borrow()` Attacker can increase `pool.state.y` to an arbitrary target value",
+   "top": [
+    "code4rena:2022-01-timeswap-findings:166",
+    "code4rena:2022-01-timeswap-findings:166#chunk2",
+    "code4rena:2022-01-timeswap-findings:166#chunk3",
+    "code4rena:2022-04-backed-findings:124",
+    "code4rena:2022-04-backed-findings:124#chunk1"
+   ],
+   "hit": true,
+   "rank": 1,
+   "recall1": 1,
+   "recall3": 1,
+   "recall5": 1,
+   "mrr": 1.0
+  },
+  {
+   "gt": "code4rena:2022-04-backd-findings:134#chunk1",
+   "q": "Chainlink data could get unintended stale price",
+   "top": [
+    "code4rena:2022-04-backd-findings:128",
+    "code4rena:2022-04-backd-findings:134#chunk1",
+    "code4rena:2022-01-yield-findings:136",
+    "code4rena:2022-01-yield-findings:104#chunk1",
+    "code4rena:2022-01-yield-findings:104"
+   ],
+   "hit": true,
+   "rank": 2,
+   "recall1": 0,
+   "recall3": 1,
+   "recall5": 1,
+   "mrr": 0.5
+  },
+  {
+   "gt": "code4rena:2022-04-abranft-findings:55",
+   "q": "Mistake while checking LTV to lender accepted LTV",
+   "top": [
+    "code4rena:2022-04-abranft-findings:55",
+    "code4rena:2022-04-abranft-findings:166#chunk4",
+    "code4rena:2022-04-abranft-findings:166#chunk2",
+    "code4rena:2022-04-abranft-findings:55#chunk1",
+    "code4rena:2022-04-abranft-findings:166"
+   ],
+   "hit": true,
+   "rank": 1,
+   "recall1": 1,
+   "recall3": 1,
+   "recall5": 1,
+   "mrr": 1.0
+  },
+  {
+   "gt": "code4rena:2022-04-abranft-findings:166",
+   "q": "Malicious lender can change price oracle for outstanding loan",
+   "top": [
+    "code4rena:2022-04-abranft-findings:166#chunk2",
+    "code4rena:2022-04-abranft-findings:166",
+    "code4rena:2022-04-abranft-findings:166#chunk5",
+    "code4rena:2022-04-abranft-findings:166#chunk3",
+    "code4rena:2022-04-abranft-findings:166#chunk1"
+   ],
+   "hit": true,
+   "rank": 1,
+   "recall1": 1,
+   "recall3": 1,
+   "recall5": 1,
+   "mrr": 1.0
+  },
+  {
+   "gt": "code4rena:2022-02-hubble-findings:51",
+   "q": "AMM Cannot Be `initialize()` Except By Governance",
+   "top": [
+    "code4rena:2022-02-hubble-findings:51",
+    "code4rena:2022-02-hubble-findings:51#chunk1",
+    "code4rena:2022-02-hubble-findings:51#chunk2",
+    "code4rena:2022-03-volt-findings:128",
+    "code4rena:2022-04-backed-findings:124"
+   ],
+   "hit": true,
+   "rank": 1,
+   "recall1": 1,
+   "recall3": 1,
+   "recall5": 1,
+   "mrr": 1.0
+  },
+  {
+   "gt": "code4rena:2022-02-anchor-findings:47#chunk4",
+   "q": "[WP-H3] `money-market-contracts/oracle#feed_prices()` delayed transaction may disrupt price feeds",
+   "top": [
+    "code4rena:2022-02-anchor-findings:47#chunk3",
+    "code4rena:2022-02-anchor-findings:47",
+    "code4rena:2022-02-anchor-findings:47#chunk2",
+    "code4rena:2022-02-anchor-findings:47#chunk5",
+    "code4rena:2022-04-backd-findings:59"
+   ],
+   "hit": true,
+   "rank": 1,
+   "recall1": 1,
+   "recall3": 1,
+   "recall5": 1,
+   "mrr": 1.0
+  },
+  {
+   "gt": "code4rena:2022-01-yield-findings:2#chunk1",
+   "q": "Chainlink's latestRoundData might return stale or incorrect results",
+   "top": [
+    "code4rena:2022-04-backd-findings:150",
+    "code4rena:2022-04-backd-findings:128#chunk1",
+    "code4rena:2022-04-backd-findings:220",
+    "code4rena:2022-01-yield-findings:53",
+    "code4rena:2022-01-yield-findings:104#chunk1"
+   ],
+   "hit": false,
+   "rank": null,
+   "recall1": 0,
+   "recall3": 0,
+   "recall5": 0,
+   "mrr": 0.0
+  },
+  {
+   "gt": "code4rena:2022-04-backed-findings:75#chunk1",
+   "q": "Protocol doesn't handle fee on transfer tokens",
+   "top": [
+    "code4rena:2022-04-backed-findings:75",
+    "code4rena:2022-04-backed-findings:33",
+    "code4rena:2022-04-backed-findings:41",
+    "code4rena:2022-04-backed-findings:75#chunk1",
+    "code4rena:2022-04-backed-findings:132"
+   ],
+   "hit": true,
+   "rank": 1,
+   "recall1": 1,
+   "recall3": 1,
+   "recall5": 1,
+   "mrr": 1.0
+  },
+  {
+   "gt": "code4rena:2022-01-yield-findings:138",
+   "q": "Chainlink oracles might return stale data",
+   "top": [
+    "code4rena:2022-04-backd-findings:150",
+    "code4rena:2022-04-backd-findings:31",
+    "code4rena:2022-01-yield-findings:53",
+    "code4rena:2022-02-hubble-findings:104#chunk1",
+    "code4rena:2022-01-yield-findings:104#chunk1"
+   ],
+   "hit": false,
+   "rank": null,
+   "recall1": 0,
+   "recall3": 0,
+   "recall5": 0,
+   "mrr": 0.0
+  }
+ ]
+}

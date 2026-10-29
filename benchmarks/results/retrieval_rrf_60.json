@@ -1,0 +1,1035 @@
+{
+ "mode": "rrf",
+ "seed": 42,
+ "summary": {
+  "n": 60,
+  "recall@1": 0.75,
+  "recall@3": 0.8833,
+  "recall@5": 0.9667,
+  "mrr": 0.8303,
+  "hits": 58,
+  "misses": 2
+ },
+ "results": [
+  {
+   "gt": "code4rena:2022-02-hubble-findings:104",
+   "q": "Chainlink latestRoundData validation",
+   "top": [
+    "code4rena:2022-02-hubble-findings:123",
+    "code4rena:2022-02-hubble-findings:123#chunk1",
+    "code4rena:2022-04-backd-findings:220",
+    "code4rena:2022-01-yield-findings:90",
+    "code4rena:2022-02-hubble-findings:104#chunk1"
+   ],
+   "hit": true,
+   "rank": 5,
+   "recall1": 0,
+   "recall3": 0,
+   "recall5": 1,
+   "mrr": 0.2
+  },
+  {
+   "gt": "code4rena:2022-01-timeswap-findings:166#chunk1",
+   "q": "`TimeswapPair.sol#borrow()` Attacker can increase `pool.state.y` to an arbitrary target value",
+   "top": [
+    "code4rena:2022-01-timeswap-findings:166",
+    "code4rena:2022-01-timeswap-findings:166#chunk2",
+    "code4rena:2022-01-timeswap-findings:166#chunk3",
+    "code4rena:2022-04-backed-findings:124",
+    "code4rena:2022-04-backed-findings:124#chunk1"
+   ],
+   "hit": true,
+   "rank": 1,
+   "recall1": 1,
+   "recall3": 1,
+   "recall5": 1,
+   "mrr": 1.0
+  },
+  {
+   "gt": "code4rena:2022-04-backd-findings:134#chunk1",
+   "q": "Chainlink data could get unintended stale price",
+   "top": [
+    "code4rena:2022-04-backd-findings:128",
+    "code4rena:2022-04-backd-findings:134#chunk1",
+    "code4rena:2022-01-yield-findings:136",
+    "code4rena:2022-01-yield-findings:104#chunk1",
+    "code4rena:2022-01-yield-findings:104"
+   ],
+   "hit": true,
+   "rank": 2,
+   "recall1": 0,
+   "recall3": 1,
+   "recall5": 1,
+   "mrr": 0.5
+  },
+  {
+   "gt": "code4rena:2022-04-abranft-findings:55",
+   "q": "Mistake while checking LTV to lender accepted LTV",
+   "top": [
+    "code4rena:2022-04-abranft-findings:55",
+    "code4rena:2022-04-abranft-findings:166#chunk4",
+    "code4rena:2022-04-abranft-findings:166#chunk2",
+    "code4rena:2022-04-abranft-findings:55#chunk1",
+    "code4rena:2022-04-abranft-findings:166"
+   ],
+   "hit": true,
+   "rank": 1,
+   "recall1": 1,
+   "recall3": 1,
+   "recall5": 1,
+   "mrr": 1.0
+  },
+  {
+   "gt": "code4rena:2022-04-abranft-findings:166",
+   "q": "Malicious lender can change price oracle for outstanding loan",
+   "top": [
+    "code4rena:2022-04-abranft-findings:166#chunk2",
+    "code4rena:2022-04-abranft-findings:166",
+    "code4rena:2022-04-abranft-findings:166#chunk5",
+    "code4rena:2022-04-abranft-findings:166#chunk3",
+    "code4rena:2022-04-abranft-findings:166#chunk1"
+   ],
+   "hit": true,
+   "rank": 1,
+   "recall1": 1,
+   "recall3": 1,
+   "recall5": 1,
+   "mrr": 1.0
+  },
+  {
+   "gt": "code4rena:2022-02-hubble-findings:51",
+   "q": "AMM Cannot Be `initialize()` Except By Governance",
+   "top": [
+    "code4rena:2022-02-hubble-findings:51",
+    "code4rena:2022-02-hubble-findings:51#chunk1",
+    "code4rena:2022-02-hubble-findings:51#chunk2",
+    "code4rena:2022-03-volt-findings:128",
+    "code4rena:2022-04-backed-findings:124"
+   ],
+   "hit": true,
+   "rank": 1,
+   "recall1": 1,
+   "recall3": 1,
+   "recall5": 1,
+   "mrr": 1.0
+  },
+  {
+   "gt": "code4rena:2022-02-anchor-findings:47#chunk4",
+   "q": "[WP-H3] `money-market-contracts/oracle#feed_prices()` delayed transaction may disrupt price feeds",
+   "top": [
+    "code4rena:2022-02-anchor-findings:47#chunk3",
+    "code4rena:2022-02-anchor-findings:47",
+    "code4rena:2022-02-anchor-findings:47#chunk2",
+    "code4rena:2022-02-anchor-findings:47#chunk5",
+    "code4rena:2022-04-backd-findings:59"
+   ],
+   "hit": true,
+   "rank": 1,
+   "recall1": 1,
+   "recall3": 1,
+   "recall5": 1,
+   "mrr": 1.0
+  },
+  {
+   "gt": "code4rena:2022-04-backed-findings:24#chunk1",
+   "q": "Can force borrower to pay huge interest",
+   "top": [
+    "code4rena:2022-04-backed-findings:24#chunk1",
+    "code4rena:2022-04-backed-findings:23#chunk1",
+    "code4rena:2022-04-backed-findings:14",
+    "code4rena:2022-04-backed-findings:24",
+    "code4rena:2022-04-backed-findings:14#chunk1"
+   ],
+   "hit": true,
+   "rank": 1,
+   "recall1": 1,
+   "recall3": 1,
+   "recall5": 1,
+   "mrr": 1.0
+  },
+  {
+   "gt": "code4rena:2022-04-backed-findings:133",
+   "q": "Consistently check account balance before and after transfers for Fee-On-Transfer discrepancies",
+   "top": [
+    "code4rena:2022-04-backed-findings:133",
+    "code4rena:2022-04-backed-findings:132",
+    "code4rena:2022-04-backed-findings:33",
+    "code4rena:2022-04-backed-findings:21",
+    "code4rena:2022-04-backed-findings:133#chunk1"
+   ],
+   "hit": true,
+   "rank": 1,
+   "recall1": 1,
+   "recall3": 1,
+   "recall5": 1,
+   "mrr": 1.0
+  },
+  {
+   "gt": "code4rena:2022-04-backed-findings:33",
+   "q": "Tokens with fee on transfer are not supported",
+   "top": [
+    "code4rena:2022-04-backed-findings:33",
+    "code4rena:2022-04-backed-findings:75",
+    "code4rena:2022-04-backed-findings:75#chunk1",
+    "code4rena:2022-04-backed-findings:41",
+    "code4rena:2022-04-backed-findings:132"
+   ],
+   "hit": true,
+   "rank": 1,
+   "recall1": 1,
+   "recall3": 1,
+   "recall5": 1,
+   "mrr": 1.0
+  },
+  {
+   "gt": "code4rena:2022-04-backd-findings:134",
+   "q": "Chainlink data could get unintended stale price",
+   "top": [
+    "code4rena:2022-04-backd-findings:128",
+    "code4rena:2022-04-backd-findings:134#chunk1",
+    "code4rena:2022-01-yield-findings:136",
+    "code4rena:2022-01-yield-findings:104#chunk1",
+    "code4rena:2022-01-yield-findings:104"
+   ],
+   "hit": true,
+   "rank": 2,
+   "recall1": 0,
+   "recall3": 1,
+   "recall5": 1,
+   "mrr": 0.5
+  },
+  {
+   "gt": "code4rena:2022-01-yield-findings:115",
+   "q": "latestRoundData data may be stale",
+   "top": [
+    "code4rena:2022-04-backd-findings:220",
+    "code4rena:2022-04-backd-findings:150",
+    "code4rena:2022-02-hubble-findings:104#chunk1",
+    "code4rena:2022-01-yield-findings:115#chunk1",
+    "code4rena:2022-02-hubble-findings:90"
+   ],
+   "hit": true,
+   "rank": 4,
+   "recall1": 0,
+   "recall3": 0,
+   "recall5": 1,
+   "mrr": 0.25
+  },
+  {
+   "gt": "code4rena:2022-04-backd-findings:31#chunk1",
+   "q": "Should check return data from chainlink aggregators",
+   "top": [
+    "code4rena:2022-04-backd-findings:31",
+    "code4rena:2022-01-yield-findings:7",
+    "code4rena:2022-01-yield-findings:7#chunk2",
+    "code4rena:2022-04-backd-findings:220",
+    "code4rena:2022-04-backd-findings:31#chunk1"
+   ],
+   "hit": true,
+   "rank": 1,
+   "recall1": 1,
+   "recall3": 1,
+   "recall5": 1,
+   "mrr": 1.0
+  },
+  {
+   "gt": "code4rena:2022-03-rolla-findings:9",
+   "q": "Using deprecated Chainlink function latestAnswer",
+   "top": [
+    "code4rena:2022-04-jpegd-findings:197",
+    "code4rena:2022-04-jpegd-findings:115",
+    "code4rena:2022-03-rolla-findings:9",
+    "code4rena:2022-03-rolla-findings:11",
+    "code4rena:2022-04-jpegd-findings:197#chunk1"
+   ],
+   "hit": true,
+   "rank": 3,
+   "recall1": 0,
+   "recall3": 1,
+   "recall5": 1,
+   "mrr": 0.3333333333333333
+  },
+  {
+   "gt": "code4rena:2022-01-notional-findings:162",
+   "q": "Improper Validation Of Chainlink's `latestAnswer` Function",
+   "top": [
+    "code4rena:2022-01-notional-findings:162",
+    "code4rena:2022-01-notional-findings:162#chunk1",
+    "code4rena:2022-02-hubble-findings:123",
+    "code4rena:2022-03-rolla-findings:9",
+    "code4rena:2022-02-hubble-findings:123#chunk1"
+   ],
+   "hit": true,
+   "rank": 1,
+   "recall1": 1,
+   "recall3": 1,
+   "recall5": 1,
+   "mrr": 1.0
+  },
+  {
+   "gt": "code4rena:2022-01-notional-findings:197#chunk1",
+   "q": "Usage of deprecated ChainLink API in `EIP1271Wallet`",
+   "top": [
+    "code4rena:2022-01-notional-findings:197",
+    "code4rena:2022-04-jpegd-findings:197",
+    "code4rena:2022-03-rolla-findings:11",
+    "code4rena:2022-04-jpegd-findings:229",
+    "code4rena:2022-04-jpegd-findings:96"
+   ],
+   "hit": true,
+   "rank": 1,
+   "recall1": 1,
+   "recall3": 1,
+   "recall5": 1,
+   "mrr": 1.0
+  },
+  {
+   "gt": "code4rena:2022-01-yield-findings:115#chunk1",
+   "q": "latestRoundData data may be stale",
+   "top": [
+    "code4rena:2022-04-backd-findings:220",
+    "code4rena:2022-04-backd-findings:150",
+    "code4rena:2022-02-hubble-findings:104#chunk1",
+    "code4rena:2022-01-yield-findings:115#chunk1",
+    "code4rena:2022-02-hubble-findings:90"
+   ],
+   "hit": true,
+   "rank": 4,
+   "recall1": 0,
+   "recall3": 0,
+   "recall5": 1,
+   "mrr": 0.25
+  },
+  {
+   "gt": "code4rena:2022-02-hubble-findings:123",
+   "q": "Improper Validation Of Chainlink's `latestRoundData()` Function",
+   "top": [
+    "code4rena:2022-02-hubble-findings:123",
+    "code4rena:2022-02-hubble-findings:104#chunk1",
+    "code4rena:2022-04-backd-findings:220",
+    "code4rena:2022-02-hubble-findings:123#chunk1",
+    "code4rena:2022-02-hubble-findings:104"
+   ],
+   "hit": true,
+   "rank": 1,
+   "recall1": 1,
+   "recall3": 1,
+   "recall5": 1,
+   "mrr": 1.0
+  },
+  {
+   "gt": "code4rena:2022-02-hubble-findings:99",
+   "q": "[WP-M6] Chainlink's `latestRoundData` might return stale results",
+   "top": [
+    "code4rena:2022-04-backd-findings:150",
+    "code4rena:2022-04-backd-findings:220",
+    "code4rena:2022-02-hubble-findings:99",
+    "code4rena:2022-02-hubble-findings:104#chunk1",
+    "code4rena:2022-02-hubble-findings:99#chunk1"
+   ],
+   "hit": true,
+   "rank": 3,
+   "recall1": 0,
+   "recall3": 1,
+   "recall5": 1,
+   "mrr": 0.3333333333333333
+  },
+  {
+   "gt": "code4rena:2022-04-backd-findings:220",
+   "q": "ChainLink latestRoundData data may be stale",
+   "top": [
+    "code4rena:2022-04-backd-findings:220",
+    "code4rena:2022-04-backd-findings:150",
+    "code4rena:2022-01-yield-findings:115",
+    "code4rena:2022-02-hubble-findings:104#chunk1",
+    "code4rena:2022-04-backd-findings:128#chunk1"
+   ],
+   "hit": true,
+   "rank": 1,
+   "recall1": 1,
+   "recall3": 1,
+   "recall5": 1,
+   "mrr": 1.0
+  },
+  {
+   "gt": "code4rena:2022-04-backed-findings:131",
+   "q": "Loan buyouts can stick users with huge surprise bills",
+   "top": [
+    "code4rena:2022-04-backed-findings:131",
+    "code4rena:2022-04-backed-findings:131#chunk1",
+    "code4rena:2022-04-backed-findings:23#chunk2",
+    "code4rena:2022-04-backed-findings:23",
+    "code4rena:2022-04-backed-findings:24#chunk1"
+   ],
+   "hit": true,
+   "rank": 1,
+   "recall1": 1,
+   "recall3": 1,
+   "recall5": 1,
+   "mrr": 1.0
+  },
+  {
+   "gt": "code4rena:2022-01-notional-findings:197",
+   "q": "Usage of deprecated ChainLink API in `EIP1271Wallet`",
+   "top": [
+    "code4rena:2022-01-notional-findings:197",
+    "code4rena:2022-04-jpegd-findings:197",
+    "code4rena:2022-03-rolla-findings:11",
+    "code4rena:2022-04-jpegd-findings:229",
+    "code4rena:2022-04-jpegd-findings:96"
+   ],
+   "hit": true,
+   "rank": 1,
+   "recall1": 1,
+   "recall3": 1,
+   "recall5": 1,
+   "mrr": 1.0
+  },
+  {
+   "gt": "code4rena:2022-04-backd-findings:59",
+   "q": "Chainlink's latestRoundData missing/invalid security checks",
+   "top": [
+    "code4rena:2022-04-backd-findings:220",
+    "code4rena:2022-01-yield-findings:115#chunk1",
+    "code4rena:2022-02-hubble-findings:123",
+    "code4rena:2022-04-backd-findings:150",
+    "code4rena:2022-04-backd-findings:59#chunk1"
+   ],
+   "hit": true,
+   "rank": 5,
+   "recall1": 0,
+   "recall3": 0,
+   "recall5": 1,
+   "mrr": 0.2
+  },
+  {
+   "gt": "code4rena:2022-02-anchor-findings:47#chunk2",
+   "q": "[WP-H3] `money-market-contracts/oracle#feed_prices()` delayed transaction may disrupt price feeds",
+   "top": [
+    "code4rena:2022-02-anchor-findings:47#chunk3",
+    "code4rena:2022-02-anchor-findings:47",
+    "code4rena:2022-02-anchor-findings:47#chunk2",
+    "code4rena:2022-02-anchor-findings:47#chunk5",
+    "code4rena:2022-04-backd-findings:59"
+   ],
+   "hit": true,
+   "rank": 1,
+   "recall1": 1,
+   "recall3": 1,
+   "recall5": 1,
+   "mrr": 1.0
+  },
+  {
+   "gt": "code4rena:2022-04-backed-findings:14#chunk1",
+   "q": "Borrower may be forced to pay more interest than he expected",
+   "top": [
+    "code4rena:2022-04-backed-findings:14",
+    "code4rena:2022-04-backed-findings:23#chunk1",
+    "code4rena:2022-04-backed-findings:23#chunk2",
+    "code4rena:2022-04-backed-findings:24#chunk1",
+    "code4rena:2022-04-backed-findings:24"
+   ],
+   "hit": true,
+   "rank": 1,
+   "recall1": 1,
+   "recall3": 1,
+   "recall5": 1,
+   "mrr": 1.0
+  },
+  {
+   "gt": "code4rena:2022-04-backed-findings:85#chunk3",
+   "q": "Borrower can be their own lender and steal funds from buyout due to reentrancy",
+   "top": [
+    "code4rena:2022-04-backed-findings:85#chunk1",
+    "code4rena:2022-04-backed-findings:85",
+    "code4rena:2022-04-backed-findings:88",
+    "code4rena:2022-04-backed-findings:9#chunk1",
+    "code4rena:2022-04-backed-findings:23"
+   ],
+   "hit": true,
+   "rank": 1,
+   "recall1": 1,
+   "recall3": 1,
+   "recall5": 1,
+   "mrr": 1.0
+  },
+  {
+   "gt": "code4rena:2022-04-backed-findings:17#chunk1",
+   "q": "Lack of Limit on `amount` Allows Borrowers To Be Extorted For Interest Payments",
+   "top": [
+    "code4rena:2022-04-backed-findings:17",
+    "code4rena:2022-04-backed-findings:17#chunk1",
+    "code4rena:2022-04-backed-findings:14",
+    "code4rena:2022-04-backed-findings:23",
+    "code4rena:2022-04-backed-findings:30"
+   ],
+   "hit": true,
+   "rank": 1,
+   "recall1": 1,
+   "recall3": 1,
+   "recall5": 1,
+   "mrr": 1.0
+  },
+  {
+   "gt": "code4rena:2022-04-jpegd-findings:229#chunk2",
+   "q": "Use of deprecated oracle API in `_normalizeAggregatorAnswer`",
+   "top": [
+    "code4rena:2022-04-jpegd-findings:229",
+    "code4rena:2022-01-notional-findings:197",
+    "code4rena:2022-03-rolla-findings:11",
+    "code4rena:2022-04-jpegd-findings:95",
+    "code4rena:2022-04-jpegd-findings:231"
+   ],
+   "hit": true,
+   "rank": 1,
+   "recall1": 1,
+   "recall3": 1,
+   "recall5": 1,
+   "mrr": 1.0
+  },
+  {
+   "gt": "code4rena:2022-03-rolla-findings:11",
+   "q": "Chainlink pricer is using a deprecated API",
+   "top": [
+    "code4rena:2022-01-notional-findings:197",
+    "code4rena:2022-03-rolla-findings:11",
+    "code4rena:2022-04-jpegd-findings:197",
+    "code4rena:2022-04-jpegd-findings:229",
+    "code4rena:2022-04-jpegd-findings:231"
+   ],
+   "hit": true,
+   "rank": 2,
+   "recall1": 0,
+   "recall3": 1,
+   "recall5": 1,
+   "mrr": 0.5
+  },
+  {
+   "gt": "code4rena:2022-02-hubble-findings:123#chunk1",
+   "q": "Improper Validation Of Chainlink's `latestRoundData()` Function",
+   "top": [
+    "code4rena:2022-02-hubble-findings:123",
+    "code4rena:2022-02-hubble-findings:104#chunk1",
+    "code4rena:2022-04-backd-findings:220",
+    "code4rena:2022-02-hubble-findings:123#chunk1",
+    "code4rena:2022-02-hubble-findings:104"
+   ],
+   "hit": true,
+   "rank": 1,
+   "recall1": 1,
+   "recall3": 1,
+   "recall5": 1,
+   "mrr": 1.0
+  },
+  {
+   "gt": "code4rena:2022-04-jpegd-findings:108#chunk1",
+   "q": "Oracle Prices Used Could Be Stale Or Manipulated due to latestAnswer() call",
+   "top": [
+    "code4rena:2022-04-jpegd-findings:108",
+    "code4rena:2022-04-jpegd-findings:108#chunk2",
+    "code4rena:2022-04-backd-findings:31",
+    "code4rena:2022-01-yield-findings:41#chunk1",
+    "code4rena:2022-01-notional-findings:200#chunk1"
+   ],
+   "hit": true,
+   "rank": 1,
+   "recall1": 1,
+   "recall3": 1,
+   "recall5": 1,
+   "mrr": 1.0
+  },
+  {
+   "gt": "code4rena:2022-04-backd-findings:31",
+   "q": "Should check return data from chainlink aggregators",
+   "top": [
+    "code4rena:2022-04-backd-findings:31",
+    "code4rena:2022-01-yield-findings:7",
+    "code4rena:2022-01-yield-findings:7#chunk2",
+    "code4rena:2022-04-backd-findings:220",
+    "code4rena:2022-04-backd-findings:31#chunk1"
+   ],
+   "hit": true,
+   "rank": 1,
+   "recall1": 1,
+   "recall3": 1,
+   "recall5": 1,
+   "mrr": 1.0
+  },
+  {
+   "gt": "code4rena:2022-04-jpegd-findings:108",
+   "q": "Oracle Prices Used Could Be Stale Or Manipulated due to latestAnswer() call",
+   "top": [
+    "code4rena:2022-04-jpegd-findings:108",
+    "code4rena:2022-04-jpegd-findings:108#chunk2",
+    "code4rena:2022-04-backd-findings:31",
+    "code4rena:2022-01-yield-findings:41#chunk1",
+    "code4rena:2022-01-notional-findings:200#chunk1"
+   ],
+   "hit": true,
+   "rank": 1,
+   "recall1": 1,
+   "recall3": 1,
+   "recall5": 1,
+   "mrr": 1.0
+  },
+  {
+   "gt": "code4rena:2022-04-backed-findings:83",
+   "q": "`sendCollateralTo` is unchecked in `closeLoan()`, which can cause user's collateral NFT to be frozen",
+   "top": [
+    "code4rena:2022-04-backed-findings:83",
+    "code4rena:2022-04-backed-findings:83#chunk1",
+    "code4rena:2022-04-backed-findings:9",
+    "code4rena:2022-04-backed-findings:9#chunk1",
+    "code4rena:2022-04-backed-findings:115"
+   ],
+   "hit": true,
+   "rank": 1,
+   "recall1": 1,
+   "recall3": 1,
+   "recall5": 1,
+   "mrr": 1.0
+  },
+  {
+   "gt": "code4rena:2022-04-backed-findings:48#chunk2",
+   "q": "Lend and borrow tickets can be transferred to the NFTLoanFacilitator",
+   "top": [
+    "code4rena:2022-04-backed-findings:48#chunk1",
+    "code4rena:2022-04-backed-findings:48",
+    "code4rena:2022-04-backed-findings:48#chunk2",
+    "code4rena:2022-04-backed-findings:48#chunk4",
+    "code4rena:2022-04-backed-findings:85"
+   ],
+   "hit": true,
+   "rank": 1,
+   "recall1": 1,
+   "recall3": 1,
+   "recall5": 1,
+   "mrr": 1.0
+  },
+  {
+   "gt": "code4rena:2022-01-behodler-findings:102#chunk1",
+   "q": "Calling `generateFLNQuote` twice in every block prevents any migration",
+   "top": [
+    "code4rena:2022-01-behodler-findings:102#chunk1",
+    "code4rena:2022-01-behodler-findings:102",
+    "code4rena:2022-01-behodler-findings:102#chunk2",
+    "code4rena:2022-01-yield-findings:2#chunk3",
+    "KB-2025-006"
+   ],
+   "hit": true,
+   "rank": 1,
+   "recall1": 1,
+   "recall3": 1,
+   "recall5": 1,
+   "mrr": 1.0
+  },
+  {
+   "gt": "code4rena:2022-04-backed-findings:132#chunk3",
+   "q": "Code credits fee-on-transfer tokens for amount stated, not amount transferred",
+   "top": [
+    "code4rena:2022-04-backed-findings:132",
+    "code4rena:2022-04-backed-findings:33",
+    "code4rena:2022-04-backed-findings:75",
+    "code4rena:2022-04-backed-findings:41",
+    "code4rena:2022-04-backed-findings:75#chunk1"
+   ],
+   "hit": true,
+   "rank": 1,
+   "recall1": 1,
+   "recall3": 1,
+   "recall5": 1,
+   "mrr": 1.0
+  },
+  {
+   "gt": "code4rena:2022-04-backed-findings:89#chunk2",
+   "q": "When an attacker lends to a loan, the attacker can trigger DoS that any lenders can not buyout it",
+   "top": [
+    "code4rena:2022-04-backed-findings:89",
+    "code4rena:2022-04-backed-findings:89#chunk1",
+    "code4rena:2022-04-backed-findings:23",
+    "code4rena:2022-04-backed-findings:124",
+    "code4rena:2022-04-backed-findings:85#chunk1"
+   ],
+   "hit": true,
+   "rank": 1,
+   "recall1": 1,
+   "recall3": 1,
+   "recall5": 1,
+   "mrr": 1.0
+  },
+  {
+   "gt": "code4rena:2022-01-yield-findings:7",
+   "q": "SHOULD CHECK RETURN DATA FROM CHAINLINK AGGREGATORS",
+   "top": [
+    "code4rena:2022-04-backd-findings:31",
+    "code4rena:2022-01-yield-findings:7",
+    "code4rena:2022-01-yield-findings:7#chunk2",
+    "code4rena:2022-04-backd-findings:220",
+    "code4rena:2022-04-backd-findings:31#chunk1"
+   ],
+   "hit": true,
+   "rank": 2,
+   "recall1": 0,
+   "recall3": 1,
+   "recall5": 1,
+   "mrr": 0.5
+  },
+  {
+   "gt": "code4rena:2022-04-backed-findings:17",
+   "q": "Lack of Limit on `amount` Allows Borrowers To Be Extorted For Interest Payments",
+   "top": [
+    "code4rena:2022-04-backed-findings:17",
+    "code4rena:2022-04-backed-findings:17#chunk1",
+    "code4rena:2022-04-backed-findings:14",
+    "code4rena:2022-04-backed-findings:23",
+    "code4rena:2022-04-backed-findings:30"
+   ],
+   "hit": true,
+   "rank": 1,
+   "recall1": 1,
+   "recall3": 1,
+   "recall5": 1,
+   "mrr": 1.0
+  },
+  {
+   "gt": "code4rena:2022-04-jpegd-findings:231#chunk2",
+   "q": "Use of deprecated oracle API in `_collateralPriceUsd`",
+   "top": [
+    "code4rena:2022-04-jpegd-findings:229",
+    "code4rena:2022-04-jpegd-findings:231",
+    "code4rena:2022-01-notional-findings:197",
+    "code4rena:2022-03-rolla-findings:11",
+    "code4rena:2022-04-jpegd-findings:115"
+   ],
+   "hit": true,
+   "rank": 2,
+   "recall1": 0,
+   "recall3": 1,
+   "recall5": 1,
+   "mrr": 0.5
+  },
+  {
+   "gt": "code4rena:2022-02-tribe-turbo-findings:56#chunk1",
+   "q": "[WP-M3] `TurboRouter.sol#createSafeAndDeposit*()` CreateSafeAndDeposit combo methods won't work as an allowance cannot be granted to a newly created Safe for deposit",
+   "top": [
+    "code4rena:2022-02-tribe-turbo-findings:56",
+    "code4rena:2022-02-tribe-turbo-findings:56#chunk1",
+    "code4rena:2022-03-biconomy-findings:180#chunk2",
+    "code4rena:2022-02-tribe-turbo-findings:56#chunk2",
+    "code4rena:2022-03-biconomy-findings:180"
+   ],
+   "hit": true,
+   "rank": 1,
+   "recall1": 1,
+   "recall3": 1,
+   "recall5": 1,
+   "mrr": 1.0
+  },
+  {
+   "gt": "code4rena:2022-04-backed-findings:28",
+   "q": "Might not get desired min loan amount if `_originationFeeRate` changes",
+   "top": [
+    "code4rena:2022-04-backed-findings:24#chunk1",
+    "code4rena:2022-04-backed-findings:28",
+    "code4rena:2022-04-backed-findings:14",
+    "code4rena:2022-04-backed-findings:28#chunk1",
+    "code4rena:2022-04-backed-findings:24"
+   ],
+   "hit": true,
+   "rank": 2,
+   "recall1": 0,
+   "recall3": 1,
+   "recall5": 1,
+   "mrr": 0.5
+  },
+  {
+   "gt": "code4rena:2022-01-yield-findings:41#chunk1",
+   "q": "Oracle prices could be not fresh",
+   "top": [
+    "code4rena:2022-01-yield-findings:41#chunk1",
+    "code4rena:2022-02-redacted-cartel-findings:49",
+    "code4rena:2022-01-yield-findings:53#chunk3",
+    "code4rena:2022-04-abranft-findings:166",
+    "code4rena:2022-04-jpegd-findings:108#chunk2"
+   ],
+   "hit": true,
+   "rank": 1,
+   "recall1": 1,
+   "recall3": 1,
+   "recall5": 1,
+   "mrr": 1.0
+  },
+  {
+   "gt": "code4rena:2022-04-dualityfocus-findings:39#chunk1",
+   "q": "Not calling `approve(0)` before setting a new approval causes the call to revert when used with Tether (USDT)",
+   "top": [
+    "code4rena:2022-04-dualityfocus-findings:39",
+    "code4rena:2022-04-dualityfocus-findings:39#chunk2",
+    "code4rena:2022-01-yield-findings:136#chunk2",
+    "code4rena:2022-01-yield-findings:104#chunk2",
+    "code4rena:2022-01-behodler-findings:102#chunk1"
+   ],
+   "hit": true,
+   "rank": 1,
+   "recall1": 1,
+   "recall3": 1,
+   "recall5": 1,
+   "mrr": 1.0
+  },
+  {
+   "gt": "code4rena:2022-04-backed-findings:132#chunk4",
+   "q": "Code credits fee-on-transfer tokens for amount stated, not amount transferred",
+   "top": [
+    "code4rena:2022-04-backed-findings:132",
+    "code4rena:2022-04-backed-findings:33",
+    "code4rena:2022-04-backed-findings:75",
+    "code4rena:2022-04-backed-findings:41",
+    "code4rena:2022-04-backed-findings:75#chunk1"
+   ],
+   "hit": true,
+   "rank": 1,
+   "recall1": 1,
+   "recall3": 1,
+   "recall5": 1,
+   "mrr": 1.0
+  },
+  {
+   "gt": "code4rena:2022-02-tribe-turbo-findings:56",
+   "q": "[WP-M3] `TurboRouter.sol#createSafeAndDeposit*()` CreateSafeAndDeposit combo methods won't work as an allowance cannot be granted to a newly created Safe for deposit",
+   "top": [
+    "code4rena:2022-02-tribe-turbo-findings:56",
+    "code4rena:2022-02-tribe-turbo-findings:56#chunk1",
+    "code4rena:2022-03-biconomy-findings:180#chunk2",
+    "code4rena:2022-02-tribe-turbo-findings:56#chunk2",
+    "code4rena:2022-03-biconomy-findings:180"
+   ],
+   "hit": true,
+   "rank": 1,
+   "recall1": 1,
+   "recall3": 1,
+   "recall5": 1,
+   "mrr": 1.0
+  },
+  {
+   "gt": "code4rena:2022-01-yield-findings:104#chunk1",
+   "q": "Chainlink's `latestRoundData` might return stale results",
+   "top": [
+    "code4rena:2022-04-backd-findings:150",
+    "code4rena:2022-04-backd-findings:220",
+    "code4rena:2022-01-yield-findings:115",
+    "code4rena:2022-02-hubble-findings:104#chunk1",
+    "code4rena:2022-04-backd-findings:128#chunk1"
+   ],
+   "hit": false,
+   "rank": null,
+   "recall1": 0,
+   "recall3": 0,
+   "recall5": 0,
+   "mrr": 0.0
+  },
+  {
+   "gt": "code4rena:2022-04-dualityfocus-findings:39#chunk2",
+   "q": "Not calling `approve(0)` before setting a new approval causes the call to revert when used with Tether (USDT)",
+   "top": [
+    "code4rena:2022-04-dualityfocus-findings:39",
+    "code4rena:2022-04-dualityfocus-findings:39#chunk2",
+    "code4rena:2022-01-yield-findings:136#chunk2",
+    "code4rena:2022-01-yield-findings:104#chunk2",
+    "code4rena:2022-01-behodler-findings:102#chunk1"
+   ],
+   "hit": true,
+   "rank": 1,
+   "recall1": 1,
+   "recall3": 1,
+   "recall5": 1,
+   "mrr": 1.0
+  },
+  {
+   "gt": "code4rena:2022-03-lifinance-findings:124#chunk3",
+   "q": "Double spend msg.value in Swapper.sol",
+   "top": [
+    "code4rena:2022-03-lifinance-findings:124#chunk4",
+    "code4rena:2022-03-lifinance-findings:124#chunk3",
+    "code4rena:2022-03-lifinance-findings:124",
+    "code4rena:2022-03-lifinance-findings:124#chunk1",
+    "code4rena:2022-03-lifinance-findings:124#chunk2"
+   ],
+   "hit": true,
+   "rank": 1,
+   "recall1": 1,
+   "recall3": 1,
+   "recall5": 1,
+   "mrr": 1.0
+  },
+  {
+   "gt": "code4rena:2022-01-yield-findings:115#chunk2",
+   "q": "latestRoundData data may be stale",
+   "top": [
+    "code4rena:2022-04-backd-findings:220",
+    "code4rena:2022-04-backd-findings:150",
+    "code4rena:2022-02-hubble-findings:104#chunk1",
+    "code4rena:2022-01-yield-findings:115#chunk1",
+    "code4rena:2022-02-hubble-findings:90"
+   ],
+   "hit": true,
+   "rank": 4,
+   "recall1": 0,
+   "recall3": 0,
+   "recall5": 1,
+   "mrr": 0.25
+  },
+  {
+   "gt": "code4rena:2022-03-biconomy-findings:180#chunk2",
+   "q": "Possible frontrun on deposits on LiquidityPool",
+   "top": [
+    "code4rena:2022-03-biconomy-findings:180#chunk4",
+    "code4rena:2022-03-biconomy-findings:180#chunk3",
+    "code4rena:2022-03-biconomy-findings:180",
+    "code4rena:2022-03-biconomy-findings:180#chunk1",
+    "code4rena:2022-02-redacted-cartel-findings:49#chunk2"
+   ],
+   "hit": true,
+   "rank": 1,
+   "recall1": 1,
+   "recall3": 1,
+   "recall5": 1,
+   "mrr": 1.0
+  },
+  {
+   "gt": "code4rena:2022-02-tribe-turbo-findings:56#chunk2",
+   "q": "[WP-M3] `TurboRouter.sol#createSafeAndDeposit*()` CreateSafeAndDeposit combo methods won't work as an allowance cannot be granted to a newly created Safe for deposit",
+   "top": [
+    "code4rena:2022-02-tribe-turbo-findings:56",
+    "code4rena:2022-02-tribe-turbo-findings:56#chunk1",
+    "code4rena:2022-03-biconomy-findings:180#chunk2",
+    "code4rena:2022-02-tribe-turbo-findings:56#chunk2",
+    "code4rena:2022-03-biconomy-findings:180"
+   ],
+   "hit": true,
+   "rank": 1,
+   "recall1": 1,
+   "recall3": 1,
+   "recall5": 1,
+   "mrr": 1.0
+  },
+  {
+   "gt": "code4rena:2022-04-dualityfocus-findings:46",
+   "q": "UniV3LpVault flash loans can become unavailable if a user didn't utilized the full limit",
+   "top": [
+    "code4rena:2022-04-dualityfocus-findings:46",
+    "code4rena:2022-04-backed-findings:131#chunk1",
+    "code4rena:2022-04-backed-findings:9#chunk1",
+    "code4rena:2022-04-dualityfocus-findings:46#chunk1",
+    "code4rena:2022-04-backed-findings:131"
+   ],
+   "hit": true,
+   "rank": 1,
+   "recall1": 1,
+   "recall3": 1,
+   "recall5": 1,
+   "mrr": 1.0
+  },
+  {
+   "gt": "code4rena:2022-02-hubble-findings:65#chunk2",
+   "q": "Functions `getLatestRoundData` and `getRoundData` do not check that the price returned from a chainlink aggregator is != 0 (Oracle.sol)",
+   "top": [
+    "code4rena:2022-02-hubble-findings:65",
+    "code4rena:2022-04-backd-findings:31",
+    "code4rena:2022-02-hubble-findings:65#chunk2",
+    "code4rena:2022-01-yield-findings:136",
+    "code4rena:2022-02-hubble-findings:65#chunk1"
+   ],
+   "hit": true,
+   "rank": 1,
+   "recall1": 1,
+   "recall3": 1,
+   "recall5": 1,
+   "mrr": 1.0
+  },
+  {
+   "gt": "code4rena:2022-04-backed-findings:48#chunk4",
+   "q": "Lend and borrow tickets can be transferred to the NFTLoanFacilitator",
+   "top": [
+    "code4rena:2022-04-backed-findings:48#chunk1",
+    "code4rena:2022-04-backed-findings:48",
+    "code4rena:2022-04-backed-findings:48#chunk2",
+    "code4rena:2022-04-backed-findings:48#chunk4",
+    "code4rena:2022-04-backed-findings:85"
+   ],
+   "hit": true,
+   "rank": 1,
+   "recall1": 1,
+   "recall3": 1,
+   "recall5": 1,
+   "mrr": 1.0
+  },
+  {
+   "gt": "code4rena:2022-01-timeswap-findings:166",
+   "q": "`TimeswapPair.sol#borrow()` Attacker can increase `pool.state.y` to an arbitrary target value",
+   "top": [
+    "code4rena:2022-01-timeswap-findings:166",
+    "code4rena:2022-01-timeswap-findings:166#chunk2",
+    "code4rena:2022-01-timeswap-findings:166#chunk3",
+    "code4rena:2022-04-backed-findings:124",
+    "code4rena:2022-04-backed-findings:124#chunk1"
+   ],
+   "hit": true,
+   "rank": 1,
+   "recall1": 1,
+   "recall3": 1,
+   "recall5": 1,
+   "mrr": 1.0
+  },
+  {
+   "gt": "code4rena:2022-04-backed-findings:9#chunk1",
+   "q": "Borrower collateral can be stolen",
+   "top": [
+    "code4rena:2022-04-backed-findings:9",
+    "code4rena:2022-04-backed-findings:9#chunk1",
+    "code4rena:2022-04-abranft-findings:166#chunk6",
+    "code4rena:2022-04-backed-findings:9#chunk2",
+    "code4rena:2022-04-backed-findings:42"
+   ],
+   "hit": true,
+   "rank": 1,
+   "recall1": 1,
+   "recall3": 1,
+   "recall5": 1,
+   "mrr": 1.0
+  },
+  {
+   "gt": "code4rena:2022-04-abranft-findings:166#chunk3",
+   "q": "Malicious lender can change price oracle for outstanding loan",
+   "top": [
+    "code4rena:2022-04-abranft-findings:166#chunk2",
+    "code4rena:2022-04-abranft-findings:166",
+    "code4rena:2022-04-abranft-findings:166#chunk5",
+    "code4rena:2022-04-abranft-findings:166#chunk3",
+    "code4rena:2022-04-abranft-findings:166#chunk1"
+   ],
+   "hit": true,
+   "rank": 1,
+   "recall1": 1,
+   "recall3": 1,
+   "recall5": 1,
+   "mrr": 1.0
+  },
+  {
+   "gt": "code4rena:2022-04-backd-findings:140",
+   "q": "Chainlink's `latestRoundData` might return stale or incorrect results",
+   "top": [
+    "code4rena:2022-04-backd-findings:150",
+    "code4rena:2022-04-backd-findings:128#chunk1",
+    "code4rena:2022-04-backd-findings:220",
+    "code4rena:2022-01-yield-findings:53",
+    "code4rena:2022-01-yield-findings:104#chunk1"
+   ],
+   "hit": false,
+   "rank": null,
+   "recall1": 0,
+   "recall3": 0,
+   "recall5": 0,
+   "mrr": 0.0
+  }
+ ]
+}

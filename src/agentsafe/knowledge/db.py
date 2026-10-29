@@ -218,44 +218,45 @@ class NeonKnowledgeStore:
         "coalesce(vk.category,'') || ' ' || coalesce(vk.protocol_domain,'')"
     )
 
-    def search(self, query: str, focus: str = "", limit: int = 3) -> list[dict[str, Any]]:
-        """Hybrid retrieval: pgvector cosine + PostgreSQL full-text, fused with
-        Reciprocal Rank Fusion (RRF): score(d) = sum 1/(K + rank_i(d)), K=60
-        (standard RRF constant). Rank-fusion is documented, not BM25: full-text
-        uses ts_rank, which is NOT BM25 — no such claim is made.
-        Falls back to lexical-only when no embedder is configured."""
-        if not query or not query.strip():
+    def _leg_vector(self, query: str, limit: int) -> list[dict[str, Any]]:
+        """Vector-only retrieval leg (pgvector cosine). Raises/None-safe:
+        returns [] when no embedder or embedding fails."""
+        if self.embedding_model is None:
             return []
-        K = 60
-        vec_hits: list[tuple[Any, float]] = []  # (record, rank0-based)
-        lex_hits: list[tuple[Any, float]] = []
+        try:
+            if hasattr(self.embedding_model, "embed_query"):
+                vec = self.embedding_model.embed_query(query)
+            else:
+                vec = self.embedding_model(query)  # type: ignore[operator]
+            if not vec:
+                return []
+            qv = [float(x) for x in vec[: self.vector_dim]]
+            with self._connect() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        f"""
+                        SELECT vk.*, src.name AS source_name,
+                               src.url AS source_url_explicit,
+                               (1 - (ke.embedding <=> %s::vector)) AS score
+                        FROM knowledge_embeddings ke
+                        JOIN vulnerability_knowledge vk ON vk.id = ke.knowledge_id
+                        JOIN knowledge_sources src ON src.name = vk.source_id
+                        WHERE ke.embedding IS NOT NULL
+                        ORDER BY score DESC
+                        LIMIT %s
+                        """,
+                        (qv, limit),
+                    )
+                    return list(cur.fetchall())
+        except Exception as exc:
+            logger.warning("vector leg failed (%s)", exc)
+            return []
+
+    def _leg_lexical(self, query: str, limit: int) -> list[dict[str, Any]]:
+        """Lexical-only retrieval leg (PostgreSQL ts_rank; documented NOT
+        BM25)."""
         with self._connect() as conn:
             with conn.cursor() as cur:
-                if self.embedding_model is not None:
-                    try:
-                        if hasattr(self.embedding_model, "embed_query"):
-                            vec = self.embedding_model.embed_query(query)
-                        else:
-                            vec = self.embedding_model(query)  # type: ignore[operator]
-                        if vec:
-                            qv = [float(x) for x in vec[: self.vector_dim]]
-                            cur.execute(
-                                f"""
-                                SELECT vk.*, src.name AS source_name,
-                                       src.url AS source_url_explicit,
-                                       (1 - (ke.embedding <=> %s::vector)) AS score
-                                FROM knowledge_embeddings ke
-                                JOIN vulnerability_knowledge vk ON vk.id = ke.knowledge_id
-                                JOIN knowledge_sources src ON src.name = vk.source_id
-                                WHERE ke.embedding IS NOT NULL
-                                ORDER BY score DESC
-                                LIMIT %s
-                                """,
-                                (qv, limit * 3),
-                            )
-                            vec_hits = [(r, i) for i, r in enumerate(cur.fetchall())]
-                    except Exception as exc:
-                        logger.warning("vector leg failed (%s); lexical only", exc)
                 cur.execute(
                     f"""
                     SELECT vk.*, src.name AS source_name,
@@ -268,9 +269,32 @@ class NeonKnowledgeStore:
                     ORDER BY score DESC
                     LIMIT %s
                     """,
-                    (query, query, limit * 3),
+                    (query, query, limit),
                 )
-                lex_hits = [(r, i) for i, r in enumerate(cur.fetchall())]
+                return list(cur.fetchall())
+
+    def search_leg_vector(self, query: str, limit: int = 3) -> list[dict[str, Any]]:
+        """Benchmark/ablation surface: vector-only retrieval."""
+        return [_row_to_record(r) for r in self._leg_vector(query, limit)]
+
+    def search_leg_lexical(self, query: str, limit: int = 3) -> list[dict[str, Any]]:
+        """Benchmark/ablation surface: lexical-only retrieval."""
+        return [_row_to_record(r) for r in self._leg_lexical(query, limit)]
+
+    def search(self, query: str, focus: str = "", limit: int = 3) -> list[dict[str, Any]]:
+        """Hybrid retrieval: pgvector cosine + PostgreSQL full-text, fused with
+        Reciprocal Rank Fusion (RRF): score(d) = sum 1/(K + rank_i(d)), K=60
+        (standard RRF constant). Rank-fusion is documented, not BM25: full-text
+        uses ts_rank, which is NOT BM25 — no such claim is made.
+        Falls back to lexical-only when no embedder is configured."""
+        if not query or not query.strip():
+            return []
+        K = 60
+        vec_hits: list[tuple[Any, float]] = []  # (record, rank0-based)
+        lex_hits: list[tuple[Any, float]] = []
+        if self.embedding_model is not None:
+            vec_hits = [(r, i) for i, r in enumerate(self._leg_vector(query, limit * 3))]
+        lex_hits = [(r, i) for i, r in enumerate(self._leg_lexical(query, limit * 3))]
         if not vec_hits and not lex_hits:
             return []
         # RRF fusion keyed on content_hash (stable dedup across legs)
