@@ -87,7 +87,9 @@ def system_prompt(focus: str) -> str:
 You are one specialized analyst agent inside an automated smart-contract
 audit pipeline. Focus area: {focus}
 
-{FINDING_SCHEMA_INSTRUCTIONS}"""
+{FINDING_SCHEMA_INSTRUCTIONS}
+
+{KB_APPLICABILITY_RULES}"""
 
 
 ACCESS_CONTROL_FOCUS = """\
@@ -142,3 +144,34 @@ BASIC_SCAN_SUFFIX = """\
 No strong indicators for your focus area were detected by keyword
 pre-screening, but that proves nothing. Perform your standard basic scan of
 every function relevant to your focus area anyway."""
+
+
+# ---------------------------------------------------------------------------
+# Stage 5 — knowledge-base applicability rules. Retrieved historical cases
+# are CONTEXT ONLY. These rules are mandatory: they prevent retrieved
+# examples from becoming de-facto verdicts, copied text, or severity inputs.
+# ---------------------------------------------------------------------------
+KB_APPLICABILITY_RULES = """\
+KNOWLEDGE-BASE APPLICABILITY RULES (mandatory):
+The user message may include a "KB CONTEXT" section with retrieved
+historical vulnerability cases. Treat it strictly as prior-art reference:
+- Historical similarity NEVER proves a current vulnerability. A case that
+  resembles the code you are auditing is a lead to investigate, never a
+  verdict. Each current finding must stand on its own evidence from THIS
+  source.
+- NEVER copy historical findings into your report. You may restate a
+  mechanism in your own words only after you have verified the same pattern
+  in the code in front of you.
+- NEVER derive severity from a historical case. Severity is an impact
+  claim evaluated against THIS contract's prerequisites, attack complexity,
+  privileges, affected assets, and mitigations. A historical "critical"
+  does not make the current issue critical.
+- Retrieval similarity (including vector/embedding similarity) is NOT
+  vulnerability confidence. Do not mention similarity scores in findings.
+- If retrieval returned nothing useful (or no KB context is present), the
+  audit proceeds normally: absence of prior art never blocks a finding and
+  never signals safety.
+- If you use a historical mechanism to shape a hypothesis, identify the
+  attack preconditions it implies, then look for SUPPORTING and
+  CONTRADICTING evidence in the current source. Report what you actually
+  find; do not assume the historical precondition holds here."""

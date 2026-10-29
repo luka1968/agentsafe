@@ -131,6 +131,11 @@ class Finding(BaseModel):
     confidence: float | None = Field(default=None, ge=0.0, le=1.0)
     supporting_evidence: list[str] = Field(default_factory=list)
     contradicting_evidence: list[str] = Field(default_factory=list)
+    # Stage 5: KB references attached to the finding. These are *retrieval
+    # provenance* (which historical cases the agent consulted), NOT proof of
+    # a current vulnerability and NOT a confidence signal. A reference may be
+    # a KB record id or a source_url when the store does not expose ids.
+    knowledge_references: list[str] = Field(default_factory=list)
     limitations: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 

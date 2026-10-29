@@ -111,6 +111,7 @@ class BaseAgent:
     name: str = "base"
     focus: str = ""
     keywords: tuple[str, ...] = ()
+    material_is_pseudo: bool = False
 
     max_segment_chars: int = MAX_SEGMENT_CHARS
     max_total_chars: int = MAX_TOTAL_ANALYZED_CHARS
@@ -207,6 +208,7 @@ object described in your instructions."""
 
         for label, chunk in work:
             kb_snippet = ""
+            kb_refs: list[str] = []
             try:
                 kb = getattr(material, "kb", None)
                 if kb is not None:
@@ -214,6 +216,14 @@ object described in your instructions."""
                         query=chunk[:4000] + " " + " ".join(self.keywords),
                         focus=self.focus, limit=2)
                     kb_snippet = render_kb_snippets(records)
+                    # Stage 5: attach retrieval provenance (record id or
+                    # source url) to findings produced from this chunk.
+                    # References are context pointers, NOT confidence.
+                    for r in records:
+                        ref = r.get("id") or r.get("external_record_id") \
+                            or r.get("source_url")
+                        if ref and ref not in kb_refs:
+                            kb_refs.append(ref)
             except Exception as exc:  # KB is context, never a blocker
                 logger.warning("kb search failed for %s: %s", self.name, exc)
             messages = [
@@ -231,13 +241,14 @@ object described in your instructions."""
                 continue
             result.segments_analyzed += 1
             for f in payload.findings:
-                result.findings.append(self._to_finding(f, label, call))
+                result.findings.append(self._to_finding(f, label, call, kb_refs))
 
         if result.errors and not result.findings and result.segments_analyzed == 0:
             result.skipped_reason = "; ".join(result.errors[:3])
         return result
 
-    def _to_finding(self, p: LLMFindingPayload, label: str, call: Any) -> Finding:
+    def _to_finding(self, p: LLMFindingPayload, label: str, call: Any,
+                    kb_refs: list[str] | None = None) -> Finding:
         return Finding(
             title=p.title,
             severity=p.severity,  # type: ignore[arg-type]
@@ -256,6 +267,8 @@ object described in your instructions."""
             line_start=p.line_start,
             line_end=p.line_end,
             confidence=p.confidence,
+            # Stage 5: provenance-only references; never confidence.
+            knowledge_references=list(kb_refs or []),
             metadata={
                 "agent": self.name,
                 "llm_provider": call.provider,

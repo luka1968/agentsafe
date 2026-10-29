@@ -346,6 +346,13 @@ def render_html(report: AuditReport) -> str:
                 if f.contradicting_evidence
                 else ""
             )
+            + (
+                "<div><b>Knowledge references (context only, not proof)</b><ul>"
+                + "".join(f"<li class='mono'>{_esc(r)}</li>" for r in f.knowledge_references)
+                + "</ul></div>"
+                if f.knowledge_references
+                else ""
+            )
             + (f"<div><b>Preconditions</b> {_esc(f.preconditions)}</div>" if f.preconditions else "")  # noqa: E501
             + (f"<div><b>Attack scenario</b> {_esc(f.attack_scenario)}</div>" if f.attack_scenario else "")  # noqa: E501
             + (f"<div><b>Impact</b> {_esc(f.impact)}</div>" if f.impact else "")
