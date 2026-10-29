@@ -370,6 +370,13 @@ class LLMRouter:
             # when structured-output validation subsequently fails.
             budget.record_tokens(result)
             p.calls += 1
+            from agentsafe.metrics import get_metrics
+
+            get_metrics().incr("llm_calls")
+            if result.prompt_tokens is not None:
+                get_metrics().incr("llm_tokens_in", result.prompt_tokens)
+            if result.completion_tokens is not None:
+                get_metrics().incr("llm_tokens_out", result.completion_tokens)
             logger.info(
                 "llm ok provider=%s model=%s duration=%.2fs prompt_tokens=%s completion_tokens=%s",
                 p.name,
@@ -415,6 +422,9 @@ class LLMRouter:
             attempts += 1
 
         budget.record_failure()
+        from agentsafe.metrics import get_metrics
+
+        get_metrics().incr("llm_failed")
         if isinstance(last_error, SchemaValidationError):
             raise last_error
         if isinstance(last_error, ValidationFailure):

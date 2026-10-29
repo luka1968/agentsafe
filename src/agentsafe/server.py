@@ -20,6 +20,8 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import threading
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -44,6 +46,7 @@ from agentsafe.github_client import (
     GitHubClientError,
     RunAssociationError,
 )
+from agentsafe.metrics import get_metrics
 from agentsafe.payment.x402_adapter import (
     StarletteRequestAdapter,
     VerifiedPayment,
@@ -80,6 +83,48 @@ REST_AUDIT_PATH = "/api/audit"
 # pricing (audit_contract) or the enterprise channel; this cap prevents the
 # flat REST fee from undercutting the higher MCP tiers.
 REST_AUDIT_MAX_LINES = 500
+
+
+class _SlidingWindowLimiter:
+    """Per-key sliding-window rate limiter (Stage 11 HTTP hardening).
+
+    Tracks request timestamps per client key (default: client IP); a request
+    is allowed when fewer than ``rate`` requests were seen in the last
+    ``window_seconds``. Memory-bounded: keys are evicted when their window
+    is empty. Thread-safe. Used on REST endpoints only — MCP tool calls are
+    never rate limited by this.
+    """
+
+    __slots__ = ("_rate", "_window", "_seen", "_lock")
+
+    def __init__(self, rate: int, window_seconds: float = 60.0) -> None:
+        self._rate = max(1, int(rate))
+        self._window = float(window_seconds)
+        self._seen: dict[str, list[float]] = {}
+        self._lock = threading.Lock()
+
+    def allow(self, key: str) -> bool:
+        now = time.monotonic()
+        with self._lock:
+            dq = self._seen.get(key)
+            if dq is None:
+                self._seen[key] = [now]
+                return True
+            while dq and now - dq[0] > self._window:
+                dq.pop(0)
+            if not dq:
+                self._seen[key] = [now]
+                return True
+            if len(dq) >= self._rate:
+                return False
+            dq.append(now)
+            return True
+
+    def reset(self) -> None:
+        with self._lock:
+            self._seen.clear()
+
+
 _OPENAPI_FILE = Path(__file__).resolve().parents[2] / "openapi.json"
 _FAVICON_FILE = Path(__file__).resolve().parents[2] / "favicon.ico"
 _LOGO_FILE = Path(__file__).resolve().parents[2] / "logo.png"
@@ -107,6 +152,12 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
     """
     if validate:
         validate_runtime_settings(settings)  # raises SettingsError with ALL problems
+
+    # Stage 11 HTTP hardening: per-client-IP sliding window limiter for the
+    # REST surface only (MCP tools are not HTTP).
+    limiter = _SlidingWindowLimiter(
+        rate=settings.HTTP_RATE_LIMIT_PER_MINUTE, window_seconds=60.0
+    )
 
     # Task store: explicit TASK_STORE wins; otherwise auto-selected from the
     # environment - 'redis' when a Redis/Upstash URL is detectable (serverless
@@ -329,22 +380,71 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
           verified       -> source-size guard BEFORE settlement (flat-fee cap),
                             task dispatch, settlement AFTER successful dispatch
           dispatch fail  -> settlement NOT attempted (no funds ever move)
+        Stage 11: per-IP rate limit + bounded body size before any parsing.
         """
+        met = get_metrics()
+        met.incr("http_requests")
+        client_key = request.client.host if request.client else "unknown"
+        if not limiter.allow(client_key):
+            met.incr("http_rate_limited")
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error_code": "rate_limited",
+                    "error": "too many requests; retry later",
+                },
+                status_code=429,
+            )
+        # Content-Length guard before reading (defends against oversized bodies).
+        content_length = request.headers.get("content-length")
+        if content_length and content_length.isdigit():
+            if int(content_length) > settings.HTTP_MAX_BODY_BYTES:
+                met.incr("http_body_rejected")
+                return JSONResponse(
+                    {
+                        "ok": False,
+                        "error_code": "body_too_large",
+                        "error": "request body exceeds the maximum allowed size",
+                    },
+                    status_code=413,
+                )
         if x402_http is None:
             # Dev mode (payments disabled): free dispatch, mirrors free MCP tools.
             body_bytes = await request.body()
+            if len(body_bytes) > settings.HTTP_MAX_BODY_BYTES:
+                get_metrics().incr("http_body_rejected")
+                return JSONResponse(
+                    {
+                        "ok": False,
+                        "error_code": "body_too_large",
+                        "error": "request body exceeds the maximum allowed size",
+                    },
+                    status_code=413,
+                )
             try:
                 parsed_body = json.loads(body_bytes) if body_bytes else None
             except json.JSONDecodeError:
+                get_metrics().incr("http_bad_json")
                 parsed_body = None
             return await _dispatch_audit_rest(request, None, parsed_body, None)
         try:
             from x402.http import HTTPRequestContext
 
             body_bytes = await request.body()
+            if len(body_bytes) > settings.HTTP_MAX_BODY_BYTES:
+                get_metrics().incr("http_body_rejected")
+                return JSONResponse(
+                    {
+                        "ok": False,
+                        "error_code": "body_too_large",
+                        "error": "request body exceeds the maximum allowed size",
+                    },
+                    status_code=413,
+                )
             try:
                 parsed_body = json.loads(body_bytes) if body_bytes else None
             except json.JSONDecodeError:
+                get_metrics().incr("http_bad_json")
                 parsed_body = None
             ctx = HTTPRequestContext(
                 adapter=StarletteRequestAdapter(request, parsed_body=parsed_body),
@@ -441,6 +541,19 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
         binding (fail-closed), fetches the SAME validated report JSON the MCP
         tool serves, and renders HTML/PDF from it. Never re-computes findings
         and never leaks infrastructure internals."""
+        met = get_metrics()
+        met.incr("http_requests")
+        client_key = request.client.host if request.client else "unknown"
+        if not limiter.allow(client_key):
+            met.incr("http_rate_limited")
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error_code": "rate_limited",
+                    "error": "too many requests; retry later",
+                },
+                status_code=429,
+            )
         task_id = str(request.path_params.get("task_id", ""))
         if not task_id or len(task_id) > 64:
             return JSONResponse(

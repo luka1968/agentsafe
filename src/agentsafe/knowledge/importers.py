@@ -46,6 +46,7 @@ class ImportSummary:
     failed: int = 0
     duplicates: int = 0
     embeddings: int = 0
+    embeddings_reused: int = 0
     errors: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
@@ -53,6 +54,7 @@ class ImportSummary:
             "source": self.source, "total": self.total, "inserted": self.inserted,
             "skipped": self.skipped, "failed": self.failed,
             "duplicates": self.duplicates, "embeddings": self.embeddings,
+            "embeddings_reused": self.embeddings_reused,
             "errors": self.errors[:20],
         }
 
@@ -164,6 +166,49 @@ def _embed_in_batches(embedder: Callable[[str], list[float]] | None,
     return out
 
 
+def _existing_content_hashes(store: Any, hashes: list[str]) -> set[str]:
+    """Stage 11: content hashes already stored WITH a vector (embedding
+    reuse lookup). Best-effort: on store failure we return empty so the
+    caller re-embeds everything (correctness over speed)."""
+    if not hashes:
+        return set()
+    try:
+        with store._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT DISTINCT content_hash FROM knowledge_embeddings "
+                    "WHERE content_hash = ANY(%s)",
+                    (hashes,),
+                )
+                return {
+                    row[0] if not isinstance(row, dict) else row["content_hash"]
+                    for row in cur.fetchall()
+                }
+    except Exception as exc:  # noqa: BLE001 - reuse is best-effort
+        logger.warning("embedding reuse lookup failed (%s); re-embedding all", exc)
+        return set()
+
+
+def _plan_embeddings(store: Any, texts: list[str],
+                     embedder: Callable[[str], list[float]] | None,
+                     batch_size: int) -> tuple[list[list[float] | None], int]:
+    """Plan embeddings with reuse: unchanged content (same content_hash) that
+    already has a vector in the store is never re-embedded. Returns
+    (embeddings aligned with texts, reused_count). When embedder is None all
+    vectors are None (lexical-only)."""
+    hashes = [content_hash_of(t) for t in texts]
+    existing = _existing_content_hashes(store, hashes) if embedder is not None else set()
+    need_idx = [i for i in range(len(texts)) if hashes[i] not in existing]
+    reused = len(texts) - len(need_idx)
+    if embedder is not None and need_idx:
+        need_vecs = _embed_in_batches(embedder, [texts[i] for i in need_idx], batch_size)
+        vec_by_i = dict(zip(need_idx, need_vecs))
+        embeddings = [vec_by_i.get(i) for i in range(len(texts))]
+    else:
+        embeddings = [None] * len(texts)
+    return embeddings, reused
+
+
 def run_import(
     store: NeonKnowledgeStore,
     *,
@@ -198,9 +243,11 @@ def run_import(
         ]))
         texts.append(body)
 
-    embeddings = _embed_in_batches(embedder, texts, batch_size)
+    embeddings, reused = _plan_embeddings(store, texts, embedder, batch_size)
+    summary.embeddings_reused = reused
     # Compute embeddings BEFORE opening the DB transaction: Neon poolers kill
     # idle-in-transaction sessions, and remote embedding calls are slow.
+    # (Stage 11: unchanged content is never re-embedded — see _plan_embeddings.)
 
     with store._connect() as conn:
         with conn.cursor() as cur:
@@ -274,8 +321,7 @@ def run_import(
                         "SELECT 1 FROM knowledge_embeddings WHERE content_hash=%s",
                         (ch,))
                     if cur.fetchone():
-                        summary.skipped_embed = getattr(summary,
-                                                        "skipped_embed", 0) + 1
+                        summary.embeddings_reused += 1
                         continue
                     cur.execute(
                         "SELECT id FROM vulnerability_knowledge WHERE content_hash=%s",
@@ -312,6 +358,15 @@ def run_import(
                 "updated_at=now() WHERE name=%s",
                 (status, summary.inserted, source["name"]),
             )
+    from agentsafe.metrics import get_metrics
+
+    get_metrics().incr("import_records", summary.inserted)
+    get_metrics().incr("import_duplicates", summary.duplicates)
+    if summary.failed:
+        get_metrics().incr("import_failed", summary.failed)
+    else:
+        get_metrics().incr("import_success")
+    get_metrics().incr("import_embedding_calls", summary.embeddings)
     return summary
 
 

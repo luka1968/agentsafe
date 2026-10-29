@@ -222,6 +222,16 @@ class Settings(BaseSettings):
     # --- Logging ---
     LOG_LEVEL: str = "INFO"
 
+    # --- HTTP hardening (Stage 11) ---
+    # Per-client-IP rate limit on REST endpoints (POST /api/audit + report
+    # GETs). MCP tools are NOT rate limited here (they are not HTTP).
+    HTTP_RATE_LIMIT_PER_MINUTE: int = Field(default=20, ge=1, le=10_000)
+    # Max accepted request body size for the audit endpoint (defends against
+    # oversized-body memory abuse; audit bodies are tiny JSON objects).
+    HTTP_MAX_BODY_BYTES: int = Field(default=262_144, ge=1024, le=10_485_760)
+    # Optional JSONL sink for aggregate operational metrics (never payloads).
+    METRICS_JSONL_PATH: str = ""
+
     @field_validator("LOG_LEVEL")
     @classmethod
     def _validate_log_level(cls, v: str) -> str:

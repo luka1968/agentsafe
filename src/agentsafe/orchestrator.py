@@ -96,6 +96,9 @@ class AuditOrchestrator:
         progress: Callable[[StageStatus], None] | None = None,
     ) -> AuditReport:
         started = self._clock()
+        from agentsafe.metrics import get_metrics
+
+        get_metrics().incr("audit_dispatched")
         stages: list[StageStatus] = [StageStatus(name=n, state=StageState.PENDING) for n in STAGES]
         idx = {s.name: i for i, s in enumerate(stages)}
 
@@ -504,6 +507,14 @@ class AuditOrchestrator:
                             "per_agent": [s.to_dict() for s in sres.per_agent],
                             "aggregate": sres.aggregate(),
                         }
+                        from agentsafe.metrics import get_metrics
+
+                        _m = get_metrics()
+                        _m.incr("agent_runs", len(sres.per_agent))
+                        for _s in sres.per_agent:
+                            _m.record("agent_duration_ms", _s.elapsed * 1000.0)
+                            if _s.errors:
+                                _m.incr("agent_failed")
                         for r in sres.validated:
                             # validated findings replace their candidate seeds
                             # (deduped by id downstream); expose contribution

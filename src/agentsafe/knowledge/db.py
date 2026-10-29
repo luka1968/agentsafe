@@ -250,6 +250,9 @@ class NeonKnowledgeStore:
                     return list(cur.fetchall())
         except Exception as exc:
             logger.warning("vector leg failed (%s)", exc)
+            from agentsafe.metrics import get_metrics
+
+            get_metrics().incr("retrieval_vector_fallback")
             return []
 
     def _leg_lexical(self, query: str, limit: int) -> list[dict[str, Any]]:
@@ -289,6 +292,12 @@ class NeonKnowledgeStore:
         Falls back to lexical-only when no embedder is configured."""
         if not query or not query.strip():
             return []
+        import time as _t
+
+        from agentsafe.metrics import get_metrics
+
+        _m = get_metrics()
+        _t0 = _t.monotonic()
         K = 60
         vec_hits: list[tuple[Any, float]] = []  # (record, rank0-based)
         lex_hits: list[tuple[Any, float]] = []
@@ -297,6 +306,10 @@ class NeonKnowledgeStore:
         lex_hits = [(r, i) for i, r in enumerate(self._leg_lexical(query, limit * 3))]
         if not vec_hits and not lex_hits:
             return []
+        if self.embedding_model is not None and not vec_hits:
+            from agentsafe.metrics import get_metrics
+
+            get_metrics().incr("retrieval_vector_fallback")
         # RRF fusion keyed on content_hash (stable dedup across legs)
         def key(r: dict[str, Any]) -> str:
             return str(r.get("content_hash") or r.get("id") or id(r))
@@ -321,6 +334,8 @@ class NeonKnowledgeStore:
                                     if any(key(x[0]) == key(r) for x in h)),
             }
             out.append(rec)
+        _m.incr("retrieval_calls")
+        _m.record("retrieval_latency_ms", (_t.monotonic() - _t0) * 1000.0)
         return out
 
     def records(self) -> list[dict[str, Any]]:
@@ -376,8 +391,14 @@ def get_knowledge_store(settings: Any,
                 logger.info("knowledge store: neon (%d records)", store.count())
                 return store
             logger.warning("neon kb empty after seed; falling back to jsonl")
+            from agentsafe.metrics import get_metrics
+
+            get_metrics().incr("retrieval_neon_fallback")
         except Exception as exc:
             logger.warning("neon kb unavailable (%s); falling back to jsonl", exc)
+            from agentsafe.metrics import get_metrics
+
+            get_metrics().incr("retrieval_neon_fallback")
     return KnowledgeBase.load_default()
 
 
