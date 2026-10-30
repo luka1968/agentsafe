@@ -99,6 +99,12 @@ class Settings(BaseSettings):
     GITHUB_POLL_INTERVAL_SECONDS: float = Field(default=10.0, ge=1.0, le=600.0)
     AUDIT_TIMEOUT_SECONDS: int = Field(default=900, ge=30, le=7_200)
     MAX_CONCURRENT_AUDITS: int = Field(default=1, ge=1, le=64)
+    # Specialist-agent parallelism within ONE audit. Independent of
+    # MAX_CONCURRENT_AUDITS (that gates how many whole audits run at once).
+    # Raising this cuts end-to-end live-LLM audit latency by running the
+    # evidence-based specialists in parallel; the shared router still applies
+    # its global + per-provider RPM limits so we never exceed provider quota.
+    SCHEDULER_MAX_CONCURRENT: int = Field(default=3, ge=1, le=64)
 
     # --- Artifacts ---
     ARTIFACT_RETENTION_DAYS: int = Field(default=2, ge=1, le=90)
@@ -289,6 +295,19 @@ class Settings(BaseSettings):
         if len(names) != len(set(names)):
             raise SettingsError("LLM provider names must be unique")
         return providers
+
+    @property
+    def provider(self) -> LLMProviderConfig:
+        """Primary LLM provider (the first configured). Enables the live
+        benchmark path (eval_suite --llm live) and any single-provider caller
+        to use `settings.provider` instead of re-parsing the list. Raises
+        SettingsError if no provider is configured."""
+        provs = self.llm_providers()
+        if not provs:
+            raise SettingsError(
+                "settings.provider requires at least one LLM provider in "
+                "LLM_PROVIDERS_JSON")
+        return provs[0]
 
     def secrets_report(self) -> dict[str, str]:
         """For startup logs: show presence of secrets, never their values."""

@@ -115,7 +115,7 @@ class MultiAgentScheduler:
         self._kb_store_factory = kb_store_factory
         cfg = Settings()
         # Defaults derive from existing configuration — never invented.
-        self._max_concurrent = max_concurrent or max(1, cfg.MAX_CONCURRENT_AUDITS)
+        self._max_concurrent = max_concurrent or max(1, cfg.SCHEDULER_MAX_CONCURRENT)
         self._budget_factory = budget_factory
         self._cfg = cfg
 

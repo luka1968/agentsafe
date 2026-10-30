@@ -23,9 +23,12 @@ falls back to the shipped JSONL dataset.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import logging
+import threading
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
@@ -168,10 +171,41 @@ def _connect(dsn: str, *, retries: int = 3):
 # ---------------------------------------------------------------------------
 class NeonKnowledgeStore:
     def __init__(self, dsn: str, vector_dim: int = 384,
-                 embedding_model: Callable[[str], list[float]] | None = None):
+                 embedding_model: Callable[[str], list[float]] | None = None,
+                 cache_capacity: int = 256):
         self.dsn = dsn
         self.vector_dim = vector_dim
         self.embedding_model = embedding_model
+        # Session-scoped retrieval cache (LRU, thread-safe). Eliminates
+        # repeated expensive vector+Neon queries when the same probe string
+        # is issued many times within one audit (specialists often search the
+        # KB for the same keyword). Caching is pure performance: it never
+        # changes results, counts, or payment semantics. A capacity cap keeps
+        # memory bounded.
+        self._cache_capacity = max(1, int(cache_capacity))
+        self._cache: OrderedDict[str, list[dict[str, Any]]] = OrderedDict()
+        self._cache_lock = threading.Lock()
+
+    def _cache_get(self, key: str) -> list[dict[str, Any]] | None:
+        with self._cache_lock:
+            hit = self._cache.get(key)
+            if hit is None:
+                return None
+            self._cache.move_to_end(key)
+            from agentsafe.metrics import get_metrics
+
+            get_metrics().incr("retrieval_cache_hits")
+            return copy.deepcopy(hit)
+
+    def _cache_put(self, key: str, rows: list[dict[str, Any]]) -> None:
+        with self._cache_lock:
+            self._cache[key] = copy.deepcopy(rows)
+            self._cache.move_to_end(key)
+            while len(self._cache) > self._cache_capacity:
+                self._cache.popitem(last=False)
+            from agentsafe.metrics import get_metrics
+
+            get_metrics().incr("retrieval_cache_misses")
 
     def _connect(self):
         return _connect(self.dsn)
@@ -289,7 +323,13 @@ class NeonKnowledgeStore:
         Reciprocal Rank Fusion (RRF): score(d) = sum 1/(K + rank_i(d)), K=60
         (standard RRF constant). Rank-fusion is documented, not BM25: full-text
         uses ts_rank, which is NOT BM25 — no such claim is made.
-        Falls back to lexical-only when no embedder is configured."""
+        Falls back to lexical-only when no embedder is configured.
+
+        Results are cached per (query, focus, limit) for the lifetime of this
+        store instance (a single audit session). Caching never changes results
+        (same probe -> same rows) or payment/count semantics; it only avoids
+        repeating expensive vector embedding + Neon round-trips.
+        """
         if not query or not query.strip():
             return []
         import time as _t
@@ -298,6 +338,10 @@ class NeonKnowledgeStore:
 
         _m = get_metrics()
         _t0 = _t.monotonic()
+        _ckey = f"{query.strip()}\x1f{focus}\x1f{limit}"
+        cached = self._cache_get(_ckey)
+        if cached is not None:
+            return cached
         K = 60
         vec_hits: list[tuple[Any, float]] = []  # (record, rank0-based)
         lex_hits: list[tuple[Any, float]] = []
@@ -336,6 +380,7 @@ class NeonKnowledgeStore:
             out.append(rec)
         _m.incr("retrieval_calls")
         _m.record("retrieval_latency_ms", (_t.monotonic() - _t0) * 1000.0)
+        self._cache_put(_ckey, out)
         return out
 
     def records(self) -> list[dict[str, Any]]:
