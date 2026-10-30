@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 from collections import deque
 from collections.abc import Awaitable, Callable, Sequence
@@ -475,6 +476,24 @@ def _extract_balanced(text: str) -> str | None:
     return None
 
 
+
+
+def _sanitize_id_fields(obj):
+    """Recursively normalize swc_id/cwe_id values that LLMs often pad with a
+    parenthetical label (e.g. 'SWC-107 (Reentrancy)'). Keeps the strict
+    SWC-xxxx/CWE-xxxx token; never fabricates an id when none is present."""
+    if isinstance(obj, dict):
+        for k in ("swc_id", "cwe_id"):
+            v = obj.get(k)
+            if isinstance(v, str):
+                m = re.search(r"(SWC-\d+|CWE-\d+)", v)
+                obj[k] = m.group(1) if m else v[:16]
+        for v in obj.values():
+            _sanitize_id_fields(v)
+    elif isinstance(obj, list):
+        for it in obj:
+            _sanitize_id_fields(it)
+
 def _validate_json_strict(
     content: str, schema_model: type[BaseModelT]
 ) -> tuple[BaseModelT | None, ValidationFailure | None]:
@@ -509,6 +528,7 @@ def _validate_json_strict(
     if parsed is None:
         detail = text[:120].replace("\n", " ")
         return None, ValidationFailure(VC_INVALID_JSON, f"no parsable JSON object: {detail!r}")
+    _sanitize_id_fields(parsed)
     try:
         return schema_model.model_validate(parsed), None
     except Exception as exc:

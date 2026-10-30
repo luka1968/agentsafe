@@ -405,3 +405,18 @@ class TestRateLimiter:
     def test_no_providers_rejected(self):
         with pytest.raises(ValueError):
             LLMRouter([], global_rpm=10)
+
+
+def test_swc_id_with_label_sanitized_before_schema_validation():
+    from agentsafe.llm.router import _sanitize_id_fields
+    obj = {"findings": [{"swc_id": "SWC-107 (Reentrancy)", "cwe_id": "CWE-710 informal"}]}
+    _sanitize_id_fields(obj)
+    assert obj["findings"][0]["swc_id"] == "SWC-107"
+    assert obj["findings"][0]["cwe_id"] == "CWE-710"
+
+
+def test_swc_id_without_label_untouched():
+    from agentsafe.llm.router import _sanitize_id_fields
+    obj = {"findings": [{"swc_id": "SWC-101", "cwe_id": None}]}
+    _sanitize_id_fields(obj)
+    assert obj["findings"][0]["swc_id"] == "SWC-101"

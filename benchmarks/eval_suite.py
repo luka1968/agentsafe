@@ -228,7 +228,7 @@ async def run_audit(bundle: SourceBundle, *, rag: bool,
         router=router,
         agents=[],           # scheduler replaces sequential agents
         validation_agent=ValidationAgent(),
-        total_timeout_seconds=600.0,
+        total_timeout_seconds=1500.0,
         llm_max_calls=24,
         kb_store_factory=kb_factory if rag else None,
         scheduler=sched,
