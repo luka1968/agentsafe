@@ -99,17 +99,20 @@ def merge_findings(
             standalone.append(f)
 
     # 3) LLM-vs-LLM duplicates by normalized title+location (highest-ranked
-    #    status survives as primary)
-    deduped: dict[tuple, Finding] = {}
+    #    status survives as primary). Agents phrase the same bug differently,
+    #    so match on file + nearby line + title/evidence similarity, not on an
+    #    exact title string (which is why simple key dedup let the same
+    #    reentrancy survive once per agent).
+    deduped: list[Finding] = []
     for f in standalone:
-        llm_key = ("llm", *_loc(f), _norm(f.title)[:120])
-        if llm_key in deduped:
-            pair = sorted((deduped[llm_key], f), key=lambda x: _STATUS_ORDER.get(x.status, 99))
-            deduped[llm_key] = _absorb(pair[0], pair[1])
+        host = _find_llm_host(f, deduped)
+        if host is not None:
+            idx = deduped.index(host)
+            deduped[idx] = _absorb(host, f)
         else:
-            deduped[llm_key] = f
+            deduped.append(f)
 
-    out = tool_list + list(deduped.values())
+    out = tool_list + deduped
     # presentation order: confirmed issues first, hypotheses next, guidance,
     # and REJECTED findings always last (audit trail, not headline risk)
     out.sort(
@@ -191,6 +194,40 @@ def _find_host(candidate: Finding, tools: Sequence[Finding]) -> Finding | None:
         if score > best_score:
             best, best_score = t, score
     return best if best_score >= _EVIDENCE_SIMILARITY else None
+
+
+def _find_llm_host(candidate: Finding, hosts: Sequence[Finding]) -> Finding | None:
+    """LLM-vs-LLM merge target. Different agents report the same bug with
+    different wording, so group by file + nearby line + strong title AND
+    evidence similarity. A same-file, same-lane hit needs no exact title; a
+    title-similar hit needs evidence overlap so distinct bugs never fuse."""
+    best: Finding | None = None
+    best_score = 0.0
+    for t in hosts:
+        # findings in different validation states are different conclusions;
+        # a confirmed and a potential version of the same location must both
+        # surface (the report needs both the claim and its assessment).
+        if t.status is not candidate.status:
+            continue
+        score = 0.0
+        (cf, cl), (tf, tl) = _loc(candidate), _loc(t)
+        same_lane = False
+        if cf and tf and cf == tf and cl is not None and tl is not None:
+            if abs(cl - tl) <= _LINE_TOLERANCE:
+                same_lane = True
+        ev = _similar(candidate.evidence, t.evidence)
+        ti = _similar(candidate.title, t.title)
+        # Merge only when BOTH the lane overlaps AND the findings are about
+        # the same bug (semantic similarity). Never fuse distinct bugs that
+        # merely sit on nearby lines of the same file.
+        if same_lane and (ti >= 0.55 or ev >= _EVIDENCE_SIMILARITY):
+            score = 0.95
+        elif same_lane:
+            score = 0.80 * max(ti, ev)  # same region but weak semantics: low
+        if score > best_score:
+            best, best_score = t, score
+    # require strong evidence of a duplicate, never a fuzzy word-match alone
+    return best if best_score >= 0.85 else None
 
 
 def summarize(
