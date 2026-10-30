@@ -507,6 +507,20 @@ class AuditOrchestrator:
                             "per_agent": [s.to_dict() for s in sres.per_agent],
                             "aggregate": sres.aggregate(),
                         }
+                        # Honesty gate: agent/LLM failures must be surfaced as
+                        # incomplete detection, never masked as a clean result.
+                        # A failed specialist produces no findings, which is
+                        # indistinguishable from "no issue found" unless we say so.
+                        agg = sres.aggregate()
+                        if agg.get("agents_failed"):
+                            failed_names = [
+                                s.agent for s in sres.per_agent if s.errors]
+                            limitations.append(
+                                f"incomplete detection: {len(failed_names)} agent(s) "
+                                f"({', '.join(failed_names)}) failed (LLM/provider/"
+                                f"analysis errors) and produced no findings; "
+                                f"result is NOT a clean bill of health for those "
+                                f"dimensions")
                         from agentsafe.metrics import get_metrics
 
                         _m = get_metrics()
