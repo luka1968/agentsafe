@@ -264,3 +264,20 @@ class TestResolvedTaskStore:
     def test_invalid_explicit_store_rejected(self):
         with pytest.raises(ValidationError, match="TASK_STORE"):
             _settings(TASK_STORE="memcached")
+
+
+def test_provider_prefers_marked_primary():
+    s = _settings(LLM_PROVIDERS_JSON=json.dumps([
+        {**VALID_PROVIDER, "name": "a", "preferred": False},
+        {**VALID_PROVIDER, "name": "b", "preferred": True},
+        {**VALID_PROVIDER, "name": "c"},
+    ]))
+    assert s.provider.name == "b"
+
+
+def test_provider_without_marker_falls_back_to_first():
+    s = _settings(LLM_PROVIDERS_JSON=json.dumps([
+        {**VALID_PROVIDER, "name": "a"},
+        {**VALID_PROVIDER, "name": "b"},
+    ]))
+    assert s.provider.name == "a"

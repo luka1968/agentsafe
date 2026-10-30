@@ -43,6 +43,10 @@ class LLMProviderConfig(BaseModel):
     # "json_object"}. Only enable for providers verified to accept it;
     # some OpenAI-compatible endpoints reject unknown request fields.
     json_mode: bool = False
+    # Preferred primary provider: when true, settings.provider returns this
+    # provider ahead of list order. Lets an operator pin the known-good model
+    # (e.g. a verified working endpoint) without reordering the whole list.
+    preferred: bool = False
 
     @field_validator("base_url")
     @classmethod
@@ -307,7 +311,7 @@ class Settings(BaseSettings):
             raise SettingsError(
                 "settings.provider requires at least one LLM provider in "
                 "LLM_PROVIDERS_JSON")
-        return provs[0]
+        return next((p for p in provs if p.preferred), provs[0])
 
     def secrets_report(self) -> dict[str, str]:
         """For startup logs: show presence of secrets, never their values."""
