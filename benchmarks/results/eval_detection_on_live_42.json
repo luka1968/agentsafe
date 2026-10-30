@@ -1,0 +1,112 @@
+{
+  "env": {
+    "python": "3.11.16",
+    "datasets": {
+      "lisabench": {
+        "source": "agentlisa/bench",
+        "url_template": "https://raw.githubusercontent.com/{repo}/main/dataset/{n:05d}.json",
+        "license": "MIT",
+        "subset_size": 1,
+        "seed": 42,
+        "ids": [
+          58
+        ],
+        "fetched_at": "2026-10-30T14:18:44.960367+00:00"
+      },
+      "known_safe_oz": {
+        "source": "OpenZeppelin/openzeppelin-contracts",
+        "url": "https://raw.githubusercontent.com/OpenZeppelin/openzeppelin-contracts/v5.0.0/contracts/token/ERC20/ERC20.sol",
+        "version": "v5.0.0",
+        "license": "MIT",
+        "contracts": [
+          "ERC20.sol"
+        ],
+        "note": "reference implementations, widely audited, NOT formally verified",
+        "sha256": {
+          "ERC20.sol": "2d874da1c1478ed2"
+        },
+        "fetched_at": "2026-10-29T13:19:26.208059+00:00"
+      }
+    }
+  },
+  "args": {
+    "mode": "detection",
+    "rag": "on",
+    "llm": "live",
+    "n_retrieval": 20,
+    "n_detection": 1,
+    "n_e2e": 2,
+    "seed": 42
+  },
+  "detection_rag=on": {
+    "mode": "detection",
+    "rag": true,
+    "llm": "live",
+    "n_samples": 1,
+    "tp": 0,
+    "fp": 1,
+    "fn": 1,
+    "precision": 0.0,
+    "recall": 0.0,
+    "f1": null,
+    "false_positive_rate": 1.0,
+    "severity_accuracy": {
+      "n_labeled": 0,
+      "n_exact": 0,
+      "accuracy": null
+    },
+    "cross_function": {
+      "n_gt": 0,
+      "detected": 0
+    },
+    "tool_execution": {
+      "n_runs": 4,
+      "success_rate": 0.25,
+      "n_success": 1
+    },
+    "runtime": {
+      "n": 1,
+      "mean_seconds": 930.516,
+      "median_seconds": 930.516,
+      "min_seconds": 930.516,
+      "max_seconds": 930.516
+    },
+    "samples": [
+      {
+        "bench_id": 58,
+        "title": "Ignoring `caseId`value when season is below peg",
+        "rag": true,
+        "gt_categories": [
+          "accounting"
+        ],
+        "gt_severity": null,
+        "gt_cross_function": false,
+        "predicted_categories": [
+          "unknown"
+        ],
+        "predicted_severity": "info",
+        "tp": [],
+        "fp": [
+          "unknown"
+        ],
+        "fn": [
+          "accounting"
+        ],
+        "n_findings": 26,
+        "cross_function_paths": 2,
+        "cross_function_detected": null,
+        "evidence_traceability": {
+          "n": 1,
+          "traceable": 0
+        },
+        "runtime_seconds": 930.516,
+        "audit_error": [
+          "aderyn: aderyn not installed: executable not found: aderyn",
+          "mythril: not installed",
+          "heimdall: not installed",
+          "cross_function: protocol/contracts/beanstalk/sun/SeasonFacet/Sun.sol#part1: SchemaValidationError: structured output failed after 3 attempts (schema_violation): 2 validation errors for LLMFindingsPayload\nfindings.0.swc_id\n  String should have at most 16 characters [type=string_too_long, input_value='SWC-107 (Reentrancy)', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.14/v/string_too_long\nfindings.1.swc_id\n  String should ha"
+        ]
+      }
+    ]
+  }
+}
