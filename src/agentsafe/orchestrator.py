@@ -469,6 +469,7 @@ class AuditOrchestrator:
                         kb = KnowledgeBase.load_default()
                 except Exception as exc:
                     limitations.append(f"security knowledge base unavailable: {exc}")
+                    kb = None  # evidence layer unavailable; validation continues
 
                 llm_usage = LLMUsage()
                 scheduler_meta: dict[str, Any] = {}
@@ -570,12 +571,32 @@ class AuditOrchestrator:
                     tool_findings.extend(byte_result.findings)
                 llm_findings = [f for f in findings if f.status == FindingStatus.LLM_SUGGESTED]
                 validation_segments = segments or None
+                # KB evidence for validation: retrieve known historical cases
+                # so deterministic rules can promote a machine-proven defect
+                # class (e.g. CEI violation) that history confirms as real.
+                # Deduped by category; never used as the sole basis for a claim.
+                kb_evidence: list[dict] = []
+                if kb is not None and llm_findings:
+                    try:
+                        seen_cat: set[str] = set()
+                        for f in llm_findings:
+                            hits = kb.search(
+                                f"{f.title} {f.evidence}", limit=2
+                            )
+                            for h in hits or []:
+                                cat = (h.get("category") or "").strip().lower()
+                                if cat and cat not in seen_cat:
+                                    seen_cat.add(cat)
+                                    kb_evidence.append(h)
+                    except Exception:
+                        pass  # KB is advisory; validation proceeds without it
                 if llm_findings or tool_findings:
                     llm_out = self._validation.validate(
                         llm_findings,
                         tool_findings,
                         validation_segments,
                         pseudo,
+                        kb_evidence,
                     )
                     tool_out = self._validation.validate_tools(
                         tool_findings, llm_out.findings, validation_segments, pseudo

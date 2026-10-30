@@ -216,6 +216,22 @@ def _cei_verdict(block: _FuncBlock) -> str | None:
     return None
 
 
+
+def _kb_corroborates(kb_evidence: Sequence[dict] | None, categories: set[str]) -> bool:
+    """True when a retrieved knowledge-base record belongs to one of the
+    target defect categories. Pure category match: the KB is lexical retrieval,
+    so we require the record's OWN category field to be an explicit reentrancy /
+    overflow / etc. label - never guess from free text. A matching historical
+    incident is second evidence that this defect class is real and materially
+    exploitable, which is what lets deterministic validation promote a claim."""
+    if not kb_evidence:
+        return False
+    for rec in kb_evidence:
+        cat = (rec.get("category") or "").strip().lower()
+        if cat in categories or cat in {"reentrancy-eth", "reentrancy-no-eth"}:
+            return True
+    return False
+
 # --- outcomes ------------------------------------------------------------------
 
 
@@ -249,6 +265,7 @@ class ValidationAgent:
         tool_findings: Sequence[Finding],
         source_segments: dict[str, str] | None = None,
         is_pseudo_source: bool = False,
+        kb_evidence: Sequence[dict] | None = None,
     ) -> ValidationOutcome:
         outcome = ValidationOutcome()
         for f in llm_findings:
@@ -257,7 +274,7 @@ class ValidationAgent:
                 outcome.findings.append(f)
                 self._count(outcome, f)
                 continue
-            nf = self._validate_llm_finding(f, tool_findings, source_segments, is_pseudo_source)
+            nf = self._validate_llm_finding(f, tool_findings, source_segments, is_pseudo_source, kb_evidence)
             if is_pseudo_source:
                 nf.limitations = [
                     *nf.limitations,
@@ -314,6 +331,7 @@ class ValidationAgent:
         tools: Sequence[Finding],
         segments: dict[str, str] | None,
         is_pseudo: bool,
+        kb_evidence: Sequence[dict] | None = None,
     ) -> Finding:
         # 1. evidence is mandatory for LLM claims
         if not (f.evidence or "").strip():
@@ -347,7 +365,7 @@ class ValidationAgent:
                     "possible paraphrase or hallucination - human check required",
                 )
         # 4. deterministic category rules (reentrancy CEI / transfer / allowance)
-        ruled = self._category_rules(f, src_text, is_pseudo)
+        ruled = self._category_rules(f, src_text, is_pseudo, kb_evidence)
         if ruled is not None:
             return ruled
         # 5. independent tool support -> confirmed
@@ -400,7 +418,8 @@ class ValidationAgent:
     # ------------------------------------------------- deterministic category rules
 
     def _category_rules(
-        self, f: Finding, src_text: str | None, is_pseudo: bool
+        self, f: Finding, src_text: str | None, is_pseudo: bool,
+        kb_evidence: Sequence[dict] | None = None,
     ) -> Finding | None:
         """Rules shared by LLM and tool findings. Returns a final-state
         Finding when a rule fires, else None to continue the chain."""
@@ -425,6 +444,24 @@ class ValidationAgent:
                         ordered["effect"],
                         ordered["interaction"],
                     ]
+                    return nf
+                # deterministic CEI violation (external call precedes a
+                # caller-state effect) corroborated by a KB reentrancy case:
+                # double evidence - the machine proved the ordering, history
+                # confirms this class of defect. Promote beyond potential.
+                if (
+                    block is not None
+                    and _cei_verdict(block) == "plausible"
+                    and _kb_corroborates(kb_evidence, {"reentrancy", "reentrancy-no-eth", "reentrancy-eth"})
+                ):
+                    nf = self._finalize(
+                        f, FindingStatus.CONFIRMED, "re1_cei_violation_kb",
+                        "deterministic Checks-Effects-Interactions violation "
+                        "(an external call precedes a caller-state effect) is "
+                        "corroborated by a knowledge-base reentrancy case; "
+                        "the defect is machine-confirmed and historically real",
+                    )
+                    nf.metadata["validation"]["kb_corroborated"] = True
                     return nf
 
         # -- ERC-20 transfer() delegating to transferFrom(msg.sender, ...) ----
