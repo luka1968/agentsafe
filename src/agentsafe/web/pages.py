@@ -148,6 +148,91 @@ def _build_index_html() -> str:
     Need an audit over 5,000 lines? &mdash; Contact us for enterprise pricing &rarr;
   </a>
 
+  <section class="mb-12 rounded-xl border border-zinc-800 bg-zinc-900/50 p-6">
+    <h2 class="mb-1 text-xl font-semibold">Start an audit</h2>
+    <p class="mb-4 text-sm text-zinc-400">Enter a verified Ethereum Mainnet
+    contract address and pay in USDC on Base via x402.
+    <span class="text-zinc-500">From $0.50 &mdash; the exact price is quoted
+    by the service before payment is requested.</span></p>
+    <div class="flex flex-col gap-3 sm:flex-row">
+      <input id="addr" type="text" spellcheck="false" autocomplete="off"
+        placeholder="0x..."
+        class="flex-1 rounded-lg border border-zinc-700 bg-black px-4 py-3
+               font-mono text-sm text-white placeholder-zinc-600 focus:border-cyan-400 focus:outline-none">
+      <button id="start"
+        class="rounded-lg bg-cyan-400 px-6 py-3 font-semibold text-black
+               hover:bg-cyan-300 disabled:cursor-not-allowed disabled:opacity-50">
+        Pay USDC to audit
+      </button>
+    </div>
+    <div id="flow" class="mt-4 hidden rounded-lg border border-zinc-800 bg-black p-4 text-sm"></div>
+  </section>
+
+  <script>
+  (function () {{
+    var REST = "/api/audit";
+    var addr = document.getElementById("addr");
+    var start = document.getElementById("start");
+    var flow = document.getElementById("flow");
+    function show(html) {{ flow.innerHTML = html; flow.classList.remove("hidden"); }}
+    function b64decode(s) {{ try {{ return JSON.parse(atob(s.replace(/-/g, "+").replace(/_/g, "/"))); }} catch (e) {{ return null; }} }}
+    start.addEventListener("click", async function () {{
+      var a = (addr.value || "").trim();
+      if (!/^0x[0-9a-fA-F]{{40}}$/.test(a)) {{ show("<p class='text-red-400'>Enter a valid 0x-prefixed contract address.</p>"); return; }}
+      start.disabled = true; start.textContent = "Contacting service...";
+      show("<p class='text-zinc-400'>Requesting payment terms from the service...</p>");
+      try {{
+        var res = await fetch(REST, {{
+          method: "POST",
+          headers: {{"content-type": "application/json"}},
+          body: JSON.stringify({{"address": a}})
+        }});
+        if (res.status === 202) {{
+          var d = await res.json().catch(function () {{ return {{}}; }});
+          var tid = d.task_id || "";
+          show("<p class='text-emerald-400'>Audit dispatched!</p>"
+            + "<p class='mt-1 text-zinc-300'>Task ID: <code class='text-cyan-300'>" + tid + "</code></p>"
+            + "<p class='mt-2 text-xs text-zinc-500'>Reports (free retrieval): "
+            + "<a class='text-cyan-300 hover:underline' href='/api/audit/" + tid + "/report' target='_blank'>HTML</a> &middot; "
+            + "<a class='text-cyan-300 hover:underline' href='/api/audit/" + tid + "/report.json' target='_blank'>JSON</a> &middot; "
+            + "<a class='text-cyan-300 hover:underline' href='/api/audit/" + tid + "/report.md' target='_blank'>Markdown</a> &middot; "
+            + "<a class='text-cyan-300 hover:underline' href='/api/audit/" + tid + "/report.pdf' target='_blank'>PDF</a></p>");
+          return;
+        }}
+        if (res.status === 402) {{
+          var req = res.headers.get("PAYMENT-REQUIRED") || "";
+          var terms = req ? b64decode(req) : null;
+          var acc = (terms && terms.accepts && terms.accepts[0]) ? terms.accepts[0] : null;
+          var price = acc ? (acc.amount / 1e6) : null;
+          var payTo = acc ? (acc.payTo || "") : "";
+          var net = acc ? (acc.network || "") : "";
+          var lines = [];
+          lines.push("<p class='text-yellow-300'>Payment required to start this audit:</p>");
+          if (price !== null) lines.push("<p class='mt-1 text-zinc-200'>Amount: <b>" + price.toFixed(2) + " USDC</b></p>");
+          if (payTo) lines.push("<p class='text-zinc-200'>Pay to: <code class='text-cyan-300 break-all'>" + payTo + "</code></p>");
+          if (net) lines.push("<p class='text-zinc-200'>Network: <code>" + net + "</code></p>");
+          lines.push("<p class='mt-3 text-xs text-zinc-500'>Pay with a wallet that supports x402 (e.g. PayAI). "
+            + "Or copy the curl command below and run it locally with your x402-enabled client:</p>");
+          lines.push("<pre class='mt-2 overflow-x-auto rounded border border-zinc-800 bg-zinc-900 p-3 text-xs text-cyan-300'><code>curl -X POST " + window.location.origin + REST + " \\"
+            + "  -H 'content-type: application/json' \\"
+            + "  -d '{{\"address\":\"" + a + "\"}}'</code></pre>");
+          lines.push("<p class='mt-2 text-xs text-zinc-500'>On HTTP 402 the server returns the machine-readable "
+            + "<code>PAYMENT-REQUIRED</code> header; sign the quoted USDC transfer with your wallet "
+            + "and resend with the <code>PAYMENT-SIGNATURE</code> header.</p>");
+          show(lines.join(""));
+          return;
+        }}
+        var e = await res.json().catch(function () {{ return {{}}; }});
+        show("<p class='text-red-400'>" + (e.error || ("HTTP " + res.status)) + "</p>");
+      }} catch (err) {{
+        show("<p class='text-red-400'>Request failed: " + err.message + "</p>");
+      }} finally {{
+        start.disabled = false; start.textContent = "Pay USDC to audit";
+      }}
+    }});
+  }})();
+  </script>
+
   <section class="mb-12">
     <h2 class="mb-4 text-xl font-semibold">Pricing</h2>
     <div class="overflow-x-auto rounded-lg border border-zinc-800">

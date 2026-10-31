@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
+import respx
 from httpx import ASGITransport
 from starlette.middleware import Middleware as StarletteMiddleware
 
@@ -14,6 +15,14 @@ from agentsafe.config import Settings
 from agentsafe.server import build_server
 from agentsafe.web.access_log import ACCESS_LOG_RETENTION_DAYS, AccessLogMiddleware, AccessLogStore
 from agentsafe.web.pages import legal_html, legal_markdown
+
+# x402 payment infrastructure shared with the REST tests (facilitator mocked
+# via respx so no real money / network is ever touched).
+from tests.test_payments import (
+    ADDR,
+    _mock_facilitator,
+    _settings as _payments_settings,
+)
 
 
 def _settings(**kw) -> Settings:
@@ -65,6 +74,21 @@ class TestPublicPages:
         # Claude config JSON present
         assert '"mcpServers"' in r.text
         assert '"agentsafe"' in r.text
+        # --- landing-page interaction area (audit start flow) ---
+        # the contract-address input the visitor fills in
+        assert 'id="addr"' in r.text
+        assert 'placeholder="0x..."' in r.text
+        # the pay-to-audit CTA button
+        assert 'id="start"' in r.text
+        assert "Pay USDC to audit" in r.text
+        # the client posts to the x402-gated REST endpoint and parses the
+        # machine-readable PAYMENT-REQUIRED header for the 402 path
+        assert 'fetch(REST' in r.text
+        assert '"/api/audit"' in r.text
+        assert "PAYMENT-REQUIRED" in r.text
+        assert "PAYMENT-SIGNATURE" in r.text
+        # from-$0.50 honest pricing copy (exact amount is server-quoted)
+        assert "From $0.50" in r.text
 
     @pytest.mark.parametrize(
         ("path", "marker", "has_table"),
@@ -92,6 +116,39 @@ class TestPublicPages:
             r = await client.get("/privacy")
         for link in ('href="/terms"', 'href="/privacy"', 'href="/refund"'):
             assert link in r.text
+
+    @respx.mock
+    async def test_landing_paywall_402_payment_terms(self):
+        """The landing page's audit flow hits the x402 gate: an unpaid POST
+        gets a 402 whose PAYMENT-REQUIRED header parses to terms that match
+        OUR payTo address, Base USDC, and the exact server-quoted amount."""
+        _mock_facilitator()
+        server = build_server(_payments_settings(PAYMENTS_ENABLED=True))
+        async with _http_client(server) as client:
+            resp = await client.post("/api/audit", json={"address": ADDR})
+        assert resp.status_code == 402
+        required = resp.headers.get("payment-required")
+        assert required, f"no PAYMENT-REQUIRED header: {dict(resp.headers)}"
+        # decode the base64 JSON header (the landing page's b64decode does
+        # exactly this; the server body mirrors the same object)
+        import base64 as b64
+
+        payload = json.loads(b64.b64decode(required))
+        accepts = payload["accepts"]
+        assert accepts, "PAYMENT-REQUIRED must carry accepted terms"
+        terms = accepts[0]
+        # OUR recipient address, exactly
+        assert terms["payTo"].lower() == _payments_settings().X402_PAY_TO.lower()
+        # Base network (testnet in tests; mainnet in prod config)
+        assert terms["network"] == "eip155:84532"
+        # exact flat fee $3.00 at 6 USDC decimals
+        assert terms["amount"] == "3000000"
+        assert terms["scheme"] == "exact"
+        assert payload["x402Version"] == 2
+        # body mirrors the header (human/indexer fallback)
+        body = resp.json()
+        assert body["accepts"][0]["amount"] == "3000000"
+        assert body["accepts"][0]["payTo"].lower() == _payments_settings().X402_PAY_TO.lower()
 
 
 class TestAccessLogStore:
