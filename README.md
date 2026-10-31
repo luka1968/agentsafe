@@ -67,6 +67,11 @@ curl -X POST https://x402.workfern.com/api/audit \
 ```
 OpenAPI spec: `https://x402.workfern.com/openapi.json`
 
+> 📖 **Full API reference**: [`docs/API.md`](docs/API.md) — MCP tools,
+> REST endpoints, tiered USDC pricing, error-code table, report schema, and
+> curl examples for all five tools (`health`, `audit_contract`,
+> `check_audit_status`, `get_contract_info`, `get_source_code`).
+
 ## Topics
 `#SmartContractAudit` `#Web3Security` `#MCP` `#Ethereum` `#x402` `#AISecurity` `#Solidity`
 

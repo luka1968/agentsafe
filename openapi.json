@@ -8,11 +8,11 @@
       "email": "arinoach@gmail.com",
       "url": "https://github.com/luka1968/agentsafe"
     },
-    "description": "AI-assisted EVM smart-contract risk screening (Ethereum Mainnet), payable with x402 micro-payments in USDC on Base. This REST endpoint mirrors the audit dispatch of the agentSAFE MCP server (https://github.com/luka1968/agentsafe). Payment is enforced by the x402 protocol (scheme 'exact', x402Version 2): an unpaid request receives HTTP 402 with a base64-encoded 'PAYMENT-REQUIRED' header describing the exact on-chain payment terms. IMPORTANT: AI-assisted risk screening, NOT a formal security audit; findings require human verification before any action. Refund policy: https://agentsafe-three.vercel.app/refund"
+    "description": "AI-assisted EVM smart-contract risk screening (Ethereum Mainnet), payable with x402 micro-payments in USDC on Base. This REST endpoint mirrors the audit dispatch of the agentSAFE MCP server (https://github.com/luka1968/agentsafe). Payment is enforced by the x402 protocol (scheme 'exact', x402Version 2): an unpaid request receives HTTP 402 with a base64-encoded 'PAYMENT-REQUIRED' header describing the exact on-chain payment terms. IMPORTANT: AI-assisted risk screening, NOT a formal security audit; findings require human verification before any action. Refund policy: https://x402.workfern.com/refund"
   },
   "servers": [
     {
-      "url": "https://agentsafe-three.vercel.app",
+      "url": "https://x402.workfern.com",
       "description": "Production deployment (Vercel)"
     }
   ],
@@ -255,6 +255,46 @@
           },
           "503": {
             "description": "PDF renderer unavailable (PDF route only)"
+          }
+        }
+      }
+    },
+    "/api/audit/{task_id}/report.md": {
+      "get": {
+        "summary": "Retrieve the Markdown assessment report (same validated data as JSON/HTML/PDF)",
+        "operationId": "getReportMarkdown",
+        "tags": [
+          "report"
+        ],
+        "description": "Markdown report rendered from the SAME validated AuditReport as the JSON/HTML/PDF views (all formats agree by construction). Same fail-closed gates as the other report routes: unknown 404, unpaid 402, incomplete 409.",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Report rendered from the validated audit model"
+          },
+          "402": {
+            "description": "Payment required (fail-closed: report withheld without a bound verified payment)"
+          },
+          "404": {
+            "description": "Unknown task id"
+          },
+          "409": {
+            "description": "Audit run not completed"
+          },
+          "410": {
+            "description": "Report artifact expired"
+          },
+          "502": {
+            "description": "Upstream GitHub artifact failure"
           }
         }
       }
