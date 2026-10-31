@@ -20,13 +20,14 @@ from agentsafe import report as report_mod
 from agentsafe.agents.base import AnalysisMaterial, BaseAgent, split_segments
 from agentsafe.agents.validation import ValidationAgent
 from agentsafe.analyzers.bytecode import BytecodeAnalyzer, BytecodeClass
-from agentsafe.analyzers.source import SourceAnalyzer
+from agentsafe.analyzers.source import CAT_NOT_INSTALLED, SourceAnalyzer
 from agentsafe.explorer import ContractNotVerifiedError, EtherscanClient
 from agentsafe.llm.router import AuditBudget, LLMRouter, LLMRouterError
 from agentsafe.rpc import EthRpcClient
 from agentsafe.schemas import (
     AuditReport,
     Finding,
+    FindingCategory,
     FindingStatus,
     LLMUsage,
     StageState,
@@ -36,6 +37,22 @@ from agentsafe.schemas import (
 )
 
 logger = logging.getLogger("agentSAFE.orchestrator")
+
+# P0-3a: map a validated finding's category to the KB focus keyword used to
+# rerank retrieval, so the KB evidence layer surfaces a same-category
+# historical case (e.g. reentrancy -> fund_flow -> reentrancy record). Empty
+# focus falls back to the KB default (no affinity boost).
+_KB_FOCUS_FOR_CATEGORY = {
+    "reentrancy": "fund_flow",
+    "accounting": "fund_flow",
+    "token": "fund_flow",
+    "access_control": "access_control",
+    "proxy": "access_control",
+    "oracle": "business_logic",
+    "arithmetic": "business_logic",
+    "logic_error": "business_logic",
+    "unhandled_exception": "business_logic",
+}
 
 STAGES = (
     "validate_address",
@@ -214,6 +231,14 @@ class AuditOrchestrator:
                                 tool_versions[f"{r.tool}_version"] = r.version
                             if r.executed and not r.error:
                                 tools_executed.append(r.tool)
+                            elif r.failure_category == CAT_NOT_INSTALLED:
+                                # Honest degradation: a tool that is simply not
+                                # installed is an environment gap, surfaced as a
+                                # limitation + tools_failed, NOT a hard audit error.
+                                tools_failed.append(r.tool)
+                                limitations.append(
+                                    f"{r.tool} unavailable: not installed on this host"
+                                )
                             else:
                                 tools_failed.append(r.tool)
                                 errors.append(f"{r.tool}: {r.error or 'no result'}")
@@ -281,6 +306,13 @@ class AuditOrchestrator:
                             tool_versions[f"{br.tool}_version"] = br.version
                         if br.executed and not br.error:
                             tools_executed.append(br.tool)
+                        elif br.failure_category == CAT_NOT_INSTALLED:
+                            # Honest degradation: a not-installed bytecode tool is
+                            # an environment gap (limitation), not a hard error.
+                            tools_failed.append(br.tool)
+                            limitations.append(
+                                f"{br.tool} unavailable: not installed on this host"
+                            )
                         else:
                             tools_failed.append(br.tool)
                             errors.append(f"{br.tool}: {br.error or 'no result'}")
@@ -589,8 +621,18 @@ class AuditOrchestrator:
                     try:
                         seen_cat: set[str] = set()
                         for f in llm_findings:
+                            # P0-3a: query the KB with the finding's own
+                            # category as the focus AND the defect-class prose
+                            # (description) so the retrieved evidence surfaces
+                            # a matching historical case (e.g. a reentrancy
+                            # finding surfaces a reentrancy record). The raw
+                            # code evidence alone rarely lexically matches the
+                            # KB's prose descriptions.
                             hits = kb.search(
-                                f"{f.title} {f.evidence}", limit=2
+                                f"{f.title} {f.description} {f.evidence}",
+                                focus=_KB_FOCUS_FOR_CATEGORY.get(
+                                    f.category.value if f.category else "", ""),
+                                limit=2,
                             )
                             for h in hits or []:
                                 cat = (h.get("category") or "").strip().lower()

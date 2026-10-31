@@ -431,7 +431,8 @@ class ValidationAgent:
         if _RE_REENTRANCY.search(title_desc):
             if blocks:
                 block = _locate_function(blocks, src_text or "", f.evidence, f.line_start)
-                if block is not None and _cei_verdict(block) == "rejected":
+                located_verdict = _cei_verdict(block) if block is not None else None
+                if block is not None and located_verdict == "rejected":
                     ordered = self._cei_evidence_lines(block, f.file_path)
                     nf = self._finalize(
                         f, FindingStatus.REJECTED, "re0_cei_satisfied",
@@ -450,11 +451,27 @@ class ValidationAgent:
                 # caller-state effect) corroborated by a KB reentrancy case:
                 # double evidence - the machine proved the ordering, history
                 # confirms this class of defect. Promote beyond potential.
+                #
+                # Robust to LLM mis-location: when the LLM placed the claim on a
+                # function whose verdict is not "plausible" (e.g. it named the
+                # line of a non-vulnerable function), scan ALL functions for the
+                # CEI-plausible one. We confirm only when exactly ONE function is
+                # plausibly vulnerable (deterministic, no ambiguity).
+                plausible = []
+                if located_verdict == "plausible":
+                    plausible = [block]
+                else:
+                    plausible = [b for b in blocks if _cei_verdict(b) == "plausible"]
                 if (
-                    block is not None
-                    and _cei_verdict(block) == "plausible"
+                    len(plausible) == 1
                     and _kb_corroborates(kb_evidence, {"reentrancy", "reentrancy-no-eth", "reentrancy-eth"})
                 ):
+                    # Set the corroboration flag on the INPUT finding BEFORE
+                    # _finalize so assess() (run inside _finalize) can see it
+                    # and apply the KB-corroborated severity floor for
+                    # high-impact classes (reentrancy -> high). Setting it only
+                    # after _finalize returned left severity stuck at the claim.
+                    f.metadata.setdefault("validation", {})["kb_corroborated"] = True
                     nf = self._finalize(
                         f, FindingStatus.CONFIRMED, "re1_cei_violation_kb",
                         "deterministic Checks-Effects-Interactions violation "
@@ -462,7 +479,6 @@ class ValidationAgent:
                         "corroborated by a knowledge-base reentrancy case; "
                         "the defect is machine-confirmed and historically real",
                     )
-                    nf.metadata["validation"]["kb_corroborated"] = True
                     return nf
 
         # -- ERC-20 transfer() delegating to transferFrom(msg.sender, ...) ----

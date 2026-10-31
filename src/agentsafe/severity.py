@@ -52,6 +52,14 @@ _MITIGATION = re.compile(
     re.IGNORECASE,
 )
 
+# Defect classes that are materially exploitable (fund/state loss, permanent
+# harm) and, once CONFIRMED by double evidence, must never be under-reported
+# as medium just because the LLM under-claimed.
+_HIGH_IMPACT_CATEGORIES = {
+    "reentrancy", "flash_loan", "oracle", "unhandled_exception",
+    "accounting",
+}
+
 _ORDER: list[Severity] = [
     Severity.CRITICAL,
     Severity.HIGH,
@@ -106,6 +114,19 @@ def assess(f: Finding) -> tuple[Severity, str]:
     if _MITIGATION.search(text):
         sev = _downgrade(sev)
         reductions.append("mitigating_controls")
+    # KB-corroborated double-evidence floor: when a defect class is CONFIRMED
+    # by two independent sources (machine-proven + historical KB case), and it
+    # is a materially-exploitable high-impact class, the customer report must
+    # not under-report it as medium just because the LLM under-claimed. The
+    # downward reductions above still apply first (a guarded reentrancy stays
+    # downgraded). This is evidence-based, never claim-inflation.
+    kb = (f.metadata.get("validation") or {}).get("kb_corroborated")
+    if kb and f.category and f.category.value in _HIGH_IMPACT_CATEGORIES:
+        # _ORDER is most-severe-first (CRITICAL=0 .. INFO=4): raise when the
+        # current severity is LESS severe than HIGH (index HIGH+).
+        if _ORDER.index(sev) > _ORDER.index(Severity.HIGH):
+            sev = Severity.HIGH
+            reductions.append("kb_corroborated_floor_high")
     basis = "rubric:confirmed" + (f"(-{'+'.join(reductions)})" if reductions else "")
     return sev, basis
 
