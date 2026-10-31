@@ -9,6 +9,7 @@ charged against the same per-audit LLM budget.
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -22,12 +23,77 @@ from agentsafe.llm.prompts import (
     system_prompt,
 )
 from agentsafe.llm.router import AuditBudget, LLMRouter
-from agentsafe.schemas import Finding, FindingStatus
+from agentsafe.schemas import (
+    Finding, FindingStatus, FindingCategory,
+)
 
 logger = logging.getLogger("agentSAFE.agents")
 
 MAX_SEGMENT_CHARS = 8_000  # per LLM call, ~2k tokens of code (AgentLISA-style: smallest relevant sample)
 MAX_TOTAL_ANALYZED_CHARS = 45_000  # per agent across whole audit (focused batches, not whole repo)
+
+
+_RE_CAT_REENTRANCY = re.compile(r"re[- ]?entran", re.IGNORECASE)
+_RE_CAT_OVERFLOW = re.compile(r"(?:over|under)flow|arithmetic", re.IGNORECASE)
+_RE_CAT_ACCESS = re.compile(
+    r"access control|onlyowner|onlyrole|hasrole|authorization|privilege|"
+    r"admin|owner\s+check|msg\.sender\s*==", re.IGNORECASE,
+)
+_RE_CAT_ACCOUNTING = re.compile(
+    r"accounting|balance|totalSupply|withdraw|deposit|mint|redeem|share|debt|"
+    r"collateral", re.IGNORECASE,
+)
+_RE_CAT_ORACLE = re.compile(r"oracle|price|feed|oracle\s+manipulat|priceFeed", re.IGNORECASE)
+_RE_CAT_PROXY = re.compile(r"proxy|delegatecall|upgrade|initializ", re.IGNORECASE)
+_RE_CAT_TOKEN = re.compile(r"token|erc20|approve|allowance|transfer", re.IGNORECASE)
+_RE_CAT_UNHANDLED = re.compile(
+    r"unhandled|unchecked|revert|dos|denial|pani[ck]", re.IGNORECASE,
+)
+_RE_CAT_LOGIC = re.compile(r"logic|incorrect|wrong|off[- ]?by[- ]?one|edge case", re.IGNORECASE)
+
+
+def _infer_category(swc_id, title, description, evidence) -> "FindingCategory | None":
+    """Deterministic category fallback for a finding whose agent did not tag
+    one. Ordered by specificity: SWC id beats prose, most-specific beat generic.
+    Never guesses; returns None when no signal is strong enough."""
+    blob = f"{title} {description} {evidence}"
+    if swc_id:
+        sid = (swc_id or "").upper()
+        if "107" in sid:
+            return FindingCategory.REENTRANCY
+        if "101" in sid:
+            return FindingCategory.ARITHMETIC
+        if "105" in sid:
+            return FindingCategory.ARITHMETIC
+        if "112" in sid:
+            return FindingCategory.PROXY
+        if "104" in sid:
+            return FindingCategory.UNHANDLED_EXCEPTION
+        if "115" in sid:
+            return FindingCategory.ACCESS_CONTROL
+        if "116" in sid:
+            return FindingCategory.ORACLE
+        if "120" in sid:
+            return FindingCategory.ORACLE
+    if _RE_CAT_REENTRANCY.search(blob):
+        return FindingCategory.REENTRANCY
+    if _RE_CAT_OVERFLOW.search(blob):
+        return FindingCategory.ARITHMETIC
+    if _RE_CAT_ACCESS.search(blob):
+        return FindingCategory.ACCESS_CONTROL
+    if _RE_CAT_PROXY.search(blob):
+        return FindingCategory.PROXY
+    if _RE_CAT_ORACLE.search(blob):
+        return FindingCategory.ORACLE
+    if _RE_CAT_UNHANDLED.search(blob):
+        return FindingCategory.UNHANDLED_EXCEPTION
+    if _RE_CAT_ACCOUNTING.search(blob):
+        return FindingCategory.ACCOUNTING
+    if _RE_CAT_TOKEN.search(blob):
+        return FindingCategory.TOKEN
+    if _RE_CAT_LOGIC.search(blob):
+        return FindingCategory.LOGIC_ERROR
+    return None
 
 
 class LLMFindingPayload(BaseModel):
@@ -42,6 +108,7 @@ class LLMFindingPayload(BaseModel):
     recommendation: str = ""
     swc_id: str | None = Field(default=None, max_length=16)
     cwe_id: str | None = Field(default=None, max_length=16)
+    category: str | None = Field(default=None, max_length=40)
     preconditions: str = ""
     attack_scenario: str = ""
     impact: str = ""
@@ -274,6 +341,17 @@ object described in your instructions."""
             result.skipped_reason = "; ".join(result.errors[:3])
         return result
 
+    def _category_of(self, p: LLMFindingPayload) -> "FindingCategory | None":
+        """Finding category: honor a clean LLM-provided category, else fall
+        back to a deterministic inference from swc_id + prose. Guarantees a
+        categorized finding so downstream recall/category metrics are real."""
+        if p.category:
+            try:
+                return FindingCategory(p.category.strip().lower())
+            except ValueError:
+                pass
+        return _infer_category(p.swc_id, p.title, p.description, p.evidence) or FindingCategory.UNKNOWN
+
     def _to_finding(self, p: LLMFindingPayload, label: str, call: Any,
                     kb_refs: list[str] | None = None) -> Finding:
         return Finding(
@@ -284,6 +362,7 @@ object described in your instructions."""
             detector_id=None,
             swc_id=p.swc_id,
             cwe_id=p.cwe_id,
+            category=self._category_of(p),
             description=p.description,
             evidence=p.evidence,
             recommendation=p.recommendation,

@@ -125,7 +125,7 @@ class TestAgentAttachesReferences:
                 "title": "Stale oracle price unchecked",
                 "severity": "medium",
                 "description": "d", "evidence": "e", "recommendation": "r",
-                "swc_id": None, "cwe_id": None, "preconditions": "p",
+                "swc_id": None, "cwe_id": None, "category": None, "preconditions": "p",
                 "attack_scenario": "a", "impact": "i",
                 "file_path": "Vault.sol", "line_start": 12, "line_end": None,
                 "confidence": 0.6,

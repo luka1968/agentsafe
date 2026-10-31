@@ -46,8 +46,9 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
-from agentsafe.schemas import Finding, FindingStatus, Severity
+from agentsafe.schemas import Finding, FindingCategory, FindingStatus, Severity
 from agentsafe.severity import assess, enrich_swc
+from agentsafe.agents.base import _infer_category
 
 logger = logging.getLogger("agentSAFE.validation")
 
@@ -658,6 +659,13 @@ class ValidationAgent:
         swc = enrich_swc(nf)
         if swc:
             nf.swc_id = swc
+        # category fallback: ensure every validated finding is categorized so
+        # downstream category metrics (recall/tp) are real, not skewed by
+        # agents that omitted the field.
+        if nf.category is FindingCategory.UNKNOWN:
+            nf.category = _infer_category(
+                nf.swc_id, nf.title, nf.description, nf.evidence
+            ) or FindingCategory.UNKNOWN
         # Stage 8/9: record HOW this finding was validated and its result.
         # The method is derived from the rule id (never claimed); a static
         # analyzer warning or LLM confidence is never treated as proof.

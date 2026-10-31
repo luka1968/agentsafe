@@ -29,6 +29,7 @@ OUTPUT FORMAT - STRICT JSON, NO MARKDOWN, NO COMMENTARY:
       "evidence": "EXACT code fragment copied character-for-character from the provided code",
       "recommendation": "concrete fix",
       "swc_id": "SWC id when applicable (e.g. SWC-107 reentrancy, SWC-101 arithmetic), else null",
+      "category": "single best category from exactly one of: reentrancy, accounting, access_control, arithmetic, oracle, proxy, token, logic_error, unhandled_exception, defi_logic; omit if none fits",
       "preconditions": "what must be true to exploit (required privileges, state, token standard), else empty string",
       "attack_scenario": "concrete step-by-step failure mode, else empty string",
       "impact": "concrete damage (funds lost, minting, DoS, scope), else empty string",
