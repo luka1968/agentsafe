@@ -420,3 +420,69 @@ def test_swc_id_without_label_untouched():
     obj = {"findings": [{"swc_id": "SWC-101", "cwe_id": None}]}
     _sanitize_id_fields(obj)
     assert obj["findings"][0]["swc_id"] == "SWC-101"
+
+
+# --- P0-3a: deterministic JSON repair ---------------------------------------
+def test_repair_json_single_quotes():
+    from agentsafe.llm.repair import repair_json
+    s = "{'title': 'Reentrancy', 'severity': 'high'}"
+    out = repair_json(s)
+    assert out is not None
+    import json
+    assert json.loads(out) == {"title": "Reentrancy", "severity": "high"}
+
+
+def test_repair_json_trailing_commas():
+    from agentsafe.llm.repair import repair_json
+    s = '{"title": "x", "severity": "high",}'
+    out = repair_json(s)
+    assert out is not None
+    import json
+    assert json.loads(out) == {"title": "x", "severity": "high"}
+
+
+def test_repair_json_unquoted_keys():
+    from agentsafe.llm.repair import repair_json
+    s = "{title: 'Reentrancy', severity: 'high'}"
+    out = repair_json(s)
+    assert out is not None
+    import json
+    assert json.loads(out) == {"title": "Reentrancy", "severity": "high"}
+
+
+def test_repair_json_stray_prose():
+    from agentsafe.llm.repair import repair_json
+    s = 'Here is the result:\n{"title": "Reentrancy", "severity": "high"}\nHope this helps.'
+    out = repair_json(s)
+    assert out is not None
+    import json
+    assert json.loads(out) == {"title": "Reentrancy", "severity": "high"}
+
+
+def test_repair_json_returns_none_when_unsafe():
+    from agentsafe.llm.repair import repair_json
+    assert repair_json("not json at all") is None
+    assert repair_json("") is None
+
+
+# --- P0-3a: exponential backoff + success-rate metrics ----------------------
+def test_backoff_delay_exponential_and_capped():
+    from agentsafe.llm.router import BACKOFF_BASE_SECONDS, BACKOFF_MAX_SECONDS, _backoff_delay
+    d1 = _backoff_delay(1)  # 0.5 * 2^0 = 0.5s base
+    d2 = _backoff_delay(2)  # 0.5 * 2^1 = 1.0s base
+    d5 = _backoff_delay(5)  # 0.5 * 2^4 = 8.0s base, capped
+    assert 0 <= d1 <= BACKOFF_BASE_SECONDS * 1.3
+    assert d2 > d1  # grows with attempt (jitter keeps it strictly bigger at this scale)
+    assert d5 <= BACKOFF_MAX_SECONDS * 1.3
+    assert d5 >= 0
+
+
+def test_llm_success_rate_metric():
+    from agentsafe.metrics import Metrics
+    m = Metrics()
+    m.incr("llm_calls", 2)
+    m.incr("llm_success", 2)
+    assert m.llm_success_rate() == 1.0
+    assert m.llm_success_rate() is not None
+    m.incr("llm_failed", 0)
+    assert m.llm_success_rate() is not None

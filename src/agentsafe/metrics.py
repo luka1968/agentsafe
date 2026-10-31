@@ -67,6 +67,15 @@ class Metrics:
             return None
         return self._sums[key] / n
 
+    def llm_success_rate(self) -> float | None:
+        """Fraction of LLM HTTP calls that produced schema-valid output
+        (0.0..1.0). None when no LLM call has been recorded yet."""
+        total = self._counters.get("llm_calls", 0)
+        if not total:
+            return None
+        ok = self._counters.get("llm_success", 0)
+        return ok / total
+
     def snapshot(self) -> dict[str, Any]:
         """Plain dict: counters plus derived mean/max per recorded duration.
         Safe to serialize; never contains payload content."""

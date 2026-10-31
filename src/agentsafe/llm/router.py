@@ -28,10 +28,28 @@ from typing import Any, TypeVar
 import httpx
 from pydantic import BaseModel
 
+from agentsafe.llm.repair import repair_json
+
 logger = logging.getLogger("agentSAFE.llm")
 
 COOLDOWN_RATE_LIMIT_SECONDS = 60.0
 COOLDOWN_SERVER_ERROR_SECONDS = 15.0
+
+# P0-3a: exponential backoff between provider-retry attempts on transient
+# failures (transport / 429 / 5xx). Base doubles each retry, capped, with
+# small jitter to avoid thundering-herd self-synchronization.
+BACKOFF_BASE_SECONDS = 0.5
+BACKOFF_MAX_SECONDS = 8.0
+BACKOFF_JITTER = 0.2
+
+
+def _backoff_delay(attempt: int) -> float:
+    """Exponential backoff (with jitter) for the attempt-th retry."""
+    import random as _random
+
+    delay = min(BACKOFF_BASE_SECONDS * (2 ** max(0, attempt - 1)), BACKOFF_MAX_SECONDS)
+    jitter = delay * BACKOFF_JITTER * (_random.random() * 2.0 - 1.0)
+    return max(0.0, delay + jitter)
 
 
 class LLMRouterError(RuntimeError):
@@ -244,6 +262,14 @@ class LLMRouter:
         p.failures += 1
         logger.warning("llm provider=%s cooling down %.0fs (%s)", p.name, seconds, reason)
 
+    async def _backoff(self, budget: AuditBudget, attempt: int) -> None:
+        """Exponential-backoff sleep before retrying a transient provider
+        failure. Skips the wait when the audit deadline is too close, so a
+        slow transient never burns the whole deadline."""
+        delay = _backoff_delay(attempt)
+        if self._clock() + delay <= budget.deadline:
+            await self._sleeper(delay)
+
     async def complete_json(
         self,
         budget: AuditBudget,
@@ -316,6 +342,7 @@ class LLMRouter:
                 self._cooldown(p, COOLDOWN_SERVER_ERROR_SECONDS, f"transport: {exc}")
                 last_error = exc
                 attempts += 1
+                await self._backoff(budget, attempts)
                 continue
 
             duration = self._clock() - started
@@ -323,11 +350,13 @@ class LLMRouter:
                 self._cooldown(p, COOLDOWN_RATE_LIMIT_SECONDS, "HTTP 429")
                 last_error = LLMRouterError(f"{p.name}: 429")
                 attempts += 1
+                await self._backoff(budget, attempts)
                 continue
             if resp.status_code >= 500:
                 self._cooldown(p, COOLDOWN_SERVER_ERROR_SECONDS, f"HTTP {resp.status_code}")
                 last_error = LLMRouterError(f"{p.name}: HTTP {resp.status_code}")
                 attempts += 1
+                await self._backoff(budget, attempts)
                 continue
             if resp.status_code >= 400:
                 # 400/401/403/404: permanent for this provider (bad key/model/payload)
@@ -357,6 +386,7 @@ class LLMRouter:
                 self._cooldown(p, COOLDOWN_SERVER_ERROR_SECONDS, "malformed response body")
                 last_error = LLMRouterError(f"{p.name}: malformed response")
                 attempts += 1
+                await self._backoff(budget, attempts)
                 continue
 
             result = LLMCallResult(
@@ -389,6 +419,7 @@ class LLMRouter:
 
             validated, failure = _validate_json_strict(content, schema_model)
             if validated is not None:
+                get_metrics().incr("llm_success")
                 budget.record_success(result)
                 return validated, result
             # Strict validation failed: repair attempts reuse the same provider
@@ -519,12 +550,21 @@ def _validate_json_strict(
     try:
         parsed = json.loads(text)
     except json.JSONDecodeError:
-        candidate = _extract_balanced(text)
-        if candidate is not None:
+        # Deterministic mechanical repair (single quotes, unquoted keys,
+        # trailing commas, stray prose) BEFORE an expensive re-prompt.
+        repaired = repair_json(text)
+        if repaired is not None:
             try:
-                parsed = json.loads(candidate)
+                parsed = json.loads(repaired)
             except json.JSONDecodeError:
                 parsed = None
+        if parsed is None:
+            candidate = _extract_balanced(text)
+            if candidate is not None:
+                try:
+                    parsed = json.loads(candidate)
+                except json.JSONDecodeError:
+                    parsed = None
     if parsed is None:
         detail = text[:120].replace("\n", " ")
         return None, ValidationFailure(VC_INVALID_JSON, f"no parsable JSON object: {detail!r}")

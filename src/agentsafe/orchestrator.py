@@ -559,6 +559,15 @@ class AuditOrchestrator:
                          detail=(f"{llm_usage.total_calls} calls; "
                                  f"{scheduler_meta.get('aggregate', {}).get('agents_run', 0)} specialists")
                          if scheduler_meta else f"{llm_usage.total_calls} calls")
+                    # P0-3a: surface LLM call success rate so a degraded provider
+                    # is visible in operational logs, never silently absorbed.
+                    _sr = get_metrics().llm_success_rate()
+                    if _sr is not None:
+                        logger.info(
+                            "llm call success rate=%.3f (%d ok / %d calls)",
+                            _sr, get_metrics().snapshot().get("llm_success", 0),
+                            llm_usage.total_calls,
+                        )
                 else:
                     skip("llm_agents", "no LLM router configured or no material")
 
