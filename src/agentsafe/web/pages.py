@@ -129,6 +129,7 @@ def _build_index_html() -> str:
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>agentSAFE - AI Smart Contract Audits on Ethereum Mainnet</title>
 <script src="https://cdn.tailwindcss.com"></script>
+<script type="module" src="https://unpkg.com/@three-ws/x402-modal/global"></script>
 </head>
 <body class="bg-black text-white min-h-screen">
 <div class="mx-auto max-w-3xl px-6 py-16">
@@ -166,6 +167,9 @@ def _build_index_html() -> str:
       </button>
     </div>
     <div id="flow" class="mt-4 hidden rounded-lg border border-zinc-800 bg-black p-4 text-sm"></div>
+    <p id="wallet-hint" class="mt-2 hidden text-xs text-zinc-500">
+      Your wallet will open to approve the USDC payment on Base.
+    </p>
   </section>
 
   <script>
@@ -179,6 +183,44 @@ def _build_index_html() -> str:
     start.addEventListener("click", async function () {{
       var a = (addr.value || "").trim();
       if (!/^0x[0-9a-fA-F]{{40}}$/.test(a)) {{ show("<p class='text-red-400'>Enter a valid 0x-prefixed contract address.</p>"); return; }}
+      // Prefer the x402 payment modal (wallet connect + EIP-3009 + retry).
+      if (window.X402 && window.X402.pay) {{
+        start.disabled = true; start.textContent = "Opening wallet...";
+        var hint = document.getElementById("wallet-hint");
+        if (hint) hint.classList.remove("hidden");
+        try {{
+          var out = await window.X402.pay({{
+            endpoint: REST,
+            method: "POST",
+            body: {{"address": a}},
+            merchant: "agentSAFE",
+            action: "Smart Contract Audit",
+            autoConnect: true
+          }});
+          var tid = (out && out.result && (out.result.task_id || out.result.taskId)) || "";
+          if (tid) {{
+            show("<p class='text-emerald-400'>Audit dispatched!</p>"
+              + "<p class='mt-1 text-zinc-300'>Task ID: <code class='text-cyan-300'>" + tid + "</code></p>"
+              + "<p class='mt-2 text-xs text-zinc-500'>Reports (free retrieval): "
+              + "<a class='text-cyan-300 hover:underline' href='/api/audit/" + tid + "/report' target='_blank'>HTML</a> &middot; "
+              + "<a class='text-cyan-300 hover:underline' href='/api/audit/" + tid + "/report.json' target='_blank'>JSON</a> &middot; "
+              + "<a class='text-cyan-300 hover:underline' href='/api/audit/" + tid + "/report.md' target='_blank'>Markdown</a> &middot; "
+              + "<a class='text-cyan-300 hover:underline' href='/api/audit/" + tid + "/report.pdf' target='_blank'>PDF</a></p>");
+          }} else if (out && out.result) {{
+            show("<p class='text-emerald-400'>Payment accepted.</p><pre class='mt-2 overflow-x-auto rounded border border-zinc-800 bg-zinc-900 p-3 text-xs text-cyan-300'>"
+              + JSON.stringify(out.result, null, 2) + "</pre>");
+          }} else {{
+            show("<p class='text-yellow-300'>Payment flow finished without a result.</p>");
+          }}
+        }} catch (err) {{
+          if (err && err.code === "cancelled") {{ show("<p class='text-zinc-400'>Payment cancelled.</p>"); }}
+          else {{ show("<p class='text-red-400'>" + ((err && err.message) || String(err)) + "</p>"); }}
+        }} finally {{
+          start.disabled = false; start.textContent = "Pay USDC to audit";
+        }}
+        return;
+      }}
+      // Fallback: no payment modal loaded (e.g. ad-blocker) - show the 402 terms.
       start.disabled = true; start.textContent = "Contacting service...";
       show("<p class='text-zinc-400'>Requesting payment terms from the service...</p>");
       try {{

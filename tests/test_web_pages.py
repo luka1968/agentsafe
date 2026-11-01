@@ -90,6 +90,10 @@ class TestPublicPages:
         assert "PAYMENT-SIGNATURE" in r.text
         # from-$0.50 honest pricing copy (exact amount is server-quoted)
         assert "From $0.50" in r.text
+        # x402 payment modal integration (wallet connect + EIP-3009 + retry)
+        assert "@three-ws/x402-modal" in r.text
+        assert "window.X402.pay" in r.text
+        assert 'endpoint: REST' in r.text
 
     def test_index_inline_script_is_valid_javascript(self):
         """The landing page inline script must be valid JavaScript.

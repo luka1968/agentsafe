@@ -409,7 +409,16 @@ class StarletteRequestAdapter:
         self._body = parsed_body
 
     def get_header(self, name: str) -> str | None:
-        return self._request.headers.get(name)
+        value = self._request.headers.get(name)
+        if value is None:
+            # Some x402 browser wallets/payment modals emit the V1 legacy
+            # "X-PAYMENT" header (case-insensitive) instead of the V2
+            # "PAYMENT-SIGNATURE" header. Accept either spelling so the
+            # landing-page payment flow works with those clients.
+            lowered = name.lower()
+            if lowered == "payment-signature":
+                value = self._request.headers.get("x-payment")
+        return value
 
     def get_method(self) -> str:
         return self._request.method
