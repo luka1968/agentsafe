@@ -185,9 +185,9 @@ def _build_index_html() -> str:
     function b64decode(s) {{ try {{ return JSON.parse(atob(s.replace(/-/g, "+").replace(/_/g, "/"))); }} catch (e) {{ return null; }} }}
     // Chain metadata for the networks this service advertises (EIP-3009).
     var CHAINS = {{
-      "eip155:8453":  {{ name: "Base",     chainId: 8453 }},
-      "eip155:42161": {{ name: "Arbitrum", chainId: 42161 }},
-      "eip155:137":   {{ name: "Polygon",  chainId: 137 }}
+      "eip155:8453":  {{ name: "Base",     chainId: 8453,  rpc: ["https://mainnet.base.org"],                      symbol: "ETH",  decimals: 18 }},
+      "eip155:42161": {{ name: "Arbitrum", chainId: 42161, rpc: ["https://arb1.arbitrum.io/rpc"],                  symbol: "ETH",  decimals: 18 }},
+      "eip155:137":   {{ name: "Polygon",  chainId: 137,   rpc: ["https://polygon-rpc.com"],                        symbol: "POL",  decimals: 18 }}
     }};
     function fmtTask(tid) {{
       return "<p class='text-emerald-400'>Audit dispatched!</p>"
@@ -216,8 +216,25 @@ def _build_index_html() -> str:
         var cur = await eth.request({{ method: "eth_chainId" }});
         var want = "0x" + meta.chainId.toString(16);
         if (String(cur).toLowerCase() !== want.toLowerCase()) {{
-          try {{ await eth.request({{ method: "wallet_switchEthereumChain", params: [{{ chainId: want }}] }}); }}
-          catch (sw) {{ throw new Error("Please switch your wallet to " + meta.name + " and retry."); }}
+          try {{
+            await eth.request({{ method: "wallet_switchEthereumChain", params: [{{ chainId: want }}] }});
+          }} catch (sw) {{
+            if (sw && sw.code === 4902 && meta.rpc) {{
+              // Chain not in wallet yet: offer to add it (MetaMask pops an
+              // "Add network" confirmation).
+              await eth.request({{
+                method: "wallet_addEthereumChain",
+                params: [{{
+                  chainId: want,
+                  chainName: meta.name,
+                  rpcUrls: meta.rpc,
+                  nativeCurrency: {{ name: meta.symbol, symbol: meta.symbol, decimals: meta.decimals }}
+                }}]
+              }});
+            }} else {{
+              throw new Error("Please switch your wallet to " + meta.name + " and retry.");
+            }}
+          }}
         }}
       }}
       var validAfter = 0;
@@ -325,19 +342,19 @@ def _build_index_html() -> str:
         var accs = (terms && terms.accepts && terms.accepts.length) ? terms.accepts : [];
         if (!accs.length) {{ show("<p class='text-red-400'>Service did not return payment terms.</p>"); return; }}
         var lines = [];
-        lines.push("<p class='text-yellow-300'>Payment required to start this audit. Choose a chain:</p>");
+        lines.push("<p class='text-yellow-300'>Payment required to start this audit. Pick the network you want to pay on:</p>");
         accs.forEach(function (acc, i) {{
           var meta = CHAINS[acc.network] || {{ name: acc.network }};
           var price = (Number(acc.amount) / 1e6).toFixed(2);
           var payTo = acc.payTo || "";
           lines.push("<button data-chain='" + i + "' class='chain-opt mt-2 w-full rounded-lg border border-zinc-700 bg-zinc-900 px-4 py-3 text-left text-sm hover:border-cyan-400'>"
-            + "<span class='font-semibold text-cyan-300'>" + esc(meta.name) + "</span>"
+            + "<span class='font-semibold text-cyan-300'>Pay with " + esc(meta.name) + "</span>"
             + " <span class='text-zinc-300'>" + esc(acc.network) + "</span>"
             + " &mdash; <b>" + price + " USDC</b>"
             + "<br><span class='text-xs text-zinc-500'>pay to: <code class='break-all'>" + esc(payTo) + "</code></span>"
             + "</button>");
         }});
-        lines.push("<p class='mt-3 text-xs text-zinc-500'>Your wallet will open to approve the payment. "
+        lines.push("<p class='mt-3 text-xs text-zinc-500'>Your wallet will open and switch to that network, then ask you to approve the payment. "
           + "Prefer the terminal? Run the curl command below with an x402-enabled client:</p>");
         var curlCmd = "curl -X POST " + window.location.origin + REST
           + " -H 'content-type: application/json' -d '" + JSON.stringify({{"address": a}}) + "'";
@@ -350,6 +367,7 @@ def _build_index_html() -> str:
             var accept = accs[idx];
             if (!accept) return;
             btn.disabled = true;
+            var origText = btn.innerHTML;
             btn.textContent = "Opening wallet...";
             if (hint) hint.classList.remove("hidden");
             try {{
@@ -360,7 +378,7 @@ def _build_index_html() -> str:
                 + esc(JSON.stringify(out, null, 2)) + "</pre>");
             }} catch (err) {{
               btn.disabled = false;
-              btn.textContent = "Retry";
+              btn.innerHTML = origText;
               show("<p class='text-red-400'>" + esc((err && err.message) || String(err)) + "</p>");
             }} finally {{
               if (hint) hint.classList.add("hidden");
