@@ -92,6 +92,7 @@ class X402PaymentAdapter:
         price: str = "$0.01",
         asset: str = "",
         max_timeout_seconds: int = 300,
+        extra_networks: dict[str, dict[str, str]] | None = None,
     ) -> None:
         self.enabled = enabled
         self.network = network
@@ -99,6 +100,16 @@ class X402PaymentAdapter:
         self._asset = asset.strip()
         self._max_timeout_seconds = max_timeout_seconds
         self._base_price = price
+        # Extra chains: CAIP-2 network -> {asset, pay_to}. The primary
+        # network (X402_NETWORK) always comes first in the advertised
+        # accepts list; extras extend it so x402 clients can pay on any of
+        # the listed chains.
+        self._extra_networks = {
+            net: {"asset": str(t.get("asset", "")).strip(),
+                  "pay_to": str(t.get("pay_to", "")).strip()}
+            for net, t in (extra_networks or {}).items()
+            if t.get("asset") and t.get("pay_to")
+        }
         if not enabled:
             logger.info("payments DISABLED (dev mode); paid gating is inactive")
             return
@@ -129,45 +140,63 @@ class X402PaymentAdapter:
         self._x402 = x402
         facilitator = HTTPFacilitatorClient(FacilitatorConfig(url=facilitator_url))
         self._server = x402ResourceServer(facilitator)
+        # Register the primary chain plus every extra chain with the same
+        # exact EIP-3009 scheme (the SDK picks the scheme server per
+        # accepted network at verify/settle time).
         self._server.register(network, ExactEvmServerScheme())
+        for extra_net in self._extra_networks:
+            self._server.register(extra_net, ExactEvmServerScheme())
         # Sync network call (facilitator /supported) - acceptable at startup.
         self._server.initialize()
 
         self._accepts = self._build_requirements(price)
         self._replay_ledger: set[str] = set()
         logger.info(
-            "payments ENABLED (x402==%s, network=%s, pay_to=%s, base price=%s, asset=%s)",
+            "payments ENABLED (x402==%s, primary=%s, extra_chains=%s, pay_to=%s, "
+            "base price=%s, accepts=%d)",
             x402.__version__,
             network,
+            sorted(self._extra_networks),
             pay_to,
             price,
-            self._accepts[0].asset,
+            len(self._accepts),
         )
 
     def _build_requirements(self, price: str) -> list[Any]:
         """Advertised payment requirements for `price` (no network I/O;
-        uses the supported-responses cache filled by initialize())."""
+        uses the supported-responses cache filled by initialize()).
+
+        The primary chain's requirements come first; extra chains follow in
+        X402_NETWORKS_JSON order. Each entry carries its own asset/pay_to so
+        x402 clients can choose which chain to pay on."""
         from x402.schemas import ResourceConfig
 
-        extra: dict[str, Any] = {}
-        if self._asset:
-            extra["asset"] = self._asset
-        requirements = self._server.build_payment_requirements(
-            ResourceConfig(
-                scheme="exact",
-                network=self.network,
-                pay_to=self.pay_to,
-                price=price,
-                max_timeout_seconds=self._max_timeout_seconds,
-                extra=extra or None,
+        def build_one(net: str, pay_to: str, asset: str) -> list[Any]:
+            extra: dict[str, Any] = {}
+            if asset:
+                extra["asset"] = asset
+            reqs = self._server.build_payment_requirements(
+                ResourceConfig(
+                    scheme="exact",
+                    network=net,
+                    pay_to=pay_to,
+                    price=price,
+                    max_timeout_seconds=self._max_timeout_seconds,
+                    extra=extra or None,
+                )
             )
-        )
-        if not requirements:  # pragma: no cover - facilitator contract
-            raise X402NotIntegratedError(
-                f"facilitator returned no payment requirements for network "
-                f"{self.network!r} at price {price!r}"
-            )
-        return requirements
+            if not reqs:  # pragma: no cover - facilitator contract
+                raise X402NotIntegratedError(
+                    f"facilitator returned no payment requirements for network "
+                    f"{net!r} at price {price!r}"
+                )
+            return reqs
+
+        all_reqs: list[Any] = []
+        all_reqs.extend(build_one(self.network, self.pay_to, self._asset))
+        for net, terms in self._extra_networks.items():
+            all_reqs.extend(build_one(net, terms["pay_to"], terms["asset"]))
+        return all_reqs
 
     def requirements_for_price(self, price: str) -> list[Any]:
         """Advertised requirements for a dynamic (tiered) price."""
@@ -215,6 +244,11 @@ class X402PaymentAdapter:
     def accepts(self) -> list[Any]:
         """Advertised payment requirements (first entry is the active one)."""
         return list(self._accepts)
+
+    @property
+    def extra_networks(self) -> dict[str, dict[str, str]]:
+        """Extra chains -> {asset, pay_to} (excluding the primary network)."""
+        return dict(self._extra_networks)
 
     # ------------------------------------------------------------ wire format
 

@@ -87,13 +87,15 @@ class TestPublicPages:
         assert 'fetch(REST' in r.text
         assert '"/api/audit"' in r.text
         assert "PAYMENT-REQUIRED" in r.text
-        assert "PAYMENT-SIGNATURE" in r.text
+        assert "X-PAYMENT" in r.text
         # from-$0.50 honest pricing copy (exact amount is server-quoted)
         assert "From $0.50" in r.text
-        # x402 payment modal integration (wallet connect + EIP-3009 + retry)
-        assert "@three-ws/x402-modal" in r.text
-        assert "window.X402.pay" in r.text
-        assert 'endpoint: REST' in r.text
+        # multi-chain x402 payment flow (wallet connect + EIP-3009 + retry)
+        assert "@three-ws/x402-modal" not in r.text
+        assert "payOnChain" in r.text
+        assert "X-PAYMENT" in r.text
+        assert "chain-opt" in r.text
+        assert "eth_signTypedData_v4" in r.text
 
     def test_index_inline_script_is_valid_javascript(self):
         """The landing page inline script must be valid JavaScript.
@@ -101,66 +103,57 @@ class TestPublicPages:
         Regression guard: the curl-command snippet originally emitted single
         backslash+quote (`\"`), which JS parses as an escaped quote inside an
         unterminated string -> SyntaxError -> the "Pay USDC to audit" click
-        handler never attached (silent no-op for visitors). We lex the inline
-        script the way a JS parser would (strings, escapes, comments, regex
-        literals) and assert it ends cleanly with no unterminated string and
-        balanced braces/parens.
+        handler never attached (silent no-op for visitors).
+
+        An authoritative parse via Node's own JS engine is the only reliable
+        check: a hand-rolled lexer cannot disambiguate regex literals (the
+        esc() / b64 helpers use `replace(/.../g)` and address validation uses
+        `/^0x...$/`) from comments, so we let V8's parser decide.
         """
+        import os
+        import subprocess
+        import tempfile
+
         from agentsafe.web.pages import INDEX_HTML
 
         m = re.search(r"<script>([\s\S]*?)</script>", INDEX_HTML)
         assert m, "inline script block missing"
         js = m.group(1)
         assert "addEventListener" in js
-        # curl continuation backslashes must survive to the browser as \\ + quote:
-        # the JS source shows  \\"  (two backslashes then a quote) at line end.
-        curl_block = js[js.index("curl -X POST") :]
-        assert '\\\"' in curl_block, "curl continuation backslash lost its escape"
+        # The curl snippet must build clean JSON via JSON.stringify (no raw
+        # backslash-escaped quotes that break the JS string literal).
+        assert "JSON.stringify" in js
+        assert "payOnChain" in js
+        assert "eth_signTypedData_v4" in js
 
-        # minimal JS lexer: walk the script tracking string/comment state and
-        # brace/paren balance. A syntax error (unterminated string) surfaces as
-        # a state that never returns to code at EOF or a quote-runaway.
-        state = "code"  # code | dq | sq | line-comment | block-comment
-        depth = 0
-        i = 0
-        n = len(js)
-        max_str_len = 0
-        while i < n:
-            c = js[i]
-            if state == "code":
-                if c in "{":
-                    depth += 1
-                elif c in "}":
-                    depth -= 1
-                elif c in ('"', "'"):
-                    state = "dq" if c == '"' else "sq"
-                    max_str_len = 0
-                elif c == "/" and i + 1 < n and js[i + 1] == "/":
-                    state = "line-comment"
-                    i += 1
-                elif c == "/" and i + 1 < n and js[i + 1] == "*":
-                    state = "block-comment"
-                    i += 1
-            elif state == "dq":
-                if c == "\\":
-                    i += 1  # skip escaped char
-                elif c == '"':
-                    state = "code"
-            elif state == "sq":
-                if c == "\\":
-                    i += 1
-                elif c == "'":
-                    state = "code"
-            elif state == "line-comment":
-                if c in "\r\n":
-                    state = "code"
-            elif state == "block-comment":
-                if c == "*" and i + 1 < n and js[i + 1] == "/":
-                    state = "code"
-                    i += 1
-            i += 1
-        assert state == "code", f"unterminated JS construct at EOF (state={state})"
-        assert depth == 0, f"unbalanced braces: depth={depth}"
+        node = os.environ.get("NODE", "node")
+        # Write the temp file into the CWD so Windows-hosted node.exe (which
+        # cannot read WSL's /tmp) can see it; map /mnt/d -> D:\\ style path.
+        cwd = os.getcwd()
+        tmp_path = os.path.join(cwd, f"._jscheck_{os.getpid()}.js")
+        try:
+            with open(tmp_path, "w", encoding="utf-8") as fh:
+                fh.write(js)
+            if tmp_path.startswith("/mnt/d/") and "node.exe" in node:
+                win_path = "D:\\" + tmp_path[len("/mnt/d/"):].replace("/", "\\")
+            else:
+                win_path = tmp_path
+            proc = subprocess.run(
+                [node, "--check", win_path],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+            pytest.skip(f"node unavailable for JS parse guard: {exc}")
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+        assert proc.returncode == 0, (
+            f"inline script failed JS parse:\n{proc.stderr.strip()}"
+        )
 
     @pytest.mark.parametrize(
         ("path", "marker", "has_table"),

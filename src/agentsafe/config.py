@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any, ClassVar
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -224,6 +225,13 @@ class Settings(BaseSettings):
     X402_ASSET: str = ""
     X402_MAX_TIMEOUT_SECONDS: int = Field(default=300, ge=1, le=3600)
     X402_ALLOW_MAINNET: bool = False
+    # Optional multi-chain payment support (CAIP-2 -> per-chain terms).
+    # JSON dict: {"eip155:42161": {"asset": "0x...", "pay_to": "0x..."},
+    #             "eip155:137":   {"asset": "0x...", "pay_to": "0x..."}}
+    # When set, the server advertises an accepts list with one entry per
+    # chain so x402 clients can pay on any listed network. X402_NETWORK +
+    # X402_ASSET + X402_PAY_TO remain the primary (first) entry.
+    X402_NETWORKS_JSON: str = ""
 
     # Known x402 networks: testnet first; mainnet is opt-in only.
     X402_NETWORK_TESTNET: ClassVar[str] = "eip155:84532"  # Base Sepolia
@@ -313,6 +321,30 @@ class Settings(BaseSettings):
                 "LLM_PROVIDERS_JSON")
         return next((p for p in provs if p.preferred), provs[0])
 
+    @property
+    def multichain_networks(self) -> dict[str, dict[str, str]]:
+        """Parsed X402_NETWORKS_JSON: extra networks -> {asset, pay_to}.
+
+        Returns an empty dict when the setting is absent/blank. The primary
+        network (X402_NETWORK) is intentionally excluded here; the adapter
+        builds the accepts list as primary + these extras.
+        """
+        raw = self.X402_NETWORKS_JSON.strip()
+        if not raw:
+            return {}
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            return {}
+        out: dict[str, dict[str, str]] = {}
+        for net, terms in data.items():
+            if not isinstance(net, str) or not isinstance(terms, dict):
+                continue
+            asset = str(terms.get("asset", "")).strip()
+            pay_to = str(terms.get("pay_to", "")).strip()
+            out[net] = {"asset": asset, "pay_to": pay_to}
+        return out
+
     def secrets_report(self) -> dict[str, str]:
         """For startup logs: show presence of secrets, never their values."""
         return {
@@ -394,6 +426,34 @@ def validate_runtime_settings(
             errors.append("X402_PRICE must be a USD price string like '$0.01'")
         if not settings.X402_FACILITATOR_URL.strip():
             errors.append("PAYMENTS_ENABLED=true requires X402_FACILITATOR_URL")
+        # Optional multi-chain payment terms.
+        if settings.X402_NETWORKS_JSON.strip():
+            try:
+                mc = json.loads(settings.X402_NETWORKS_JSON)
+            except json.JSONDecodeError as exc:
+                errors.append(f"X402_NETWORKS_JSON is not valid JSON: {exc}")
+            else:
+                if not isinstance(mc, dict) or not mc:
+                    errors.append("X402_NETWORKS_JSON must be a non-empty JSON object")
+                else:
+                    for net, terms in mc.items():
+                        if not isinstance(net, str) or not net.startswith("eip155:"):
+                            errors.append(f"X402_NETWORKS_JSON key {net!r} must be an eip155: CAIP-2 network")
+                            continue
+                        if net == settings.X402_NETWORK.strip():
+                            errors.append(
+                                f"X402_NETWORKS_JSON key {net!r} duplicates X402_NETWORK; "
+                                "put extra networks only"
+                            )
+                        if not isinstance(terms, dict):
+                            errors.append(f"X402_NETWORKS_JSON[{net!r}] must be an object")
+                            continue
+                        asset = str(terms.get("asset", "")).strip()
+                        if not re.match(r"^0x[0-9a-fA-F]{40}$", asset):
+                            errors.append(f"X402_NETWORKS_JSON[{net!r}].asset must be a valid EVM address")
+                        pay_to = str(terms.get("pay_to", "")).strip()
+                        if not re.match(r"^0x[0-9a-fA-F]{40}$", pay_to):
+                            errors.append(f"X402_NETWORKS_JSON[{net!r}].pay_to must be a valid EVM address")
 
     if errors:
         raise SettingsError("Invalid configuration:\n- " + "\n- ".join(errors))

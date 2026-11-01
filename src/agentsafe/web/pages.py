@@ -129,7 +129,6 @@ def _build_index_html() -> str:
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>agentSAFE - AI Smart Contract Audits on Ethereum Mainnet</title>
 <script src="https://cdn.tailwindcss.com"></script>
-<script type="module" src="https://unpkg.com/@three-ws/x402-modal/global"></script>
 </head>
 <body class="bg-black text-white min-h-screen">
 <div class="mx-auto max-w-3xl px-6 py-16">
@@ -152,9 +151,10 @@ def _build_index_html() -> str:
   <section class="mb-12 rounded-xl border border-zinc-800 bg-zinc-900/50 p-6">
     <h2 class="mb-1 text-xl font-semibold">Start an audit</h2>
     <p class="mb-4 text-sm text-zinc-400">Enter a verified Ethereum Mainnet
-    contract address and pay in USDC on Base via x402.
-    <span class="text-zinc-500">From $0.50 &mdash; the exact price is quoted
-    by the service before payment is requested.</span></p>
+    contract address and pay in USDC via x402 on Base, Arbitrum,
+    Polygon or another supported chain. <span class="text-zinc-500">From $0.50
+    &mdash; the exact price is quoted by the service before payment is
+    requested.</span></p>
     <div class="flex flex-col gap-3 sm:flex-row">
       <input id="addr" type="text" spellcheck="false" autocomplete="off"
         placeholder="0x..."
@@ -168,7 +168,7 @@ def _build_index_html() -> str:
     </div>
     <div id="flow" class="mt-4 hidden rounded-lg border border-zinc-800 bg-black p-4 text-sm"></div>
     <p id="wallet-hint" class="mt-2 hidden text-xs text-zinc-500">
-      Your wallet will open to approve the USDC payment on Base.
+      Your wallet will open to approve the USDC payment on the selected chain.
     </p>
   </section>
 
@@ -178,96 +178,197 @@ def _build_index_html() -> str:
     var addr = document.getElementById("addr");
     var start = document.getElementById("start");
     var flow = document.getElementById("flow");
+    var hint = document.getElementById("wallet-hint");
     function show(html) {{ flow.innerHTML = html; flow.classList.remove("hidden"); }}
+    function esc(s) {{ return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;"); }}
+    function b64encode(obj) {{ return btoa(unescape(encodeURIComponent(JSON.stringify(obj)))); }}
     function b64decode(s) {{ try {{ return JSON.parse(atob(s.replace(/-/g, "+").replace(/_/g, "/"))); }} catch (e) {{ return null; }} }}
+    // Chain metadata for the networks this service advertises (EIP-3009).
+    var CHAINS = {{
+      "eip155:8453":  {{ name: "Base",     chainId: 8453 }},
+      "eip155:42161": {{ name: "Arbitrum", chainId: 42161 }},
+      "eip155:137":   {{ name: "Polygon",  chainId: 137 }}
+    }};
+    function fmtTask(tid) {{
+      return "<p class='text-emerald-400'>Audit dispatched!</p>"
+        + "<p class='mt-1 text-zinc-300'>Task ID: <code class='text-cyan-300'>" + esc(tid) + "</code></p>"
+        + "<p class='mt-2 text-xs text-zinc-500'>Reports (free retrieval): "
+        + "<a class='text-cyan-300 hover:underline' href='/api/audit/" + esc(tid) + "/report' target='_blank'>HTML</a> &middot; "
+        + "<a class='text-cyan-300 hover:underline' href='/api/audit/" + esc(tid) + "/report.json' target='_blank'>JSON</a> &middot; "
+        + "<a class='text-cyan-300 hover:underline' href='/api/audit/" + esc(tid) + "/report.md' target='_blank'>Markdown</a> &middot; "
+        + "<a class='text-cyan-300 hover:underline' href='/api/audit/" + esc(tid) + "/report.pdf' target='_blank'>PDF</a></p>";
+    }}
+    function randomHex(len) {{
+      var out = "";
+      for (var i = 0; i < len; i++) {{ out += "0123456789abcdef".charAt(Math.floor(Math.random() * 16)); }}
+      return out;
+    }}
+    // Sign an EIP-3009 transferWithAuthorization with the user's wallet and
+    // retry the audit request with the x402 payment header (X-PAYMENT).
+    async function payOnChain(a, accept) {{
+      var meta = CHAINS[accept.network] || {{ name: accept.network, chainId: null }};
+      if (!window.ethereum) throw new Error("No wallet found. Install MetaMask or another web3 wallet, then retry.");
+      var eth = window.ethereum;
+      var accounts = await eth.request({{ method: "eth_requestAccounts" }});
+      var from = accounts && accounts[0];
+      if (!from) throw new Error("Wallet connection rejected.");
+      if (meta.chainId) {{
+        var cur = await eth.request({{ method: "eth_chainId" }});
+        var want = "0x" + meta.chainId.toString(16);
+        if (String(cur).toLowerCase() !== want.toLowerCase()) {{
+          try {{ await eth.request({{ method: "wallet_switchEthereumChain", params: [{{ chainId: want }}] }}); }}
+          catch (sw) {{ throw new Error("Please switch your wallet to " + meta.name + " and retry."); }}
+        }}
+      }}
+      var validAfter = 0;
+      var validBefore = Math.floor(Date.now() / 1000) + (accept.maxTimeoutSeconds || 300);
+      var nonce = "0x" + randomHex(32);
+      var domain = {{
+        name: "USD Coin",
+        version: "2",
+        chainId: meta.chainId,
+        verifyingContract: accept.asset
+      }};
+      var types = {{
+        EIP712Domain: [
+          {{ name: "name", type: "string" }},
+          {{ name: "version", type: "string" }},
+          {{ name: "chainId", type: "uint256" }},
+          {{ name: "verifyingContract", type: "address" }}
+        ],
+        TransferWithAuthorization: [
+          {{ name: "from", type: "address" }},
+          {{ name: "to", type: "address" }},
+          {{ name: "value", type: "uint256" }},
+          {{ name: "validAfter", type: "uint256" }},
+          {{ name: "validBefore", type: "uint256" }},
+          {{ name: "nonce", type: "bytes32" }}
+        ]
+      }};
+      var message = {{
+        from: from,
+        to: accept.payTo,
+        value: accept.amount,
+        validAfter: validAfter,
+        validBefore: validBefore,
+        nonce: nonce
+      }};
+      var typedData = {{
+        primaryType: "TransferWithAuthorization",
+        types: types,
+        domain: domain,
+        message: message
+      }};
+      var signature = await eth.request({{
+        method: "eth_signTypedData_v4",
+        params: [from, JSON.stringify(typedData)]
+      }});
+      var payload = {{
+        x402Version: 2,
+        scheme: "exact",
+        network: accept.network,
+        resource: {{ url: window.location.origin + REST, mimeType: "application/json" }},
+        accepted: accept,
+        payload: {{
+          signature: signature,
+          authorization: {{
+            from: from,
+            to: accept.payTo,
+            value: String(accept.amount),
+            validAfter: String(validAfter),
+            validBefore: String(validBefore),
+            nonce: nonce
+          }}
+        }}
+      }};
+      var res = await fetch(REST, {{
+        method: "POST",
+        headers: {{
+          "content-type": "application/json",
+          "X-PAYMENT": b64encode(payload)
+        }},
+        body: JSON.stringify({{ "address": a }})
+      }});
+      var text = await res.text();
+      var data = null;
+      try {{ data = JSON.parse(text); }} catch (e) {{ data = {{}}; }}
+      if (!res.ok) {{
+        var msg = (data && (data.error_description || data.error)) || ("HTTP " + res.status);
+        if (res.status === 402) msg = "Payment rejected: " + msg;
+        throw new Error(msg);
+      }}
+      return data;
+    }}
     start.addEventListener("click", async function () {{
       var a = (addr.value || "").trim();
       if (!/^0x[0-9a-fA-F]{{40}}$/.test(a)) {{ show("<p class='text-red-400'>Enter a valid 0x-prefixed contract address.</p>"); return; }}
-      // Prefer the x402 payment modal (wallet connect + EIP-3009 + retry).
-      if (window.X402 && window.X402.pay) {{
-        start.disabled = true; start.textContent = "Opening wallet...";
-        var hint = document.getElementById("wallet-hint");
-        if (hint) hint.classList.remove("hidden");
-        try {{
-          var out = await window.X402.pay({{
-            endpoint: REST,
-            method: "POST",
-            body: {{"address": a}},
-            merchant: "agentSAFE",
-            action: "Smart Contract Audit",
-            autoConnect: true
-          }});
-          var tid = (out && out.result && (out.result.task_id || out.result.taskId)) || "";
-          if (tid) {{
-            show("<p class='text-emerald-400'>Audit dispatched!</p>"
-              + "<p class='mt-1 text-zinc-300'>Task ID: <code class='text-cyan-300'>" + tid + "</code></p>"
-              + "<p class='mt-2 text-xs text-zinc-500'>Reports (free retrieval): "
-              + "<a class='text-cyan-300 hover:underline' href='/api/audit/" + tid + "/report' target='_blank'>HTML</a> &middot; "
-              + "<a class='text-cyan-300 hover:underline' href='/api/audit/" + tid + "/report.json' target='_blank'>JSON</a> &middot; "
-              + "<a class='text-cyan-300 hover:underline' href='/api/audit/" + tid + "/report.md' target='_blank'>Markdown</a> &middot; "
-              + "<a class='text-cyan-300 hover:underline' href='/api/audit/" + tid + "/report.pdf' target='_blank'>PDF</a></p>");
-          }} else if (out && out.result) {{
-            show("<p class='text-emerald-400'>Payment accepted.</p><pre class='mt-2 overflow-x-auto rounded border border-zinc-800 bg-zinc-900 p-3 text-xs text-cyan-300'>"
-              + JSON.stringify(out.result, null, 2) + "</pre>");
-          }} else {{
-            show("<p class='text-yellow-300'>Payment flow finished without a result.</p>");
-          }}
-        }} catch (err) {{
-          if (err && err.code === "cancelled") {{ show("<p class='text-zinc-400'>Payment cancelled.</p>"); }}
-          else {{ show("<p class='text-red-400'>" + ((err && err.message) || String(err)) + "</p>"); }}
-        }} finally {{
-          start.disabled = false; start.textContent = "Pay USDC to audit";
-        }}
-        return;
-      }}
-      // Fallback: no payment modal loaded (e.g. ad-blocker) - show the 402 terms.
       start.disabled = true; start.textContent = "Contacting service...";
       show("<p class='text-zinc-400'>Requesting payment terms from the service...</p>");
       try {{
         var res = await fetch(REST, {{
           method: "POST",
           headers: {{"content-type": "application/json"}},
-          body: JSON.stringify({{"address": a}})
+          body: JSON.stringify({{ "address": a }})
         }});
         if (res.status === 202) {{
           var d = await res.json().catch(function () {{ return {{}}; }});
-          var tid = d.task_id || "";
-          show("<p class='text-emerald-400'>Audit dispatched!</p>"
-            + "<p class='mt-1 text-zinc-300'>Task ID: <code class='text-cyan-300'>" + tid + "</code></p>"
-            + "<p class='mt-2 text-xs text-zinc-500'>Reports (free retrieval): "
-            + "<a class='text-cyan-300 hover:underline' href='/api/audit/" + tid + "/report' target='_blank'>HTML</a> &middot; "
-            + "<a class='text-cyan-300 hover:underline' href='/api/audit/" + tid + "/report.json' target='_blank'>JSON</a> &middot; "
-            + "<a class='text-cyan-300 hover:underline' href='/api/audit/" + tid + "/report.md' target='_blank'>Markdown</a> &middot; "
-            + "<a class='text-cyan-300 hover:underline' href='/api/audit/" + tid + "/report.pdf' target='_blank'>PDF</a></p>");
+          show(fmtTask(d.task_id || ""));
           return;
         }}
-        if (res.status === 402) {{
-          var req = res.headers.get("PAYMENT-REQUIRED") || "";
-          var terms = req ? b64decode(req) : null;
-          var acc = (terms && terms.accepts && terms.accepts[0]) ? terms.accepts[0] : null;
-          var price = acc ? (acc.amount / 1e6) : null;
-          var payTo = acc ? (acc.payTo || "") : "";
-          var net = acc ? (acc.network || "") : "";
-          var lines = [];
-          lines.push("<p class='text-yellow-300'>Payment required to start this audit:</p>");
-          if (price !== null) lines.push("<p class='mt-1 text-zinc-200'>Amount: <b>" + price.toFixed(2) + " USDC</b></p>");
-          if (payTo) lines.push("<p class='text-zinc-200'>Pay to: <code class='text-cyan-300 break-all'>" + payTo + "</code></p>");
-          if (net) lines.push("<p class='text-zinc-200'>Network: <code>" + net + "</code></p>");
-          lines.push("<p class='mt-3 text-xs text-zinc-500'>Pay with a wallet that supports x402 (e.g. PayAI). "
-            + "Or copy the curl command below and run it locally with your x402-enabled client:</p>");
-          lines.push("<pre class='mt-2 overflow-x-auto rounded border border-zinc-800 bg-zinc-900 p-3 text-xs text-cyan-300'><code>curl -X POST " + window.location.origin + REST + " \\\\"
-            + "  -H 'content-type: application/json' \\\\"
-            + "  -d '{{\\"address\\":\\"" + a + "\\"}}'</code></pre>");
-          lines.push("<p class='mt-2 text-xs text-zinc-500'>On HTTP 402 the server returns the machine-readable "
-            + "<code>PAYMENT-REQUIRED</code> header; sign the quoted USDC transfer with your wallet "
-            + "and resend with the <code>PAYMENT-SIGNATURE</code> header.</p>");
-          show(lines.join(""));
+        if (res.status !== 402) {{
+          var e = await res.json().catch(function () {{ return {{}}; }});
+          show("<p class='text-red-400'>" + esc(e.error || ("HTTP " + res.status)) + "</p>");
           return;
         }}
-        var e = await res.json().catch(function () {{ return {{}}; }});
-        show("<p class='text-red-400'>" + (e.error || ("HTTP " + res.status)) + "</p>");
+        var req = res.headers.get("PAYMENT-REQUIRED") || "";
+        var terms = req ? b64decode(req) : null;
+        var accs = (terms && terms.accepts && terms.accepts.length) ? terms.accepts : [];
+        if (!accs.length) {{ show("<p class='text-red-400'>Service did not return payment terms.</p>"); return; }}
+        var lines = [];
+        lines.push("<p class='text-yellow-300'>Payment required to start this audit. Choose a chain:</p>");
+        accs.forEach(function (acc, i) {{
+          var meta = CHAINS[acc.network] || {{ name: acc.network }};
+          var price = (Number(acc.amount) / 1e6).toFixed(2);
+          var payTo = acc.payTo || "";
+          lines.push("<button data-chain='" + i + "' class='chain-opt mt-2 w-full rounded-lg border border-zinc-700 bg-zinc-900 px-4 py-3 text-left text-sm hover:border-cyan-400'>"
+            + "<span class='font-semibold text-cyan-300'>" + esc(meta.name) + "</span>"
+            + " <span class='text-zinc-300'>" + esc(acc.network) + "</span>"
+            + " &mdash; <b>" + price + " USDC</b>"
+            + "<br><span class='text-xs text-zinc-500'>pay to: <code class='break-all'>" + esc(payTo) + "</code></span>"
+            + "</button>");
+        }});
+        lines.push("<p class='mt-3 text-xs text-zinc-500'>Your wallet will open to approve the payment. "
+          + "Prefer the terminal? Run the curl command below with an x402-enabled client:</p>");
+        var curlCmd = "curl -X POST " + window.location.origin + REST
+          + " -H 'content-type: application/json' -d '" + JSON.stringify({{"address": a}}) + "'";
+        lines.push("<pre class='mt-2 overflow-x-auto rounded border border-zinc-800 bg-zinc-900 p-3 text-xs text-cyan-300'><code>"
+          + esc(curlCmd) + "</code></pre>");
+        show(lines.join(""));
+        flow.querySelectorAll("button.chain-opt").forEach(function (btn) {{
+          btn.addEventListener("click", async function () {{
+            var idx = Number(btn.getAttribute("data-chain"));
+            var accept = accs[idx];
+            if (!accept) return;
+            btn.disabled = true;
+            btn.textContent = "Opening wallet...";
+            if (hint) hint.classList.remove("hidden");
+            try {{
+              var out = await payOnChain(a, accept);
+              var tid = (out && (out.task_id || out.taskId)) || "";
+              if (tid) show(fmtTask(tid));
+              else show("<p class='text-emerald-400'>Payment accepted.</p><pre class='mt-2 overflow-x-auto rounded border border-zinc-800 bg-zinc-900 p-3 text-xs text-cyan-300'>"
+                + esc(JSON.stringify(out, null, 2)) + "</pre>");
+            }} catch (err) {{
+              btn.disabled = false;
+              btn.textContent = "Retry";
+              show("<p class='text-red-400'>" + esc((err && err.message) || String(err)) + "</p>");
+            }} finally {{
+              if (hint) hint.classList.add("hidden");
+            }}
+          }});
+        }});
       }} catch (err) {{
-        show("<p class='text-red-400'>Request failed: " + err.message + "</p>");
+        show("<p class='text-red-400'>Request failed: " + esc((err && err.message) || String(err)) + "</p>");
       }} finally {{
         start.disabled = false; start.textContent = "Pay USDC to audit";
       }}

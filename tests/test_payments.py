@@ -197,6 +197,65 @@ class TestAdapterConstruction:
         tier = adapter.requirements_for_price("$25.00")
         assert tier[0].amount == "25000000"  # $25.00 at 6 decimals
 
+    @respx.mock
+    def test_multichain_adapter_advertises_all_chains(self):
+        routes = _mock_facilitator()
+        # Include Arbitrum + Polygon in the facilitator-supported kinds so the
+        # extra chains can build requirements.
+        routes["supported"].mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "kinds": [
+                        {"x402Version": 2, "scheme": "exact", "network": "eip155:84532", "extra": None},
+                        {"x402Version": 2, "scheme": "exact", "network": "eip155:42161", "extra": None},
+                        {"x402Version": 2, "scheme": "exact", "network": "eip155:137", "extra": None},
+                    ],
+                    "extensions": [],
+                },
+            )
+        )
+        adapter = X402PaymentAdapter(
+            enabled=True,
+            sdk_version="2.25.0",
+            network="eip155:84532",
+            pay_to="0x" + "ef" * 20,
+            facilitator_url=FAC,
+            price="$0.01",
+            extra_networks={
+                "eip155:42161": {
+                    "asset": "0x" + "11" * 20,
+                    "pay_to": "0x" + "22" * 20,
+                },
+                "eip155:137": {
+                    "asset": "0x" + "33" * 20,
+                    "pay_to": "0x" + "44" * 20,
+                },
+            },
+        )
+        assert [a.network for a in adapter.accepts] == [
+            "eip155:84532", "eip155:42161", "eip155:137"
+        ]
+        # SDK's default_assets know the canonical USDC contract for known
+        # EVM chains; the configured asset matches that canonical address.
+        assert adapter.accepts[1].network == "eip155:42161"
+        assert adapter.accepts[1].pay_to == "0x" + "22" * 20
+        assert adapter.accepts[2].network == "eip155:137"
+        assert adapter.accepts[2].pay_to == "0x" + "44" * 20
+        # canonical USDC addresses come from the SDK's default_assets
+        assert adapter.accepts[1].asset == "0xaf88d065e77c8cC2239327C5EDb3A432268e5831"
+        assert adapter.accepts[2].asset == "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359"
+        # every chain gets the same amount for the same price
+        assert {a.amount for a in adapter.accepts} == {"10000"}
+        # tiered pricing applies to every chain too
+        tier = adapter.requirements_for_price("$2.50")
+        assert [a.network for a in tier] == ["eip155:84532", "eip155:42161", "eip155:137"]
+        assert {a.amount for a in tier} == {"2500000"}
+        assert adapter.extra_networks == {
+            "eip155:42161": {"asset": "0x" + "11" * 20, "pay_to": "0x" + "22" * 20},
+            "eip155:137": {"asset": "0x" + "33" * 20, "pay_to": "0x" + "44" * 20},
+        }
+
 
 class TestPaymentFlow:
     @respx.mock

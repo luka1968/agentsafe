@@ -180,6 +180,7 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
         price=settings.X402_PRICE,
         asset=settings.X402_ASSET,
         max_timeout_seconds=settings.X402_MAX_TIMEOUT_SECONDS,
+        extra_networks=settings.multichain_networks,
     )
     # Re-arm replay protection: payloads already consumed before a restart
     # must stay rejected (bounded by the task-store retention window).
@@ -213,17 +214,31 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
     if payment.enabled:
         from x402.http import PaymentOption, RouteConfig
 
+        # Build one PaymentOption per accepted chain (primary first, then any
+        # extra chains from X402_NETWORKS_JSON). Each carries its own asset
+        # and pay_to so x402 clients can settle on Base, Arbitrum, Polygon,
+        # or any other configured chain.
+        def _payment_option(net: str, pay_to: str, asset: str) -> PaymentOption:
+            extra = {"asset": asset} if asset else None
+            return PaymentOption(
+                scheme="exact",
+                pay_to=pay_to,
+                price=settings.X402_REST_PRICE,
+                network=net,
+                max_timeout_seconds=settings.X402_MAX_TIMEOUT_SECONDS,
+                extra=extra,
+            )
+
+        rest_accepts: list[PaymentOption] = [
+            _payment_option(payment.network, payment.pay_to, settings.X402_ASSET)
+        ]
+        for net, terms in payment.extra_networks.items():
+            rest_accepts.append(_payment_option(net, terms["pay_to"], terms["asset"]))
+
         x402_http = payment.http_resource_server(
             {
                 f"POST {REST_AUDIT_PATH}": RouteConfig(
-                    accepts=PaymentOption(
-                        scheme="exact",
-                        pay_to=payment.pay_to,
-                        price=settings.X402_REST_PRICE,
-                        network=payment.network,
-                        max_timeout_seconds=settings.X402_MAX_TIMEOUT_SECONDS,
-                        extra={"asset": settings.X402_ASSET} if settings.X402_ASSET else None,
-                    ),
+                    accepts=rest_accepts,
                     description="AI smart-contract risk audit dispatch (x402-paid)",
                     mime_type="application/json",
                     service_name="agentSAFE",

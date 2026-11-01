@@ -178,6 +178,84 @@ class TestStartupValidation:
         )
         validate_runtime_settings(s)
 
+    def test_multichain_networks_json_valid(self):
+        s = _settings(
+            PAYMENTS_ENABLED=True,
+            X402_SDK_VERSION="2.25.0",
+            X402_PAY_TO="0x" + "ab" * 20,
+            X402_NETWORK="eip155:8453",
+            X402_ALLOW_MAINNET=True,
+            X402_NETWORKS_JSON=(
+                '{"eip155:42161": {"asset": "0x' + "cd" * 20 + '", '
+                '"pay_to": "0x' + "ef" * 20 + '"}, '
+                '"eip155:137": {"asset": "0x' + "12" * 20 + '", '
+                '"pay_to": "0x' + "34" * 20 + '"}}'
+            ),
+        )
+        validate_runtime_settings(s)
+        mc = s.multichain_networks
+        assert set(mc) == {"eip155:42161", "eip155:137"}
+        assert mc["eip155:42161"]["asset"].startswith("0xcd")
+        assert mc["eip155:137"]["pay_to"].startswith("0x34")
+
+    def test_multichain_networks_json_blank_is_empty(self):
+        s = _settings(PAYMENTS_ENABLED=True, X402_SDK_VERSION="2.25.0",
+                      X402_PAY_TO="0x" + "ab" * 20,
+                      X402_NETWORK="eip155:84532")
+        assert s.multichain_networks == {}
+
+    def test_multichain_invalid_json_rejected(self):
+        s = _settings(
+            PAYMENTS_ENABLED=True,
+            X402_SDK_VERSION="2.25.0",
+            X402_PAY_TO="0x" + "ab" * 20,
+            X402_NETWORK="eip155:84532",
+            X402_NETWORKS_JSON="{not json",
+        )
+        with pytest.raises(SettingsError, match="X402_NETWORKS_JSON"):
+            validate_runtime_settings(s)
+
+    def test_multichain_bad_asset_or_payto_rejected(self):
+        s = _settings(
+            PAYMENTS_ENABLED=True,
+            X402_SDK_VERSION="2.25.0",
+            X402_PAY_TO="0x" + "ab" * 20,
+            X402_NETWORK="eip155:84532",
+            X402_NETWORKS_JSON=(
+                '{"eip155:42161": {"asset": "nope", "pay_to": "0x' + "cd" * 20 + '"}}'
+            ),
+        )
+        with pytest.raises(SettingsError, match="asset"):
+            validate_runtime_settings(s)
+
+    def test_multichain_non_eip155_network_rejected(self):
+        s = _settings(
+            PAYMENTS_ENABLED=True,
+            X402_SDK_VERSION="2.25.0",
+            X402_PAY_TO="0x" + "ab" * 20,
+            X402_NETWORK="eip155:84532",
+            X402_NETWORKS_JSON=(
+                '{"solana:mainnet": {"asset": "0x' + "cd" * 20 + '", '
+                '"pay_to": "0x' + "ef" * 20 + '"}}'
+            ),
+        )
+        with pytest.raises(SettingsError, match="eip155:"):
+            validate_runtime_settings(s)
+
+    def test_multichain_duplicate_primary_network_rejected(self):
+        s = _settings(
+            PAYMENTS_ENABLED=True,
+            X402_SDK_VERSION="2.25.0",
+            X402_PAY_TO="0x" + "ab" * 20,
+            X402_NETWORK="eip155:84532",
+            X402_NETWORKS_JSON=(
+                '{"eip155:84532": {"asset": "0x' + "cd" * 20 + '", '
+                '"pay_to": "0x' + "ef" * 20 + '"}}'
+            ),
+        )
+        with pytest.raises(SettingsError, match="duplicates"):
+            validate_runtime_settings(s)
+
     def test_optional_groups_can_be_relaxed(self):
         s = Settings(
             _env_file=None,
