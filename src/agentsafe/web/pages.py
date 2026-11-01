@@ -213,9 +213,9 @@ def _build_index_html() -> str:
           if (net) lines.push("<p class='text-zinc-200'>Network: <code>" + net + "</code></p>");
           lines.push("<p class='mt-3 text-xs text-zinc-500'>Pay with a wallet that supports x402 (e.g. PayAI). "
             + "Or copy the curl command below and run it locally with your x402-enabled client:</p>");
-          lines.push("<pre class='mt-2 overflow-x-auto rounded border border-zinc-800 bg-zinc-900 p-3 text-xs text-cyan-300'><code>curl -X POST " + window.location.origin + REST + " \\"
-            + "  -H 'content-type: application/json' \\"
-            + "  -d '{{\"address\":\"" + a + "\"}}'</code></pre>");
+          lines.push("<pre class='mt-2 overflow-x-auto rounded border border-zinc-800 bg-zinc-900 p-3 text-xs text-cyan-300'><code>curl -X POST " + window.location.origin + REST + " \\\\"
+            + "  -H 'content-type: application/json' \\\\"
+            + "  -d '{{\\"address\\":\\"" + a + "\\"}}'</code></pre>");
           lines.push("<p class='mt-2 text-xs text-zinc-500'>On HTTP 402 the server returns the machine-readable "
             + "<code>PAYMENT-REQUIRED</code> header; sign the quoted USDC transfer with your wallet "
             + "and resend with the <code>PAYMENT-SIGNATURE</code> header.</p>");

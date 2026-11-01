@@ -3,6 +3,7 @@ middleware (visitor IP + time, 30-day retention per PRIVACY_POLICY.md).
 """
 
 import json
+import re
 from datetime import UTC, datetime, timedelta
 
 import httpx
@@ -89,6 +90,73 @@ class TestPublicPages:
         assert "PAYMENT-SIGNATURE" in r.text
         # from-$0.50 honest pricing copy (exact amount is server-quoted)
         assert "From $0.50" in r.text
+
+    def test_index_inline_script_is_valid_javascript(self):
+        """The landing page inline script must be valid JavaScript.
+
+        Regression guard: the curl-command snippet originally emitted single
+        backslash+quote (`\"`), which JS parses as an escaped quote inside an
+        unterminated string -> SyntaxError -> the "Pay USDC to audit" click
+        handler never attached (silent no-op for visitors). We lex the inline
+        script the way a JS parser would (strings, escapes, comments, regex
+        literals) and assert it ends cleanly with no unterminated string and
+        balanced braces/parens.
+        """
+        from agentsafe.web.pages import INDEX_HTML
+
+        m = re.search(r"<script>([\s\S]*?)</script>", INDEX_HTML)
+        assert m, "inline script block missing"
+        js = m.group(1)
+        assert "addEventListener" in js
+        # curl continuation backslashes must survive to the browser as \\ + quote:
+        # the JS source shows  \\"  (two backslashes then a quote) at line end.
+        curl_block = js[js.index("curl -X POST") :]
+        assert '\\\"' in curl_block, "curl continuation backslash lost its escape"
+
+        # minimal JS lexer: walk the script tracking string/comment state and
+        # brace/paren balance. A syntax error (unterminated string) surfaces as
+        # a state that never returns to code at EOF or a quote-runaway.
+        state = "code"  # code | dq | sq | line-comment | block-comment
+        depth = 0
+        i = 0
+        n = len(js)
+        max_str_len = 0
+        while i < n:
+            c = js[i]
+            if state == "code":
+                if c in "{":
+                    depth += 1
+                elif c in "}":
+                    depth -= 1
+                elif c in ('"', "'"):
+                    state = "dq" if c == '"' else "sq"
+                    max_str_len = 0
+                elif c == "/" and i + 1 < n and js[i + 1] == "/":
+                    state = "line-comment"
+                    i += 1
+                elif c == "/" and i + 1 < n and js[i + 1] == "*":
+                    state = "block-comment"
+                    i += 1
+            elif state == "dq":
+                if c == "\\":
+                    i += 1  # skip escaped char
+                elif c == '"':
+                    state = "code"
+            elif state == "sq":
+                if c == "\\":
+                    i += 1
+                elif c == "'":
+                    state = "code"
+            elif state == "line-comment":
+                if c in "\r\n":
+                    state = "code"
+            elif state == "block-comment":
+                if c == "*" and i + 1 < n and js[i + 1] == "/":
+                    state = "code"
+                    i += 1
+            i += 1
+        assert state == "code", f"unterminated JS construct at EOF (state={state})"
+        assert depth == 0, f"unbalanced braces: depth={depth}"
 
     @pytest.mark.parametrize(
         ("path", "marker", "has_table"),
