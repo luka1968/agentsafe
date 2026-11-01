@@ -31,8 +31,9 @@ import argparse
 import json
 import pathlib
 import sys
-import urllib.error
-import urllib.request
+import time
+
+import requests
 
 API = "https://api.vercel.com"
 
@@ -68,22 +69,30 @@ def _request(
     if team:
         sep = "&" if "?" in path else "?"
         url += f"{sep}teamId={team}"
-    data = json.dumps(body).encode() if body is not None else None
-    req = urllib.request.Request(url, data=data, method=method)
-    req.add_header("Authorization", f"Bearer {token}")
-    if data is not None:
-        req.add_header("Content-Type", "application/json")
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            payload = json.loads(resp.read() or b"{}")
-            return resp.status, payload
-    except urllib.error.HTTPError as exc:
-        raw = exc.read() or b"{}"
+    headers = {"Authorization": f"Bearer {token}"}
+    last_err: Exception | None = None
+    for attempt in range(3):
         try:
-            payload = json.loads(raw)
-        except json.JSONDecodeError:
-            payload = {"raw": raw.decode(errors="replace")[:300]}
-        return exc.code, payload
+            resp = requests.request(
+                method,
+                url,
+                json=body,
+                headers=headers,
+                timeout=(15, 45),
+            )
+            if resp.status_code in (200, 201, 204):
+                try:
+                    return resp.status_code, resp.json()
+                except ValueError:
+                    return resp.status_code, {}
+            try:
+                return resp.status_code, resp.json()
+            except ValueError:
+                return resp.status_code, {"raw": resp.text[:300]}
+        except requests.RequestException as exc:  # TLS reset / timeout: retry
+            last_err = exc
+            time.sleep(1.5 * (attempt + 1))
+    return 0, {"error": f"request failed after retries: {last_err}"}
 
 
 def load_env(path: pathlib.Path) -> dict[str, str]:
@@ -93,7 +102,11 @@ def load_env(path: pathlib.Path) -> dict[str, str]:
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, _, value = line.partition("=")
-        env[key.strip()] = value.strip()
+        value = value.strip()
+        # strip wrapping quotes so values land on Vercel without literal " chars
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+            value = value[1:-1]
+        env[key.strip()] = value
     return env
 
 
@@ -103,6 +116,12 @@ def main() -> int:
     ap.add_argument("--project", required=True, help="Vercel project id (prj_...)")
     ap.add_argument("--team", default="", help="Vercel team id (team_...; optional)")
     ap.add_argument("--dry-run", action="store_true", help="list what would sync")
+    ap.add_argument(
+        "--prune",
+        action="store_true",
+        help="DELETE project env vars that are NOT in the local .env set "
+        "(default: leave unknown vars untouched)",
+    )
     args = ap.parse_args()
 
     env = load_env(pathlib.Path(__file__).resolve().parents[1] / ".env")
@@ -111,13 +130,7 @@ def main() -> int:
         print("ERROR: no matching vars found in .env")
         return 2
 
-    if args.dry_run:
-        print("DRY-RUN: would sync these keys to production:")
-        for k in sorted(wanted):
-            print(f"  {k}")
-        return 0
-
-    # 1) existing env vars on the project (production target)
+    # existing env vars on the project (production target)
     status, payload = _request(
         args.token,
         "GET",
@@ -134,22 +147,37 @@ def main() -> int:
     }
     print(f"existing production env vars on project: {len(existing)}")
 
-    # 2) delete stale vars that exist on Vercel but not in local .env set
-    for key, env_id in sorted(existing.items()):
-        if key not in wanted:
+    to_create = sorted(k for k in wanted if k not in existing)
+    to_update = sorted(k for k in wanted if k in existing)
+    stale = sorted(k for k in existing if k not in wanted)
+
+    print(f"\nPLAN (local .env -> Vercel production):")
+    print(f"  create {len(to_create)}: {to_create}")
+    print(f"  update {len(to_update)}: {to_update}")
+    print(f"  keep-untouched {len(stale)}" + (f" (would DELETE with --prune): {stale}" if stale else ""))
+
+    if args.dry_run:
+        print("\nDRY-RUN: no changes made.")
+        return 0
+
+    # 2) optional prune: delete vars present on Vercel but not in .env
+    if args.prune:
+        for key in stale:
             status, payload = _request(
                 args.token,
                 "DELETE",
-                f"/v10/projects/{args.project}/env/{env_id}",
+                f"/v10/projects/{args.project}/env/{existing[key]}",
                 team=args.team,
             )
             if status in (200, 204):
                 print(f"  deleted stale {key}")
             else:
                 print(f"  WARN delete {key} HTTP {status}: {json.dumps(payload)[:200]}")
+    else:
+        print(f"\n(--prune not set: leaving {len(stale)} unknown vars untouched)")
 
     # 3) upsert wanted vars (create if missing, else update in place)
-    for key in sorted(wanted):
+    for key in to_create + to_update:
         if key in existing:
             status, payload = _request(
                 args.token,
@@ -158,6 +186,27 @@ def main() -> int:
                 {"key": key, "value": env[key], "type": "plain", "target": ["production"]},
                 team=args.team,
             )
+            # Vercel refuses to change a Sensitive (secret) var to plain.
+            # Recreate as plain: delete + create (the user asked for plain so
+            # values stay viewable in the dashboard).
+            if status == 400 and "type" in json.dumps(payload).lower():
+                del_status, del_payload = _request(
+                    args.token,
+                    "DELETE",
+                    f"/v10/projects/{args.project}/env/{existing[key]}",
+                    team=args.team,
+                )
+                if del_status in (200, 204):
+                    status, payload = _request(
+                        args.token,
+                        "POST",
+                        f"/v10/projects/{args.project}/env",
+                        {"key": key, "value": env[key], "type": "plain", "target": ["production"]},
+                        team=args.team,
+                    )
+                    print(f"  recreated-as-plain {key} (HTTP {status})")
+                else:
+                    print(f"  WARN delete-for-recreate {key} HTTP {del_status}")
         else:
             status, payload = _request(
                 args.token,
