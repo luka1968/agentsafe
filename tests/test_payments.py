@@ -256,6 +256,45 @@ class TestAdapterConstruction:
             "eip155:137": {"asset": "0x" + "33" * 20, "pay_to": "0x" + "44" * 20},
         }
 
+    @respx.mock
+    def test_testnet_chain_included_in_accepts(self):
+        """A testnet (Base Sepolia) extra network is advertised alongside the
+        mainnets so users without real USDC can pay with faucet USDC."""
+        routes = _mock_facilitator()
+        routes["supported"].mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "kinds": [
+                        {"x402Version": 2, "scheme": "exact", "network": "eip155:8453", "extra": None},
+                        {"x402Version": 2, "scheme": "exact", "network": "eip155:84532", "extra": None},
+                    ],
+                    "extensions": [],
+                },
+            )
+        )
+        adapter = X402PaymentAdapter(
+            enabled=True,
+            sdk_version="2.25.0",
+            network="eip155:8453",
+            pay_to="0x" + "ef" * 20,
+            facilitator_url=FAC,
+            price="$0.01",
+            extra_networks={
+                # Base Sepolia USDC (SDK canonical address)
+                "eip155:84532": {
+                    "asset": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+                    "pay_to": "0x" + "ef" * 20,
+                },
+            },
+        )
+        assert [a.network for a in adapter.accepts] == [
+            "eip155:8453", "eip155:84532"
+        ]
+        assert adapter.accepts[1].asset == "0x036CbD53842c5426634e7929541eC2318f3dCF7e"
+        assert adapter.accepts[1].pay_to == "0x" + "ef" * 20
+        assert {a.amount for a in adapter.accepts} == {"10000"}
+
 
 class TestPaymentFlow:
     @respx.mock

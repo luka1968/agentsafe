@@ -187,7 +187,8 @@ def _build_index_html() -> str:
     var CHAINS = {{
       "eip155:8453":  {{ name: "Base",     chainId: 8453,  rpc: ["https://mainnet.base.org"],                      symbol: "ETH",  decimals: 18 }},
       "eip155:42161": {{ name: "Arbitrum", chainId: 42161, rpc: ["https://arb1.arbitrum.io/rpc"],                  symbol: "ETH",  decimals: 18 }},
-      "eip155:137":   {{ name: "Polygon",  chainId: 137,   rpc: ["https://polygon-rpc.com"],                        symbol: "POL",  decimals: 18 }}
+      "eip155:137":   {{ name: "Polygon",  chainId: 137,   rpc: ["https://polygon-rpc.com"],                        symbol: "POL",  decimals: 18 }},
+      "eip155:84532": {{ name: "Base Sepolia (testnet)", chainId: 84532, rpc: ["https://sepolia.base.org"],       symbol: "ETH",  decimals: 18, testnet: true }}
     }};
     function fmtTask(tid) {{
       return "<p class='text-emerald-400'>Audit dispatched!</p>"
@@ -347,8 +348,11 @@ def _build_index_html() -> str:
           var meta = CHAINS[acc.network] || {{ name: acc.network }};
           var price = (Number(acc.amount) / 1e6).toFixed(2);
           var payTo = acc.payTo || "";
+          var tag = meta.testnet
+            ? " <span class='rounded bg-amber-900/60 px-1.5 py-0.5 text-[10px] text-amber-300'>TESTNET (free USDC)</span>"
+            : "";
           lines.push("<button data-chain='" + i + "' class='chain-opt mt-2 w-full rounded-lg border border-zinc-700 bg-zinc-900 px-4 py-3 text-left text-sm hover:border-cyan-400'>"
-            + "<span class='font-semibold text-cyan-300'>Pay with " + esc(meta.name) + "</span>"
+            + "<span class='font-semibold text-cyan-300'>Pay with " + esc(meta.name) + "</span>" + tag
             + " <span class='text-zinc-300'>" + esc(acc.network) + "</span>"
             + " &mdash; <b>" + price + " USDC</b>"
             + "<br><span class='text-xs text-zinc-500'>pay to: <code class='break-all'>" + esc(payTo) + "</code></span>"
