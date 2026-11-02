@@ -79,6 +79,11 @@ class TestPublicPages:
         # EIP-712 domain name is taken from the server-advertised accept
         # extra (authoritative), falling back to the chain table only.
         assert "accept.extra && accept.extra.name" in r.text
+        # EIP-712 bytes32 nonce must be 32 bytes (64 hex chars); a 16-byte
+        # nonce pads inconsistently across wallets and the facilitator
+        # rejects the signature (invalid_exact_evm_signature).
+        assert "randomHex(64)" in r.text
+        assert 'var nonce = "0x" + randomHex(64);' in r.text
         assert 'href="/privacy"' in r.text
         assert 'href="/refund"' in r.text
         # Claude config JSON present

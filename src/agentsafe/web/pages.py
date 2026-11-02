@@ -264,7 +264,12 @@ def _build_index_html() -> str:
       }}
       var validAfter = 0;
       var validBefore = Math.floor(Date.now() / 1000) + (accept.maxTimeoutSeconds || 300);
-      var nonce = "0x" + randomHex(32);
+      // EIP-712 bytes32 nonce MUST be 32 bytes (64 hex chars). The SDK
+      // generates os.urandom(32).hex() = 64 chars; a shorter nonce (e.g.
+      // 32 chars = 16 bytes) makes wallets pad it inconsistently when
+      // hashing, so the recovered signer mismatches -> the facilitator
+      // rejects with invalid_exact_evm_signature.
+      var nonce = "0x" + randomHex(64);
       // EIP-712 domain name must equal the token's on-chain name() as the
       // backend verifies it. The backend now ships the authoritative name
       // in the 402 accept's extra (see server.py _payment_option), so the
