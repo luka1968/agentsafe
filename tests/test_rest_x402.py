@@ -244,9 +244,11 @@ class TestRestAuditFlow:
 
     @respx.mock
     async def test_oversized_contract_never_settles(self):
-        """The flat $3.00 fee covers <=500 lines; a bigger contract is
-        rejected BEFORE settlement so no funds ever move."""
-        routes = _mock_facilitator()  # mocks 10-line source; override below
+        """MAINNET: the flat $3.00 fee covers <=500 lines; a bigger contract
+        is rejected BEFORE settlement so no funds ever move. Testnet gets a
+        relaxed cap (see test_rest_testnet_oversized_allowed), mainnet keeps
+        the commercial flat-fee cap."""
+        routes = _mock_facilitator(networks=["eip155:8453", "eip155:84532"])  # mocks 10-line source; override below
         respx.get(ETH).mock(
             return_value=httpx.Response(
                 200,
@@ -272,7 +274,8 @@ class TestRestAuditFlow:
             return_value=httpx.Response(200, json={"success": True, "transaction": "0x" + "11" * 32})
         )
         _wire_dispatch_and_runs()
-        server = build_server(_settings())
+        # MAINNET: keeps the 500-line flat-fee cap.
+        server = build_server(_settings(X402_NETWORK="eip155:8453", X402_ALLOW_MAINNET=True))
         async with _http_client(server) as client:
             header = await _payment_header_from_402(client)
             resp = await client.post(
@@ -282,7 +285,7 @@ class TestRestAuditFlow:
         body = resp.json()
         assert body["error_code"] == "REST_FLAT_FEE_LINE_LIMIT"
         # Actionable guidance: the caller must be told the exact alternative,
-        # that nothing was charged affiliates, and where to go next.
+        # that nothing was charged, and where to go next.
         assert body["source_lines"] == 900
         assert body["flat_fee_max_lines"] == 500
         assert body["mcp_tier_price"] == "$5.00"  # 501-1000 tier
@@ -295,6 +298,91 @@ class TestRestAuditFlow:
         # settle endpoint was NEVER called: verify-only, no funds moved
         assert routes["settle"].call_count == 0
         assert resp.headers.get("payment-response") is None
+
+    @respx.mock
+    async def test_rest_testnet_oversized_allowed(self):
+        """TESTNET: the flat fee cap is relaxed (X402_REST_TESTNET_MAX_LINES)
+        so larger contracts can be audited end-to-end on the free test
+        channel. 900 lines on Base Sepolia dispatches (202) instead of 422."""
+        routes = _mock_facilitator()
+        respx.get(ETH).mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "status": "1",
+                    "message": "OK",
+                    "result": [
+                        {
+                            "SourceCode": "pragma solidity ^0.8.20;\n" + "uint256 v;\n" * 899,
+                            "ContractName": "C",
+                            "CompilerVersion": "v0.8.20+commit.a1b79de6",
+                            "OptimizationUsed": "0",
+                            "Runs": "",
+                            "ABI": "[]",
+                            "Proxy": "0",
+                            "Implementation": "",
+                        }
+                    ],
+                },
+            )
+        )
+        respx.post(f"{FAC}/settle").mock(
+            return_value=httpx.Response(200, json={"success": True, "transaction": "0x" + "11" * 32})
+        )
+        _wire_dispatch_and_runs()
+        server = build_server(_settings())  # default: Base Sepolia testnet
+        async with _http_client(server) as client:
+            header = await _payment_header_from_402(client)
+            resp = await client.post(
+                "/api/audit", json={"address": ADDR}, headers={"PAYMENT-SIGNATURE": header}
+            )
+        assert resp.status_code == 202
+        assert routes["settle"].call_count == 1
+        assert resp.headers.get("payment-response") is not None
+
+    @respx.mock
+    async def test_rest_testnet_over_5000_still_rejected(self):
+        """TESTNET cap is 5000; a 5100-line contract is still refused before
+        settlement, so nothing moves even on the free channel."""
+        routes = _mock_facilitator()
+        respx.get(ETH).mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "status": "1",
+                    "message": "OK",
+                    "result": [
+                        {
+                            "SourceCode": "pragma solidity ^0.8.20;\n" + "uint256 v;\n" * 5099,
+                            "ContractName": "C",
+                            "CompilerVersion": "v0.8.20+commit.a1b79de6",
+                            "OptimizationUsed": "0",
+                            "Runs": "",
+                            "ABI": "[]",
+                            "Proxy": "0",
+                            "Implementation": "",
+                        }
+                    ],
+                },
+            )
+        )
+        respx.post(f"{FAC}/settle").mock(
+            return_value=httpx.Response(200, json={"success": True, "transaction": "0x" + "11" * 32})
+        )
+        _wire_dispatch_and_runs()
+        server = build_server(_settings())
+        async with _http_client(server) as client:
+            header = await _payment_header_from_402(client)
+            resp = await client.post(
+                "/api/audit", json={"address": ADDR}, headers={"PAYMENT-SIGNATURE": header}
+            )
+        assert resp.status_code == 422
+        body = resp.json()
+        assert body["error_code"] == "REST_FLAT_FEE_LINE_LIMIT"
+        assert body["source_lines"] == 5100
+        assert body["flat_fee_max_lines"] == 5000
+        assert body["charged"] is False
+        assert routes["settle"].call_count == 0
 
     @respx.mock
     async def test_dispatch_failure_never_settles(self):

@@ -247,6 +247,13 @@ class Settings(BaseSettings):
     # Max accepted request body size for the audit endpoint (defends against
     # oversized-body memory abuse; audit bodies are tiny JSON objects).
     HTTP_MAX_BODY_BYTES: int = Field(default=262_144, ge=1024, le=10_485_760)
+    # REST flat-fee source-line cap (commercial tiering: the flat fee must
+    # never undercut the MCP per-size tiers, so it only covers small
+    # contracts). The testnet cap is deliberately higher so end-to-end
+    # tests can exercise larger contracts on the free test channel without
+    # touching mainnet pricing semantics.
+    X402_REST_MAX_LINES: int = Field(default=500, ge=100, le=50_000)
+    X402_REST_TESTNET_MAX_LINES: int = Field(default=5000, ge=100, le=50_000)
     # Optional JSONL sink for aggregate operational metrics (never payloads).
     METRICS_JSONL_PATH: str = ""
 

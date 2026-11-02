@@ -25,7 +25,7 @@ import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 from fastmcp import Context, FastMCP
 from fastmcp.tools import ToolResult
@@ -79,10 +79,34 @@ logger = logging.getLogger("agentSAFE.server")
 # x402 indexers and plain-HTTP x402 clients can discover and pay for audits.
 REST_AUDIT_PATH = "/api/audit"
 # The REST endpoint's flat fee (X402_REST_PRICE) only covers contracts up to
-# this many source lines. Larger contracts must use the MCP endpoint's tiered
-# pricing (audit_contract) or the enterprise channel; this cap prevents the
-# flat REST fee from undercutting the higher MCP tiers.
+# this many source lines on mainnet chains. Larger contracts must use the MCP
+# endpoint's tiered pricing (audit_contract) or the enterprise channel; this
+# cap prevents the flat REST fee from undercutting the higher MCP tiers.
+# The testnet cap is deliberately higher (Settings.X402_REST_TESTNET_MAX_LINES)
+# so end-to-end tests can exercise larger contracts on the free test channel
+# without touching mainnet pricing semantics.
 REST_AUDIT_MAX_LINES = 500
+# Testnet networks (per-chain) get the relaxed cap. Paying on any of these
+# networks means the caller used the testnet channel, where REST audits up to
+# the testnet cap are allowed.
+TESTNET_CHAIN_IDS: Final[set[str]] = {"84532"}  # Base Sepolia
+
+
+def _rest_max_lines_for_network(
+    settings: Settings,
+    network: str | None,
+) -> int:
+    """Effective REST source-line cap for the network the payment used.
+
+    Mainnet (or unknown) networks keep the flat-fee cap; testnet networks
+    (chain id in TESTNET_CHAIN_IDS) use the relaxed testnet cap so larger
+    contracts can be audited end-to-end on the free test channel.
+    """
+    if network:
+        for chain_id in TESTNET_CHAIN_IDS:
+            if network.endswith(f":{chain_id}"):
+                return settings.X402_REST_TESTNET_MAX_LINES
+    return settings.X402_REST_MAX_LINES
 
 
 class _SlidingWindowLimiter:
@@ -730,8 +754,19 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
                 status_code=422,
             )
         lines = count_source_lines(bundle)
-        if lines > REST_AUDIT_MAX_LINES:
-            logger.info("REST dispatch rejected: lines=%d exceeds flat-fee cap", lines)
+        # Network-aware cap: mainnet keeps the flat-fee cap (commercial
+        # tiering), testnet networks get the relaxed cap so larger contracts
+        # can be audited on the free test channel.
+        paid_network = None
+        if verified is not None and verified.payload is not None:
+            accepted = getattr(verified.payload, "accepted", None)
+            paid_network = getattr(accepted, "network", None) or None
+        max_lines = _rest_max_lines_for_network(settings, paid_network)
+        if lines > max_lines:
+            logger.info(
+                "REST dispatch rejected: lines=%d exceeds cap=%d network=%s",
+                lines, max_lines, paid_network or "-",
+            )
             # Tiered (MCP) quotes for this contract, so the caller can see the
             # exact alternative price. Purely informational - the REST flat
             # fee still does NOT serve contracts over the cap, so it can never
@@ -745,12 +780,12 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
                     "ok": False,
                     "error_code": "REST_FLAT_FEE_LINE_LIMIT",
                     "error": (
-                        f"{lines} source lines exceed the {REST_AUDIT_MAX_LINES}-line "
+                        f"{lines} source lines exceed the {max_lines}-line "
                         "flat fee; use the MCP endpoint (audit_contract) for tiered "
                         "pricing"
                     ),
                     "source_lines": lines,
-                    "flat_fee_max_lines": REST_AUDIT_MAX_LINES,
+                    "flat_fee_max_lines": max_lines,
                     "mcp_tier_price": mcp_price,
                     "mcp_endpoint": "/mcp",
                     "mcp_tool": "audit_contract",

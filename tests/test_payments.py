@@ -95,12 +95,31 @@ def _settings(**kw) -> Settings:
     return Settings(_env_file=None, **base)
 
 
-def _mock_facilitator():
-    """Mock Etherscan source + /supported, /verify, /settle. Returns the routes."""
+def _mock_facilitator(networks: list[str] | None = None):
+    """Mock Etherscan source + /supported, /verify, /settle. Returns the routes.
+
+    ``networks`` optionally extends the supported exact/eip3009 set (default:
+    just Base Sepolia testnet) so mainnet-mode tests can be run too.
+    """
     _mock_source()
+    supported_networks = list(networks or ["eip155:84532"])
     routes = {
         "supported": respx.get(f"{FAC}/supported").mock(
-            return_value=httpx.Response(200, json=SUPPORTED)
+            return_value=httpx.Response(
+                200,
+                json={
+                    "kinds": [
+                        {
+                            "x402Version": 2,
+                            "scheme": "exact",
+                            "network": net,
+                            "extra": None,
+                        }
+                        for net in supported_networks
+                    ],
+                    "extensions": [],
+                },
+            )
         ),
         "verify": respx.post(f"{FAC}/verify").mock(
             return_value=httpx.Response(200, json={"isValid": True, "payer": PAYER})
