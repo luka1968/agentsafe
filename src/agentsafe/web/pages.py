@@ -222,9 +222,18 @@ def _build_index_html() -> str:
       var meta = CHAINS[accept.network] || {{ name: accept.network, chainId: null }};
       if (!window.ethereum) throw new Error("No wallet found. Install MetaMask or another web3 wallet, then retry.");
       var eth = window.ethereum;
-      var accounts = await eth.request({{ method: "eth_requestAccounts" }});
+      // Prefer the already-authorized account (zero wallet popups for
+      // returning visitors). Only fire eth_requestAccounts (the call that
+      // opens the connect popup and can be rejected with "already pending"
+      // if another request is stuck) when no account is authorized yet.
+      var accounts = [];
+      try {{ accounts = await eth.request({{ method: "eth_accounts" }}); }} catch (e) {{ accounts = []; }}
       var from = accounts && accounts[0];
-      if (!from) throw new Error("Wallet connection rejected.");
+      if (!from) {{
+        accounts = await eth.request({{ method: "eth_requestAccounts" }});
+        from = accounts && accounts[0];
+        if (!from) throw new Error("Wallet connection rejected.");
+      }}
       if (meta.chainId) {{
         var cur = await eth.request({{ method: "eth_chainId" }});
         var want = "0x" + meta.chainId.toString(16);

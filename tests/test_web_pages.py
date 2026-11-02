@@ -103,6 +103,11 @@ class TestPublicPages:
         assert "friendlyErr" in r.text
         assert "already pending" in r.text
         assert "Complete or close the wallet popup" in r.text
+        # returning visitors skip the connect popup entirely: eth_accounts
+        # is queried first and eth_requestAccounts only fires when no
+        # account is authorized yet (avoids stuck pending-request errors)
+        assert '"eth_accounts"' in r.text
+        assert '"eth_requestAccounts"' in r.text
 
     def test_index_inline_script_is_valid_javascript(self):
         """The landing page inline script must be valid JavaScript.
