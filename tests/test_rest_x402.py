@@ -195,6 +195,13 @@ class TestRestAuditFlow:
         assert [a["network"] for a in body["accepts"]] == ["eip155:8453", "eip155:84532"]
         assert body["accepts"][0]["amount"] == "3000000"  # $3.00 flat
         assert body["accepts"][1]["amount"] == "100"  # $0.0001 testnet
+        # Each accept carries the authoritative EIP-712 domain params the
+        # frontend must sign with (Base mainnet "USD Coin", Base Sepolia
+        # testnet "USDC") so the client never hardcodes a token name.
+        assert body["accepts"][0].get("extra", {}).get("name") == "USD Coin"
+        assert body["accepts"][0].get("extra", {}).get("version") == "2"
+        assert body["accepts"][1].get("extra", {}).get("name") == "USDC"
+        assert body["accepts"][1].get("extra", {}).get("version") == "2"
 
     @respx.mock
     async def test_paid_request_dispatches_and_settles(self):

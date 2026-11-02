@@ -13,6 +13,8 @@ from pathlib import Path
 
 import markdown as md_lib
 
+from agentsafe import __version__
+
 # slug -> repository markdown file
 LEGAL_FILES = {
     "terms": "TERMS_OF_SERVICE.md",
@@ -122,6 +124,7 @@ def _build_index_html() -> str:
     pre_class = (
         "overflow-x-auto rounded-lg border border-zinc-800 bg-zinc-900 p-4 text-xs text-cyan-300"
     )
+    build_tag = "v" + __version__ + "-" + os.environ.get("VERCEL_GIT_COMMIT_SHA", "dev")[:8]
     return f"""<!DOCTYPE html>
 <html lang="en" class="bg-black text-white">
 <head>
@@ -263,12 +266,15 @@ def _build_index_html() -> str:
       var validBefore = Math.floor(Date.now() / 1000) + (accept.maxTimeoutSeconds || 300);
       var nonce = "0x" + randomHex(32);
       // EIP-712 domain name must equal the token's on-chain name() as the
-      // backend verifies it (x402 SDK asset registry). Base mainnet USDC is
-      // "USD Coin" but Base Sepolia testnet USDC is "USDC" — hardcoding
-      // would make testnet signatures fail with invalid_exact_evm_signature.
+      // backend verifies it. The backend now ships the authoritative name
+      // in the 402 accept's extra (see server.py _payment_option), so the
+      // frontend uses that first and never hardcodes a token name (Base
+      // mainnet USDC is "USD Coin", Base Sepolia testnet USDC is "USDC").
+      var domainName = (accept.extra && accept.extra.name) || meta.tokenName || "USD Coin";
+      var domainVersion = (accept.extra && accept.extra.version) || "2";
       var domain = {{
-        name: meta.tokenName || "USD Coin",
-        version: "2",
+        name: domainName,
+        version: domainVersion,
         chainId: meta.chainId,
         verifyingContract: accept.asset
       }};
@@ -464,6 +470,7 @@ def _build_index_html() -> str:
     </div>
     <p>Operated by workfern (Hong Kong). AI-assisted risk screening, not a
     formal security audit.</p>
+    <p class="mt-2">landing build {build_tag}</p>
   </footer>
 
 </div>

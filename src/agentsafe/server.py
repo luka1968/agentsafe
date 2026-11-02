@@ -220,6 +220,25 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
         # or any other configured chain.
         def _payment_option(net: str, pay_to: str, asset: str, price: str | None = None) -> PaymentOption:
             extra = {"asset": asset} if asset else None
+            # The EIP-712 domain name/version the frontend must sign with
+            # must equal the values the SDK will verify against. The SDK
+            # fills them from its asset registry (get_asset_info); mirror
+            # that here so the 402 response carries the authoritative
+            # domain (Base mainnet USDC is "USD Coin", Base Sepolia
+            # testnet USDC is "USDC" - the frontend must never hardcode
+            # either).
+            if asset:
+                try:
+                    from x402.mechanisms.evm.utils import get_asset_info
+
+                    info = get_asset_info(net, asset)
+                    extra = {
+                        **(extra or {}),
+                        "name": info["name"],
+                        "version": info.get("version", "2"),
+                    }
+                except Exception:  # noqa: BLE001 - asset not in registry: no domain info
+                    pass
             return PaymentOption(
                 scheme="exact",
                 pay_to=pay_to,
@@ -306,7 +325,12 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
 
     @app.custom_route("/", methods=["GET"])
     async def _index(request: Request) -> HTMLResponse:
-        return HTMLResponse(INDEX_HTML)
+        # The landing page carries the inline wallet-signing JS. A stale
+        # cached copy signs with outdated EIP-712 domain parameters and
+        # fails server verification, so the page must never be cached.
+        return HTMLResponse(
+            INDEX_HTML, headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"}
+        )
 
     @app.custom_route("/terms", methods=["GET"])
     async def _terms(request: Request) -> HTMLResponse:

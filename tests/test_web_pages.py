@@ -70,6 +70,15 @@ class TestPublicPages:
         # enterprise CTA + legal footer links
         assert "https://tally.so/r/laby7B" in r.text
         assert 'href="/terms"' in r.text
+        # The landing page must never be cached: a stale copy signs with
+        # outdated EIP-712 domain params and fails server verification.
+        assert "no-store" in r.headers.get("cache-control", "")
+        # visible build tag so visitors can confirm they're on the current
+        # build (and debug stale-cache signature failures)
+        assert "landing build v" in r.text
+        # EIP-712 domain name is taken from the server-advertised accept
+        # extra (authoritative), falling back to the chain table only.
+        assert "accept.extra && accept.extra.name" in r.text
         assert 'href="/privacy"' in r.text
         assert 'href="/refund"' in r.text
         # Claude config JSON present
