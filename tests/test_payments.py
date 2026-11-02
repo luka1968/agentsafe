@@ -901,3 +901,61 @@ class TestConfigGuardrails:
         s = _settings(X402_NETWORK="eip155:8453")
         with pytest.raises(Exception, match="X402_ALLOW_MAINNET"):
             validate_runtime_settings(s)
+
+
+class TestEventLoopRotation:
+    """Vercel rotates the asyncio event loop between warm invocations of the
+    same process. The SDK facilitator client caches an httpx.AsyncClient
+    bound to the loop that created it; reusing it after rotation raises
+    RuntimeError('Event loop is closed'). The adapter's loop-safe patch must
+    rebuild the client when the running loop changes."""
+
+    def test_facilitator_client_rebuilt_after_loop_rotation(self):
+        import asyncio
+
+        from x402.http import FacilitatorConfig, HTTPFacilitatorClient
+
+        from agentsafe.payment.x402_adapter import _patch_loop_safe_facilitator_client
+
+        _patch_loop_safe_facilitator_client()
+        client = HTTPFacilitatorClient(FacilitatorConfig(url="https://x402.example"))
+
+        async def grab() -> object:
+            return client._get_async_client()
+
+        loop_a = asyncio.new_event_loop()
+        try:
+            c_a = loop_a.run_until_complete(grab())
+        finally:
+            loop_a.close()
+
+        loop_b = asyncio.new_event_loop()
+        try:
+            c_b = loop_b.run_until_complete(grab())
+        finally:
+            loop_b.close()
+
+        assert c_a is not c_b, "client must be rebuilt when the event loop rotates"
+        assert client._http_client is c_b
+
+    def test_same_loop_reuses_client(self):
+        import asyncio
+
+        from x402.http import FacilitatorConfig, HTTPFacilitatorClient
+
+        from agentsafe.payment.x402_adapter import _patch_loop_safe_facilitator_client
+
+        _patch_loop_safe_facilitator_client()
+        client = HTTPFacilitatorClient(FacilitatorConfig(url="https://x402.example"))
+
+        async def grab() -> object:
+            return client._get_async_client()
+
+        loop = asyncio.new_event_loop()
+        try:
+            c1 = loop.run_until_complete(grab())
+            c2 = loop.run_until_complete(grab())
+        finally:
+            loop.close()
+
+        assert c1 is c2, "same loop must reuse the cached client"

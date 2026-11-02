@@ -60,6 +60,48 @@ logger = logging.getLogger("agentSAFE.payment")
 PINNED_X402_VERSION = "2.25.0"
 
 
+# The Vercel Python runtime rotates the asyncio event loop between warm
+# invocations of the same process (see api/index.py header). The SDK's
+# HTTPFacilitatorClient caches an httpx.AsyncClient bound to the loop it
+# was created on; reusing it from a rotated (now-closed) loop raises
+# RuntimeError("Event loop is closed") on the very next warm request.
+# Patch _get_async_client to rebuild the client whenever the running loop
+# differs from the loop it was created on. Called idempotently from the
+# adapter constructor; harmless on single-loop runtimes (uvicorn CLI).
+def _patch_loop_safe_facilitator_client() -> None:
+    import asyncio
+
+    from x402.http.facilitator_client import HTTPFacilitatorClient
+
+    _BOUND_LOOP = "__agentSAFE_bound_loop__"
+    _PATCHED = "__agentSAFE_loop_safe_patched__"
+    if getattr(HTTPFacilitatorClient._get_async_client, _PATCHED, False):
+        return
+
+    def _get_async_client(self: Any) -> Any:
+        loop = asyncio.get_running_loop()
+        bound = getattr(self, _BOUND_LOOP, None)
+        if bound is not loop:
+            # First use on this loop, or the loop rotated since the cached
+            # client was built. A client created on a previous (now-closed)
+            # loop must be dropped, not closed (closing would raise on the
+            # dead loop); a caller-supplied client with no bound-loop
+            # marker is left untouched (the caller manages its lifecycle).
+            if self._http_client is not None and bound is not None:
+                self._http_client = None
+            if self._http_client is None:
+                import httpx
+
+                self._http_client = httpx.AsyncClient(
+                    timeout=self._timeout, follow_redirects=True
+                )
+            setattr(self, _BOUND_LOOP, loop)
+        return self._http_client
+
+    _get_async_client.__agentSAFE_loop_safe_patched__ = True
+    HTTPFacilitatorClient._get_async_client = _get_async_client
+
+
 class PaymentsNotEnabledError(RuntimeError):
     """Raised when a paid operation is requested while payments are disabled."""
 
@@ -141,6 +183,7 @@ class X402PaymentAdapter:
         from x402 import x402ResourceServer
 
         self._x402 = x402
+        _patch_loop_safe_facilitator_client()
         facilitator = HTTPFacilitatorClient(FacilitatorConfig(url=facilitator_url))
         self._server = x402ResourceServer(facilitator)
         # Register the primary chain plus every extra chain with the same
