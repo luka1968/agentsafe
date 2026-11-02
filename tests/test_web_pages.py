@@ -96,6 +96,13 @@ class TestPublicPages:
         assert "X-PAYMENT" in r.text
         assert "chain-opt" in r.text
         assert "eth_signTypedData_v4" in r.text
+        # wallet session lock: only one pending request at a time; a second
+        # click while the wallet popup is open gets a friendly hint instead of
+        # firing another eth_requestAccounts (MetaMask "already pending").
+        assert "var paying = false;" in r.text
+        assert "friendlyErr" in r.text
+        assert "already pending" in r.text
+        assert "Complete or close the wallet popup" in r.text
 
     def test_index_inline_script_is_valid_javascript(self):
         """The landing page inline script must be valid JavaScript.

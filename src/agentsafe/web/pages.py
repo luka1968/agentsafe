@@ -190,6 +190,18 @@ def _build_index_html() -> str:
       "eip155:137":   {{ name: "Polygon",  chainId: 137,   rpc: ["https://polygon-rpc.com"],                        symbol: "POL",  decimals: 18 }},
       "eip155:84532": {{ name: "Base Sepolia (testnet)", chainId: 84532, rpc: ["https://sepolia.base.org"],       symbol: "ETH",  decimals: 18, testnet: true }}
     }};
+    // A wallet session can only host ONE pending request at a time (MetaMask
+    // rejects a second wallet_requestPermissions with "already pending").
+    // Keep a global lock so clicking another chain button while the wallet
+    // popup is open does not fire a second connect request.
+    var paying = false;
+    function friendlyErr(err) {{
+      var msg = (err && err.message) || String(err);
+      if (/already pending/i.test(msg)) {{
+        return "Your wallet already has a pending request. Complete or close the wallet popup, then try again.";
+      }}
+      return msg;
+    }}
     function fmtTask(tid) {{
       return "<p class='text-emerald-400'>Audit dispatched!</p>"
         + "<p class='mt-1 text-zinc-300'>Task ID: <code class='text-cyan-300'>" + esc(tid) + "</code></p>"
@@ -367,11 +379,16 @@ def _build_index_html() -> str:
         show(lines.join(""));
         flow.querySelectorAll("button.chain-opt").forEach(function (btn) {{
           btn.addEventListener("click", async function () {{
+            if (paying) {{
+              show("<p class='text-yellow-300'>A wallet request is already open. Complete or close the wallet popup, then try again.</p>");
+              return;
+            }}
             var idx = Number(btn.getAttribute("data-chain"));
             var accept = accs[idx];
             if (!accept) return;
-            btn.disabled = true;
+            paying = true;
             var origText = btn.innerHTML;
+            flow.querySelectorAll("button.chain-opt").forEach(function (b) {{ b.disabled = true; }});
             btn.textContent = "Opening wallet...";
             if (hint) hint.classList.remove("hidden");
             try {{
@@ -381,10 +398,11 @@ def _build_index_html() -> str:
               else show("<p class='text-emerald-400'>Payment accepted.</p><pre class='mt-2 overflow-x-auto rounded border border-zinc-800 bg-zinc-900 p-3 text-xs text-cyan-300'>"
                 + esc(JSON.stringify(out, null, 2)) + "</pre>");
             }} catch (err) {{
-              btn.disabled = false;
-              btn.innerHTML = origText;
-              show("<p class='text-red-400'>" + esc((err && err.message) || String(err)) + "</p>");
+              show("<p class='text-red-400'>" + esc(friendlyErr(err)) + "</p>");
             }} finally {{
+              paying = false;
+              flow.querySelectorAll("button.chain-opt").forEach(function (b) {{ b.disabled = false; }});
+              btn.innerHTML = origText;
               if (hint) hint.classList.add("hidden");
             }}
           }});
