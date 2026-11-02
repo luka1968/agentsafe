@@ -108,6 +108,11 @@ class TestPublicPages:
         # account is authorized yet (avoids stuck pending-request errors)
         assert '"eth_accounts"' in r.text
         assert '"eth_requestAccounts"' in r.text
+        # EIP-712 domain name must match the token's on-chain name(): Base
+        # Sepolia testnet USDC is "USDC" (not "USD Coin" like mainnets), so
+        # the chain table carries an explicit per-chain tokenName.
+        assert "tokenName" in r.text
+        assert '"USDC"' in r.text
 
     def test_index_inline_script_is_valid_javascript(self):
         """The landing page inline script must be valid JavaScript.

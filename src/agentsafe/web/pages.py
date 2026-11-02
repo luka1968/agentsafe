@@ -185,10 +185,10 @@ def _build_index_html() -> str:
     function b64decode(s) {{ try {{ return JSON.parse(atob(s.replace(/-/g, "+").replace(/_/g, "/"))); }} catch (e) {{ return null; }} }}
     // Chain metadata for the networks this service advertises (EIP-3009).
     var CHAINS = {{
-      "eip155:8453":  {{ name: "Base",     chainId: 8453,  rpc: ["https://mainnet.base.org"],                      symbol: "ETH",  decimals: 18 }},
-      "eip155:42161": {{ name: "Arbitrum", chainId: 42161, rpc: ["https://arb1.arbitrum.io/rpc"],                  symbol: "ETH",  decimals: 18 }},
-      "eip155:137":   {{ name: "Polygon",  chainId: 137,   rpc: ["https://polygon-rpc.com"],                        symbol: "POL",  decimals: 18 }},
-      "eip155:84532": {{ name: "Base Sepolia (testnet)", chainId: 84532, rpc: ["https://sepolia.base.org"],       symbol: "ETH",  decimals: 18, testnet: true }}
+      "eip155:8453":  {{ name: "Base",     chainId: 8453,  rpc: ["https://mainnet.base.org"],                      symbol: "ETH",  decimals: 18, tokenName: "USD Coin" }},
+      "eip155:42161": {{ name: "Arbitrum", chainId: 42161, rpc: ["https://arb1.arbitrum.io/rpc"],                  symbol: "ETH",  decimals: 18, tokenName: "USD Coin" }},
+      "eip155:137":   {{ name: "Polygon",  chainId: 137,   rpc: ["https://polygon-rpc.com"],                        symbol: "POL",  decimals: 18, tokenName: "USD Coin" }},
+      "eip155:84532": {{ name: "Base Sepolia (testnet)", chainId: 84532, rpc: ["https://sepolia.base.org"],       symbol: "ETH",  decimals: 18, testnet: true, tokenName: "USDC" }}
     }};
     // A wallet session can only host ONE pending request at a time (MetaMask
     // rejects a second wallet_requestPermissions with "already pending").
@@ -262,8 +262,12 @@ def _build_index_html() -> str:
       var validAfter = 0;
       var validBefore = Math.floor(Date.now() / 1000) + (accept.maxTimeoutSeconds || 300);
       var nonce = "0x" + randomHex(32);
+      // EIP-712 domain name must equal the token's on-chain name() as the
+      // backend verifies it (x402 SDK asset registry). Base mainnet USDC is
+      // "USD Coin" but Base Sepolia testnet USDC is "USDC" — hardcoding
+      // would make testnet signatures fail with invalid_exact_evm_signature.
       var domain = {{
-        name: "USD Coin",
+        name: meta.tokenName || "USD Coin",
         version: "2",
         chainId: meta.chainId,
         verifyingContract: accept.asset
