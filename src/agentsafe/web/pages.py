@@ -198,6 +198,20 @@ def _build_index_html() -> str:
     // Keep a global lock so clicking another chain button while the wallet
     // popup is open does not fire a second connect request.
     var paying = false;
+    var payingSince = 0;
+    // Wallet requests can hang forever (popup ignored, extension wedged,
+    // network stall). Cap every wallet call so the lock always releases.
+    function withWalletTimeout(p, label) {{
+      var ms = 90000;
+      return new Promise(function (resolve, reject) {{
+        var t = setTimeout(function () {{
+          reject(new Error(label + " timed out after " + (ms / 1000) + "s. "
+            + "Close any wallet popup (or unlock MetaMask) and try again."));
+        }}, ms);
+        p.then(function (v) {{ clearTimeout(t); resolve(v); }},
+               function (e) {{ clearTimeout(t); reject(e); }});
+      }});
+    }}
     function friendlyErr(err) {{
       var msg = (err && err.message) || String(err);
       if (/already pending/i.test(msg)) {{
@@ -246,24 +260,24 @@ def _build_index_html() -> str:
       // opens the connect popup and can be rejected with "already pending"
       // if another request is stuck) when no account is authorized yet.
       var accounts = [];
-      try {{ accounts = await eth.request({{ method: "eth_accounts" }}); }} catch (e) {{ accounts = []; }}
+      try {{ accounts = await withWalletTimeout(eth.request({{ method: "eth_accounts" }}), "Wallet"); }} catch (e) {{ accounts = []; }}
       var from = accounts && accounts[0];
       if (!from) {{
-        accounts = await eth.request({{ method: "eth_requestAccounts" }});
+        accounts = await withWalletTimeout(eth.request({{ method: "eth_requestAccounts" }}), "Wallet connect");
         from = accounts && accounts[0];
         if (!from) throw new Error("Wallet connection rejected.");
       }}
       if (meta.chainId) {{
-        var cur = await eth.request({{ method: "eth_chainId" }});
+        var cur = await withWalletTimeout(eth.request({{ method: "eth_chainId" }}), "Wallet");
         var want = "0x" + meta.chainId.toString(16);
         if (String(cur).toLowerCase() !== want.toLowerCase()) {{
           try {{
-            await eth.request({{ method: "wallet_switchEthereumChain", params: [{{ chainId: want }}] }});
+            await withWalletTimeout(eth.request({{ method: "wallet_switchEthereumChain", params: [{{ chainId: want }}] }}), "Switch network");
           }} catch (sw) {{
             if (sw && sw.code === 4902 && meta.rpc) {{
               // Chain not in wallet yet: offer to add it (MetaMask pops an
               // "Add network" confirmation).
-              await eth.request({{
+              await withWalletTimeout(eth.request({{
                 method: "wallet_addEthereumChain",
                 params: [{{
                   chainId: want,
@@ -271,7 +285,7 @@ def _build_index_html() -> str:
                   rpcUrls: meta.rpc,
                   nativeCurrency: {{ name: meta.symbol, symbol: meta.symbol, decimals: meta.decimals }}
                 }}]
-              }});
+              }}), "Add network");
             }} else {{
               throw new Error("Please switch your wallet to " + meta.name + " and retry.");
             }}
@@ -329,10 +343,10 @@ def _build_index_html() -> str:
         domain: domain,
         message: message
       }};
-      var signature = await eth.request({{
+      var signature = await withWalletTimeout(eth.request({{
         method: "eth_signTypedData_v4",
         params: [from, JSON.stringify(typedData)]
-      }});
+      }}), "Signature");
       var payload = {{
         x402Version: 2,
         scheme: "exact",
@@ -424,13 +438,23 @@ def _build_index_html() -> str:
         flow.querySelectorAll("button.chain-opt").forEach(function (btn) {{
           btn.addEventListener("click", async function () {{
             if (paying) {{
-              show("<p class='text-yellow-300'>A wallet request is already open. Complete or close the wallet popup, then try again.</p>");
-              return;
+              // A request may have hung (ignored popup / wedged wallet).
+              // After the stale-lock window the lock self-releases so the
+              // user is never stuck.
+              var staleMs = 60000;
+              if (Date.now() - payingSince < staleMs) {{
+                show("<p class='text-yellow-300'>A wallet request is already open. "
+                  + "Complete or close the wallet popup (or wait " + Math.ceil((staleMs - (Date.now() - payingSince)) / 1000)
+                  + "s for the lock to reset), then try again.</p>");
+                return;
+              }}
+              paying = false;
             }}
             var idx = Number(btn.getAttribute("data-chain"));
             var accept = accs[idx];
             if (!accept) return;
             paying = true;
+            payingSince = Date.now();
             var origText = btn.innerHTML;
             flow.querySelectorAll("button.chain-opt").forEach(function (b) {{ b.disabled = true; }});
             btn.textContent = "Opening wallet...";

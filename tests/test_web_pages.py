@@ -124,6 +124,13 @@ class TestPublicPages:
         assert "friendlyErr" in r.text
         assert "already pending" in r.text
         assert "Complete or close the wallet popup" in r.text
+        # A wallet request can hang forever (ignored popup / wedged wallet);
+        # every wallet call must be time-boxed and a stale lock must
+        # self-release so the user is never stuck.
+        assert "withWalletTimeout" in r.text
+        assert "payingSince" in r.text
+        assert "staleMs" in r.text
+        assert "timed out after" in r.text
         # returning visitors skip the connect popup entirely: eth_accounts
         # is queried first and eth_requestAccounts only fires when no
         # account is authorized yet (avoids stuck pending-request errors)
