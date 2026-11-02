@@ -84,6 +84,13 @@ class TestPublicPages:
         # rejects the signature (invalid_exact_evm_signature).
         assert "randomHex(64)" in r.text
         assert 'var nonce = "0x" + randomHex(64);' in r.text
+        # Over-limit contracts must be explained before signing (flat fee covers
+        # <=500 lines) and, on refusal, the page must state that nothing moved.
+        assert "up to <b>500 source lines</b>" in r.text
+        assert "no USDC is ever taken" in r.text
+        assert "Nothing was charged" in r.text
+        assert "lineLimitNote" in r.text
+        assert "isLineLimit" in r.text
         assert 'href="/privacy"' in r.text
         assert 'href="/refund"' in r.text
         # Claude config JSON present

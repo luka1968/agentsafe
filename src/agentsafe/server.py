@@ -732,13 +732,36 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
         lines = count_source_lines(bundle)
         if lines > REST_AUDIT_MAX_LINES:
             logger.info("REST dispatch rejected: lines=%d exceeds flat-fee cap", lines)
+            # Tiered (MCP) quotes for this contract, so the caller can see the
+            # exact alternative price. Purely informational - the REST flat
+            # fee still does NOT serve contracts over the cap, so it can never
+            # undercut the MCP tiers.
+            try:
+                mcp_price: str | None = audit_price_for_lines(lines)
+            except ContractTooLargeError:
+                mcp_price = None
             return JSONResponse(
                 {
                     "ok": False,
                     "error_code": "REST_FLAT_FEE_LINE_LIMIT",
                     "error": (
-                        f"{lines} source lines exceed the {REST_AUDIT_MAX_LINES}-line flat fee; "
-                        "use the MCP endpoint (audit_contract) for tiered pricing"
+                        f"{lines} source lines exceed the {REST_AUDIT_MAX_LINES}-line "
+                        "flat fee; use the MCP endpoint (audit_contract) for tiered "
+                        "pricing"
+                    ),
+                    "source_lines": lines,
+                    "flat_fee_max_lines": REST_AUDIT_MAX_LINES,
+                    "mcp_tier_price": mcp_price,
+                    "mcp_endpoint": "/mcp",
+                    "mcp_tool": "audit_contract",
+                    "charged": False,
+                    "message": (
+                        "No payment was taken: the flat-fee REST endpoint settles "
+                        "only after an audit is accepted, so this over-limit "
+                        "request moved no funds. Call the MCP tool "
+                        "`audit_contract` with the same address to audit this "
+                        "contract at tiered pricing"
+                        + (f" ({mcp_price})." if mcp_price else ".")
                     ),
                 },
                 status_code=422,

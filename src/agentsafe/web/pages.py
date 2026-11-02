@@ -205,6 +205,22 @@ def _build_index_html() -> str:
       }}
       return msg;
     }}
+    function isLineLimit(msg) {{
+      return /line flat fee|flat fee;|exceed the .*flat fee|REST_FLAT_FEE_LINE_LIMIT/i.test(msg || "");
+    }}
+    // The REST flat fee only covers small contracts; larger ones are audited via
+    // the MCP tool with tiered pricing. Make that explicit and reassure the user
+    // that the signature alone moved no funds.
+    function lineLimitNote() {{
+      return "<div class='mt-2 rounded border border-amber-700/60 bg-amber-900/20 p-3 text-xs text-amber-200'>"
+        + "<b>Nothing was charged.</b> A signed payment authorization is only settled "
+        + "after the audit is accepted, so an over-limit contract never moves USDC "
+        + "(your balance is unchanged).<br>"
+        + "This contract is larger than the flat-fee REST cap, which is deliberate: "
+        + "the flat fee is priced for small contracts, and larger ones are billed "
+        + "per size tier on the MCP endpoint."
+        + "</div>";
+    }}
     function fmtTask(tid) {{
       return "<p class='text-emerald-400'>Audit dispatched!</p>"
         + "<p class='mt-1 text-zinc-300'>Task ID: <code class='text-cyan-300'>" + esc(tid) + "</code></p>"
@@ -380,6 +396,10 @@ def _build_index_html() -> str:
         if (!accs.length) {{ show("<p class='text-red-400'>Service did not return payment terms.</p>"); return; }}
         var lines = [];
         lines.push("<p class='text-yellow-300'>Payment required to start this audit. Pick the network you want to pay on:</p>");
+        lines.push("<p class='text-xs text-zinc-500'>The flat fee covers contracts up to <b>500 source lines</b>. "
+          + "Larger contracts are billed per size tier on the MCP endpoint (tool "
+          + "<code>audit_contract</code>); requesting one here is refused <i>before</i> "
+          + "settlement, so no USDC is ever taken.</p>");
         accs.forEach(function (acc, i) {{
           var meta = CHAINS[acc.network] || {{ name: acc.network }};
           var price = (Number(acc.amount) / 1e6).toFixed(2);
@@ -422,7 +442,9 @@ def _build_index_html() -> str:
               else show("<p class='text-emerald-400'>Payment accepted.</p><pre class='mt-2 overflow-x-auto rounded border border-zinc-800 bg-zinc-900 p-3 text-xs text-cyan-300'>"
                 + esc(JSON.stringify(out, null, 2)) + "</pre>");
             }} catch (err) {{
-              show("<p class='text-red-400'>" + esc(friendlyErr(err)) + "</p>");
+              var emsg = friendlyErr(err);
+              show("<p class='text-red-400'>" + esc(emsg) + "</p>"
+                + (isLineLimit(emsg) ? lineLimitNote() : ""));
             }} finally {{
               paying = false;
               flow.querySelectorAll("button.chain-opt").forEach(function (b) {{ b.disabled = false; }});

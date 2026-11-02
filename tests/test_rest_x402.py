@@ -281,6 +281,17 @@ class TestRestAuditFlow:
         assert resp.status_code == 422
         body = resp.json()
         assert body["error_code"] == "REST_FLAT_FEE_LINE_LIMIT"
+        # Actionable guidance: the caller must be told the exact alternative,
+        # that nothing was charged affiliates, and where to go next.
+        assert body["source_lines"] == 900
+        assert body["flat_fee_max_lines"] == 500
+        assert body["mcp_tier_price"] == "$5.00"  # 501-1000 tier
+        assert body["mcp_tool"] == "audit_contract"
+        assert body["mcp_endpoint"] == "/mcp"
+        assert body["charged"] is False
+        assert "No payment was taken" in body["message"]
+        assert "audit_contract" in body["message"]
+        assert "$5.00" in body["message"]
         # settle endpoint was NEVER called: verify-only, no funds moved
         assert routes["settle"].call_count == 0
         assert resp.headers.get("payment-response") is None
