@@ -295,6 +295,48 @@ class TestAdapterConstruction:
         assert adapter.accepts[1].pay_to == "0x" + "ef" * 20
         assert {a.amount for a in adapter.accepts} == {"10000"}
 
+    @respx.mock
+    def test_testnet_per_chain_price_override(self):
+        """A per-chain price (e.g. $0.0001 on a testnet) is applied only to
+        that network; other chains keep the shared price. Lets users burn a
+        token amount on testnets instead of the full flat fee."""
+        routes = _mock_facilitator()
+        routes["supported"].mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "kinds": [
+                        {"x402Version": 2, "scheme": "exact", "network": "eip155:8453", "extra": None},
+                        {"x402Version": 2, "scheme": "exact", "network": "eip155:84532", "extra": None},
+                    ],
+                    "extensions": [],
+                },
+            )
+        )
+        adapter = X402PaymentAdapter(
+            enabled=True,
+            sdk_version="2.25.0",
+            network="eip155:8453",
+            pay_to="0x" + "ef" * 20,
+            facilitator_url=FAC,
+            price="$3.00",
+            extra_networks={
+                "eip155:84532": {
+                    "asset": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+                    "pay_to": "0x" + "ef" * 20,
+                    "price": "$0.0001",
+                },
+            },
+        )
+        # mainnet keeps the shared $3.00 -> 3_000_000 (6 decimals)
+        assert adapter.accepts[0].amount == "3000000"
+        # testnet override $0.0001 -> 100 (6 decimals)
+        assert adapter.accepts[1].amount == "100"
+        # tiered pricing still honours the testnet override
+        tier = adapter.requirements_for_price("$2.50")
+        assert tier[0].amount == "2500000"
+        assert tier[1].amount == "100"
+
 
 class TestPaymentFlow:
     @respx.mock

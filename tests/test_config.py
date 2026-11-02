@@ -188,15 +188,32 @@ class TestStartupValidation:
             X402_NETWORKS_JSON=(
                 '{"eip155:42161": {"asset": "0x' + "cd" * 20 + '", '
                 '"pay_to": "0x' + "ef" * 20 + '"}, '
-                '"eip155:137": {"asset": "0x' + "12" * 20 + '", '
-                '"pay_to": "0x' + "34" * 20 + '"}}'
+                '"eip155:84532": {"asset": "0x' + "56" * 20 + '", '
+                '"pay_to": "0x' + "78" * 20 + '", "price": "$0.0001"}}'
             ),
         )
         validate_runtime_settings(s)
         mc = s.multichain_networks
-        assert set(mc) == {"eip155:42161", "eip155:137"}
+        assert set(mc) == {"eip155:42161", "eip155:84532"}
         assert mc["eip155:42161"]["asset"].startswith("0xcd")
-        assert mc["eip155:137"]["pay_to"].startswith("0x34")
+        assert mc["eip155:42161"]["pay_to"].startswith("0xef")
+        # per-chain price override is optional and preserved when present
+        assert "price" not in mc["eip155:42161"]
+        assert mc["eip155:84532"]["price"] == "$0.0001"
+
+    def test_multichain_networks_bad_price_rejected(self):
+        s = _settings(
+            PAYMENTS_ENABLED=True,
+            X402_SDK_VERSION="2.25.0",
+            X402_PAY_TO="0x" + "ab" * 20,
+            X402_NETWORK="eip155:84532",
+            X402_NETWORKS_JSON=(
+                '{"eip155:42161": {"asset": "0x' + "cd" * 20 + '", '
+                '"pay_to": "0x' + "ef" * 20 + '", "price": "3.00"}}'
+            ),
+        )
+        with pytest.raises(SettingsError, match="price"):
+            validate_runtime_settings(s)
 
     def test_multichain_networks_json_blank_is_empty(self):
         s = _settings(PAYMENTS_ENABLED=True, X402_SDK_VERSION="2.25.0",

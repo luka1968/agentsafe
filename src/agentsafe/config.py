@@ -342,7 +342,11 @@ class Settings(BaseSettings):
                 continue
             asset = str(terms.get("asset", "")).strip()
             pay_to = str(terms.get("pay_to", "")).strip()
-            out[net] = {"asset": asset, "pay_to": pay_to}
+            entry: dict[str, str] = {"asset": asset, "pay_to": pay_to}
+            price = str(terms.get("price", "")).strip()
+            if price:
+                entry["price"] = price
+            out[net] = entry
         return out
 
     def secrets_report(self) -> dict[str, str]:
@@ -454,6 +458,11 @@ def validate_runtime_settings(
                         pay_to = str(terms.get("pay_to", "")).strip()
                         if not re.match(r"^0x[0-9a-fA-F]{40}$", pay_to):
                             errors.append(f"X402_NETWORKS_JSON[{net!r}].pay_to must be a valid EVM address")
+                        price = str(terms.get("price", "")).strip()
+                        if price and not price.startswith("$"):
+                            errors.append(
+                                f"X402_NETWORKS_JSON[{net!r}].price must be a USD price string like '$0.0001'"
+                            )
 
     if errors:
         raise SettingsError("Invalid configuration:\n- " + "\n- ".join(errors))

@@ -105,8 +105,11 @@ class X402PaymentAdapter:
         # accepts list; extras extend it so x402 clients can pay on any of
         # the listed chains.
         self._extra_networks = {
-            net: {"asset": str(t.get("asset", "")).strip(),
-                  "pay_to": str(t.get("pay_to", "")).strip()}
+            net: {
+                "asset": str(t.get("asset", "")).strip(),
+                "pay_to": str(t.get("pay_to", "")).strip(),
+                **({"price": str(t["price"]).strip()} if t.get("price") else {}),
+            }
             for net, t in (extra_networks or {}).items()
             if t.get("asset") and t.get("pay_to")
         }
@@ -171,7 +174,11 @@ class X402PaymentAdapter:
         x402 clients can choose which chain to pay on."""
         from x402.schemas import ResourceConfig
 
-        def build_one(net: str, pay_to: str, asset: str) -> list[Any]:
+        # The advertised price for the *primary* chain. Extra chains can
+        # override it with their own per-chain price (e.g. a testnet).
+        _price = price
+
+        def build_one(net: str, pay_to: str, asset: str, price: str | None = None) -> list[Any]:
             extra: dict[str, Any] = {}
             if asset:
                 extra["asset"] = asset
@@ -180,7 +187,7 @@ class X402PaymentAdapter:
                     scheme="exact",
                     network=net,
                     pay_to=pay_to,
-                    price=price,
+                    price=price if price else _price,
                     max_timeout_seconds=self._max_timeout_seconds,
                     extra=extra or None,
                 )
@@ -195,7 +202,11 @@ class X402PaymentAdapter:
         all_reqs: list[Any] = []
         all_reqs.extend(build_one(self.network, self.pay_to, self._asset))
         for net, terms in self._extra_networks.items():
-            all_reqs.extend(build_one(net, terms["pay_to"], terms["asset"]))
+            # Per-chain price override (e.g. a testnet at a token amount).
+            chain_price = terms.get("price") or _price
+            all_reqs.extend(
+                build_one(net, terms["pay_to"], terms["asset"], price=chain_price)
+            )
         return all_reqs
 
     def requirements_for_price(self, price: str) -> list[Any]:

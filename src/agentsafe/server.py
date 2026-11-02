@@ -218,12 +218,12 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
         # extra chains from X402_NETWORKS_JSON). Each carries its own asset
         # and pay_to so x402 clients can settle on Base, Arbitrum, Polygon,
         # or any other configured chain.
-        def _payment_option(net: str, pay_to: str, asset: str) -> PaymentOption:
+        def _payment_option(net: str, pay_to: str, asset: str, price: str | None = None) -> PaymentOption:
             extra = {"asset": asset} if asset else None
             return PaymentOption(
                 scheme="exact",
                 pay_to=pay_to,
-                price=settings.X402_REST_PRICE,
+                price=price or settings.X402_REST_PRICE,
                 network=net,
                 max_timeout_seconds=settings.X402_MAX_TIMEOUT_SECONDS,
                 extra=extra,
@@ -233,7 +233,9 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
             _payment_option(payment.network, payment.pay_to, settings.X402_ASSET)
         ]
         for net, terms in payment.extra_networks.items():
-            rest_accepts.append(_payment_option(net, terms["pay_to"], terms["asset"]))
+            rest_accepts.append(
+                _payment_option(net, terms["pay_to"], terms["asset"], terms.get("price"))
+            )
 
         x402_http = payment.http_resource_server(
             {

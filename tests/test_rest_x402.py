@@ -161,6 +161,42 @@ class TestRestAuditFlow:
         assert routes["supported"].call_count == 1  # startup only
 
     @respx.mock
+    async def test_multichain_402_advertises_per_chain_prices(self):
+        """REST 402 advertises every configured chain with its own amount:
+        mainnets at the flat $3.00, a testnet at its per-chain $0.0001
+        override. The client can pick whichever network it wants to pay on."""
+        routes = _mock_facilitator()
+        routes["supported"].mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "kinds": [
+                        {"x402Version": 2, "scheme": "exact", "network": "eip155:8453", "extra": None},
+                        {"x402Version": 2, "scheme": "exact", "network": "eip155:84532", "extra": None},
+                    ],
+                    "extensions": [],
+                },
+            )
+        )
+        server = build_server(
+            _settings(
+                X402_NETWORK="eip155:8453",
+                X402_ALLOW_MAINNET=True,
+                X402_NETWORKS_JSON=(
+                    '{"eip155:84532": {"asset": "0x036CbD53842c5426634e7929541eC2318f3dCF7e", '
+                    '"pay_to": "0x' + "ef" * 20 + '", "price": "$0.0001"}}'
+                ),
+            )
+        )
+        async with _http_client(server) as client:
+            resp = await client.post("/api/audit", json={"address": ADDR})
+        assert resp.status_code == 402
+        body = resp.json()
+        assert [a["network"] for a in body["accepts"]] == ["eip155:8453", "eip155:84532"]
+        assert body["accepts"][0]["amount"] == "3000000"  # $3.00 flat
+        assert body["accepts"][1]["amount"] == "100"  # $0.0001 testnet
+
+    @respx.mock
     async def test_paid_request_dispatches_and_settles(self):
         _mock_facilitator()
         gh_state = _wire_dispatch_and_runs()
