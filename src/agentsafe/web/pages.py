@@ -299,6 +299,14 @@ def _build_index_html() -> str:
       if (!(bridge && bridge.createPaymentPayload)) {{
         throw new Error("Payment module not loaded. Hard-refresh the page and retry.");
       }}
+      // Re-read the ACTIVE wallet account right before signing. MetaMask signs
+      // eth_signTypedData_v4 with its currently-selected account; if the user
+      // switched accounts after connecting, the cached `from` is stale and the
+      // recovered signer != payload.from -> invalid_exact_evm_signature. Refresh
+      // now so we always sign with the exact account MetaMask will use.
+      var live = [];
+      try {{ live = await withWalletTimeout(eth.request({{ method: "eth_accounts" }}), "Wallet"); }} catch (e) {{ live = []; }}
+      if (live && live[0]) from = live[0];
       var signed = await withWalletTimeout(
         bridge.createPaymentPayload(eth, from, accept, window.location.origin + REST),
         "Signature"

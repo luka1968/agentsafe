@@ -175,6 +175,13 @@ class TestPublicPages:
         # the page delegates signing to the official bridge bundle; the
         # MetaMask v4 RPC method lives in web/src/bridge.js, not inline
         assert "bridge.createPaymentPayload" in js
+        # invalid_exact_evm_signature root cause: MetaMask signs with its
+        # CURRENTLY-SELECTED account, so the page must re-read the active
+        # account immediately before signing (a stale `from` after the user
+        # switched accounts makes recovered != payload.from).
+        assert "eth_accounts" in js
+        assert "live[0]" in js
+        assert "from = live[0]" in js
 
         node = os.environ.get("NODE", "node")
         # Write the temp file into the CWD so Windows-hosted node.exe (which
