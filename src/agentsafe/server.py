@@ -152,6 +152,10 @@ class _SlidingWindowLimiter:
 _OPENAPI_FILE = Path(__file__).resolve().parents[2] / "openapi.json"
 _FAVICON_FILE = Path(__file__).resolve().parents[2] / "favicon.ico"
 _LOGO_FILE = Path(__file__).resolve().parents[2] / "logo.png"
+# Browser bundle bridging the landing page to the official @x402/evm scheme.
+# Built from web/src/bridge.js (esbuild IIFE); committed so the serverless
+# build needs no node/npm step.
+_X402_BRIDGE_PATH = Path(__file__).resolve().parents[2] / "web" / "dist" / "x402-bridge.js"
 
 mcp: FastMCP | None = None
 
@@ -376,6 +380,28 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
             return HTMLResponse(legal_html("refund"))
         except LegalDocumentMissingError as exc:
             return PlainTextResponse(str(exc), status_code=500)
+
+    @app.custom_route("/static/x402-bridge.js", methods=["GET"])
+    async def _x402_bridge(request: Request) -> Response:
+        """Serve the browser bundle that bridges the landing page to the
+        official @x402/evm exact scheme (EIP-3009 signing + payload assembly).
+        Built from web/src/bridge.js via esbuild; committed to the repo so the
+        serverless build needs no compile step. It must not be cached: a stale
+        bundle may sign with outdated protocol details.
+        """
+        try:
+            body = _X402_BRIDGE_PATH.read_bytes()
+        except OSError as exc:
+            logger.error("x402-bridge.js unavailable: %s", exc)
+            return PlainTextResponse("payment module unavailable", status_code=500)
+        return Response(
+            body,
+            media_type="application/javascript; charset=utf-8",
+            headers={
+                "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+                "Content-Length": str(len(body)),
+            },
+        )
 
     # ------------------------------------------------ x402 REST API (x402scan)
 

@@ -11,6 +11,8 @@ __pycache__/
 .eggs/
 build/
 dist/
+!web/dist/
+!web/dist/x402-bridge.js
 .venv/
 .venv-test/
 venv/

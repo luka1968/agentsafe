@@ -76,16 +76,19 @@ class TestPublicPages:
         # visible build tag so visitors can confirm they're on the current
         # build (and debug stale-cache signature failures)
         assert "landing build v" in r.text
-        # EIP-712 domain name is taken from the server-advertised accept
-        # extra (authoritative), falling back to the chain table only.
-        assert "accept.extra && accept.extra.name" in r.text
-        # EIP-712 bytes32 nonce must be 32 bytes (64 hex chars); a 16-byte
-        # nonce pads inconsistently across wallets and the facilitator
-        # rejects the signature (invalid_exact_evm_signature).
-        assert "randomHex(64)" in r.text
-        assert 'var nonce = "0x" + randomHex(64);' in r.text
-        # Over-limit contracts must be explained before signing (flat fee covers
-        # <=500 lines) and, on refusal, the page must state that nothing moved.
+        # Payment signing is delegated to the OFFICIAL @x402/evm exact scheme
+        # via the browser bundle (/static/x402-bridge.js): the SDK generates
+        # the 32-byte (bytes32) nonce, builds the EIP-712 domain from the
+        # server-advertised accept.extra (authoritative 402 name/version) and
+        # signs eth_signTypedData_v4. The page no longer hand-rolls any of it.
+        assert 'src="/static/x402-bridge.js"' in r.text
+        assert "X402Bridge" in r.text
+        assert "bridge.createPaymentPayload" in r.text
+        # the hand-rolled nonce generator must be gone (it caused real
+        # signature mismatches when a short nonce padded inconsistently)
+        assert "randomHex" not in r.text
+        # over-limit contracts must be explained before signing (flat fee
+        # covers <=500 lines) and, on refusal, the state the nothing moved.
         assert "up to <b>500 source lines</b>" in r.text
         assert "no USDC is ever taken" in r.text
         assert "Nothing was charged" in r.text
@@ -169,7 +172,9 @@ class TestPublicPages:
         # backslash-escaped quotes that break the JS string literal).
         assert "JSON.stringify" in js
         assert "payOnChain" in js
-        assert "eth_signTypedData_v4" in js
+        # the page delegates signing to the official bridge bundle; the
+        # MetaMask v4 RPC method lives in web/src/bridge.js, not inline
+        assert "bridge.createPaymentPayload" in js
 
         node = os.environ.get("NODE", "node")
         # Write the temp file into the CWD so Windows-hosted node.exe (which
@@ -199,6 +204,150 @@ class TestPublicPages:
         assert proc.returncode == 0, (
             f"inline script failed JS parse:\n{proc.stderr.strip()}"
         )
+
+    def test_x402_bridge_bundle_nonce_and_domain(self):
+        """The payment bridge (official @x402/evm exact scheme) must produce
+        the SAME invariants the hand-rolled frontend kept getting wrong:
+        - the EIP-3009 nonce is a full 32 bytes (64 hex chars) — a shorter
+          nonce pads inconsistently and the facilitator rejects the signature
+          with invalid_exact_evm_signature;
+        - the EIP-712 domain name/version come from the server-advertised
+          accept.extra (authoritative 402 terms), never from the chain table;
+        - eth_signTypedData_v4 is called with the SDK-built typed data.
+
+        The bundle is loaded in a Node VM with a fake MetaMask provider; the
+        real facilitator is never contacted and no money moves.
+        """
+        import os
+        import subprocess
+        import tempfile
+        from pathlib import Path
+
+        node = os.environ.get("NODE", "node")
+        bundle = Path(__file__).resolve().parents[1] / "web" / "dist" / "x402-bridge.js"
+        ASSET_HEX = "0x6b175474e89094c44da98b954eedeac495271d0f"
+
+        def _winify(p: Path) -> Path:
+            """Map /mnt/d/... to D:\\... so Windows-hosted node can read it."""
+            s = str(p.resolve())
+            if s.startswith("/mnt/d/"):
+                return Path("D:\\" + s[len("/mnt/d/"):].replace("/", "\\"))
+            return p
+        if not bundle.exists():
+            pytest.skip("x402 bridge bundle not built (run web: npm run build)")
+
+        harness = r'''
+import { readFileSync } from "fs";
+import vm from "vm";
+import { webcrypto } from "crypto";
+const fsRead = (p) => readFileSync(p, "utf8");
+const code = fsRead(%(bundle)r);
+const sandbox = {
+  window: {},
+  crypto: webcrypto,
+  Uint8Array, BigInt, TextEncoder, TextDecoder,
+  setTimeout, clearTimeout,
+};
+sandbox.globalThis = sandbox;
+vm.createContext(sandbox);
+vm.runInContext(code, sandbox);
+const bridge = sandbox.X402Bridge;
+if (!bridge || typeof bridge.createPaymentPayload !== "function") {
+  throw new Error("X402Bridge.createPaymentPayload missing");
+}
+let captured = null;
+const fakeEth = {
+  request: async ({ method, params }) => {
+    if (method === "eth_signTypedData_v4") {
+      captured = JSON.parse(params[1]);
+      return "0x" + "ab".repeat(65);
+    }
+    throw new Error("unexpected wallet call: " + method);
+  },
+};
+const accept = {
+  x402Version: 2, scheme: "exact", network: "eip155:84532",
+  asset: "0x6b175474e89094c44da98b954eedeac495271d0f",
+  payTo: "0x03ee35B45382d19b7BDcE1A2B1eD72Aae01c48cc",
+  amount: "100", maxTimeoutSeconds: 300,
+  extra: { name: "USDC", version: "2" },
+};
+const out = await bridge.createPaymentPayload(
+  fakeEth, "0xAb5801a7D398351b8bE11C439e05C5B3259aeC9B",
+  accept, "https://x402.workfern.com/api/audit"
+);
+const auth = out.payload.payload.authorization;
+const results = {};
+results.nonce_hex_len = auth.nonce.length - 2;
+results.nonce_32bytes = (auth.nonce.length - 2) === 64;
+results.domain_name = captured.domain.name;
+results.domain_version = captured.domain.version;
+results.domain_chainid = captured.domain.chainId;
+results.verifying_contract = captured.domain.verifyingContract;
+results.primary_type = captured.primaryType;
+results.scheme = out.payload.scheme;
+results.x402_version = out.payload.x402Version;
+results.accepted_network = out.payload.accepted.network;
+results.value = auth.value;
+results.valid_before_set = Number(auth.validBefore) > Math.floor(Date.now() / 1000);
+results.sig_present = /^0x[0-9a-f]+$/.test(out.payload.payload.signature);
+console.log(JSON.stringify(results));
+''' % {"bundle": str(_winify(bundle))}
+
+        cwd = os.getcwd()
+        tmp_path = os.path.join(cwd, f"._bridge_{os.getpid()}.mjs")
+        try:
+            with open(tmp_path, "w", encoding="utf-8") as fh:
+                fh.write(harness)
+            if tmp_path.startswith("/mnt/d/") and "node.exe" in node:
+                win_path = "D:\\" + tmp_path[len("/mnt/d/"):].replace("/", "\\")
+            else:
+                win_path = tmp_path
+            proc = subprocess.run(
+                [node, win_path], capture_output=True, text=True, timeout=60
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+            pytest.skip(f"node unavailable for bridge test: {exc}")
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+        assert proc.returncode == 0, f"bridge harness failed:\n{proc.stderr}"
+        results = json.loads(proc.stdout.strip().splitlines()[-1])
+        # the exact regressions that broke real payments before
+        assert results["nonce_32bytes"] is True, "nonce must be 32 bytes"
+        assert results["nonce_hex_len"] == 64
+        assert results["domain_name"] == "USDC"  # authoritative accept.extra
+        assert results["domain_version"] == "2"
+        assert results["domain_chainid"] == 84532
+        # verifyingContract must equal the accept asset (checksummed by the
+        # SDK's getAddress — compare case-insensitively to the raw input)
+        assert results["verifying_contract"].lower() == ASSET_HEX.lower()
+        assert results["primary_type"] == "TransferWithAuthorization"
+        assert results["scheme"] == "exact"
+        assert results["x402_version"] == 2
+        assert results["accepted_network"] == "eip155:84532"
+        assert results["value"] == "100"
+        assert results["valid_before_set"] is True
+        assert results["sig_present"] is True
+
+    async def test_x402_bridge_bundle_served(self):
+        """The landing page loads the payment bridge from a static route.
+
+        The bundle contains the OFFICIAL @x402/evm exact scheme (EIP-3009
+        signing + payload assembly). It must be served uncached.
+        """
+        server = build_server(_settings())
+        async with _http_client(server) as client:
+            r = await client.get("/static/x402-bridge.js")
+        assert r.status_code == 200
+        assert "javascript" in r.headers.get("content-type", "")
+        assert "no-store" in r.headers.get("cache-control", "")
+        # the official scheme + bridge entry points must be inside the bundle
+        assert "ExactEvmScheme" in r.text
+        assert "createPaymentPayload" in r.text
+        assert "eth_signTypedData_v4" in r.text
 
     @pytest.mark.parametrize(
         ("path", "marker", "has_table"),

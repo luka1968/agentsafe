@@ -1,0 +1,18 @@
+{
+  "name": "agentsafe-web-bridge",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Browser bundle bridging the landing page to the official @x402/evm exact scheme (EIP-3009 signer + payload assembly).",
+  "scripts": {
+    "build": "esbuild src/bridge.js --bundle --minify --format=iife --global-name=X402Bridge --platform=browser --target=es2020 --outfile=dist/x402-bridge.js"
+  },
+  "dependencies": {
+    "@x402/core": "~2.29.0",
+    "@x402/evm": "~2.29.0",
+    "viem": "^2.48.11"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.2"
+  }
+}

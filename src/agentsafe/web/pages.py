@@ -132,6 +132,7 @@ def _build_index_html() -> str:
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>agentSAFE - AI Smart Contract Audits on Ethereum Mainnet</title>
 <script src="https://cdn.tailwindcss.com"></script>
+<script defer src="/static/x402-bridge.js"></script>
 </head>
 <body class="bg-black text-white min-h-screen">
 <div class="mx-auto max-w-3xl px-6 py-16">
@@ -244,11 +245,6 @@ def _build_index_html() -> str:
         + "<a class='text-cyan-300 hover:underline' href='/api/audit/" + esc(tid) + "/report.md' target='_blank'>Markdown</a> &middot; "
         + "<a class='text-cyan-300 hover:underline' href='/api/audit/" + esc(tid) + "/report.pdf' target='_blank'>PDF</a></p>";
     }}
-    function randomHex(len) {{
-      var out = "";
-      for (var i = 0; i < len; i++) {{ out += "0123456789abcdef".charAt(Math.floor(Math.random() * 16)); }}
-      return out;
-    }}
     // Sign an EIP-3009 transferWithAuthorization with the user's wallet and
     // retry the audit request with the x402 payment header (X-PAYMENT).
     async function payOnChain(a, accept) {{
@@ -292,79 +288,22 @@ def _build_index_html() -> str:
           }}
         }}
       }}
-      var validAfter = 0;
-      var validBefore = Math.floor(Date.now() / 1000) + (accept.maxTimeoutSeconds || 300);
-      // EIP-712 bytes32 nonce MUST be 32 bytes (64 hex chars). The SDK
-      // generates os.urandom(32).hex() = 64 chars; a shorter nonce (e.g.
-      // 32 chars = 16 bytes) makes wallets pad it inconsistently when
-      // hashing, so the recovered signer mismatches -> the facilitator
-      // rejects with invalid_exact_evm_signature.
-      var nonce = "0x" + randomHex(64);
-      // EIP-712 domain name must equal the token's on-chain name() as the
-      // backend verifies it. The backend now ships the authoritative name
-      // in the 402 accept's extra (see server.py _payment_option), so the
-      // frontend uses that first and never hardcodes a token name (Base
-      // mainnet USDC is "USD Coin", Base Sepolia testnet USDC is "USDC").
-      var domainName = (accept.extra && accept.extra.name) || meta.tokenName || "USD Coin";
-      var domainVersion = (accept.extra && accept.extra.version) || "2";
-      var domain = {{
-        name: domainName,
-        version: domainVersion,
-        chainId: meta.chainId,
-        verifyingContract: accept.asset
-      }};
-      var types = {{
-        EIP712Domain: [
-          {{ name: "name", type: "string" }},
-          {{ name: "version", type: "string" }},
-          {{ name: "chainId", type: "uint256" }},
-          {{ name: "verifyingContract", type: "address" }}
-        ],
-        TransferWithAuthorization: [
-          {{ name: "from", type: "address" }},
-          {{ name: "to", type: "address" }},
-          {{ name: "value", type: "uint256" }},
-          {{ name: "validAfter", type: "uint256" }},
-          {{ name: "validBefore", type: "uint256" }},
-          {{ name: "nonce", type: "bytes32" }}
-        ]
-      }};
-      var message = {{
-        from: from,
-        to: accept.payTo,
-        value: accept.amount,
-        validAfter: validAfter,
-        validBefore: validBefore,
-        nonce: nonce
-      }};
-      var typedData = {{
-        primaryType: "TransferWithAuthorization",
-        types: types,
-        domain: domain,
-        message: message
-      }};
-      var signature = await withWalletTimeout(eth.request({{
-        method: "eth_signTypedData_v4",
-        params: [from, JSON.stringify(typedData)]
-      }}), "Signature");
-      var payload = {{
-        x402Version: 2,
-        scheme: "exact",
-        network: accept.network,
-        resource: {{ url: window.location.origin + REST, mimeType: "application/json" }},
-        accepted: accept,
-        payload: {{
-          signature: signature,
-          authorization: {{
-            from: from,
-            to: accept.payTo,
-            value: String(accept.amount),
-            validAfter: String(validAfter),
-            validBefore: String(validBefore),
-            nonce: nonce
-          }}
-        }}
-      }};
+      // Payment signing is delegated to the OFFICIAL @x402/evm exact scheme
+      // (window.X402Bridge): it generates the 32-byte(bytes32) nonce, builds the
+      // EIP-712 domain from the backend's authoritative accept.extra name/version,
+      // signs via eth_signTypedData_v4, and returns the complete v2 payload the
+      // backend's x402 server verification expects. Hand-rolling any of this
+      // (nonce length, domain name, typed-data serialization) has caused real
+      // signature failures in the past.
+      var bridge = window.X402Bridge;
+      if (!(bridge && bridge.createPaymentPayload)) {{
+        throw new Error("Payment module not loaded. Hard-refresh the page and retry.");
+      }}
+      var signed = await withWalletTimeout(
+        bridge.createPaymentPayload(eth, from, accept, window.location.origin + REST),
+        "Signature"
+      );
+      var payload = signed.payload;
       var res = await fetch(REST, {{
         method: "POST",
         headers: {{
