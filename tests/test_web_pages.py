@@ -119,6 +119,12 @@ class TestPublicPages:
         assert "payOnChain" in r.text
         assert "X-PAYMENT" in r.text
         assert "chain-opt" in r.text
+        # x402.org registers ONLY Base Sepolia (84532) for the exact scheme
+        # (8453/42161/137 return "No facilitator registered"), so the page
+        # must sort the working network first so the default choice settles.
+        assert 'a.network === "eip155:84532"' in r.text
+        assert "accs.sort" in r.text
+        assert "eip155:84532" in r.text
         assert "eth_signTypedData_v4" in r.text
         # wallet session lock: only one pending request at a time; a second
         # click while the wallet popup is open gets a friendly hint instead of

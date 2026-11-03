@@ -189,10 +189,16 @@ def _build_index_html() -> str:
     function b64decode(s) {{ try {{ return JSON.parse(atob(s.replace(/-/g, "+").replace(/_/g, "/"))); }} catch (e) {{ return null; }} }}
     // Chain metadata for the networks this service advertises (EIP-3009).
     var CHAINS = {{
+      // x402.org's facilitator currently registers ONLY Base Sepolia
+      // (eip155:84532) for the exact/EIP-3009 scheme. Base mainnet (8453),
+      // Arbitrum (42161) and Polygon (137) return "No facilitator registered"
+      // from x402.org and cannot settle, so Base Sepolia is listed first as
+      // the default payable network. The others stay for when x402.org
+      // enables them, but a payment on them will not complete today.
+      "eip155:84532": {{ name: "Base Sepolia (testnet)", chainId: 84532, rpc: ["https://sepolia.base.org"],       symbol: "ETH",  decimals: 18, testnet: true, tokenName: "USDC" }},
       "eip155:8453":  {{ name: "Base",     chainId: 8453,  rpc: ["https://mainnet.base.org"],                      symbol: "ETH",  decimals: 18, tokenName: "USD Coin" }},
       "eip155:42161": {{ name: "Arbitrum", chainId: 42161, rpc: ["https://arb1.arbitrum.io/rpc"],                  symbol: "ETH",  decimals: 18, tokenName: "USD Coin" }},
-      "eip155:137":   {{ name: "Polygon",  chainId: 137,   rpc: ["https://polygon-rpc.com"],                        symbol: "POL",  decimals: 18, tokenName: "USD Coin" }},
-      "eip155:84532": {{ name: "Base Sepolia (testnet)", chainId: 84532, rpc: ["https://sepolia.base.org"],       symbol: "ETH",  decimals: 18, testnet: true, tokenName: "USDC" }}
+      "eip155:137":   {{ name: "Polygon",  chainId: 137,   rpc: ["https://polygon-rpc.com"],                        symbol: "POL",  decimals: 18, tokenName: "USD Coin" }}
     }};
     // A wallet session can only host ONE pending request at a time (MetaMask
     // rejects a second wallet_requestPermissions with "already pending").
@@ -355,6 +361,14 @@ def _build_index_html() -> str:
         var terms = req ? b64decode(req) : null;
         var accs = (terms && terms.accepts && terms.accepts.length) ? terms.accepts : [];
         if (!accs.length) {{ show("<p class='text-red-400'>Service did not return payment terms.</p>"); return; }}
+        // x402.org's facilitator only registers Base Sepolia (84532) today;
+        // 8453/42161/137 have no facilitator and cannot settle. Put the
+        // working network first so the default choice completes payment.
+        accs.sort(function (a, b) {{
+          var pa = a.network === "eip155:84532" ? 0 : 1;
+          var pb = b.network === "eip155:84532" ? 0 : 1;
+          return pa - pb;
+        }});
         var lines = [];
         lines.push("<p class='text-yellow-300'>Payment required to start this audit. Pick the network you want to pay on:</p>");
         lines.push("<p class='text-xs text-zinc-500'>The flat fee covers contracts up to <b>500 source lines</b>. "
