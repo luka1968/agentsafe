@@ -454,3 +454,71 @@ class TestRestAuditFlow:
         assert resp.status_code == 202, resp.text
         assert resp.json()["ok"] is True
         assert "task_id" in gh_state
+
+
+class TestPaymentErrorDiagnostics:
+    """The _log_payment_error helper must surface the browser-signed domain
+    (network/asset/payTo/amount/extra + nonce length) on every facilitator
+    rejection, so invalid_exact_evm_signature-style failures are diagnosable
+    without guessing."""
+
+    def test_logs_signed_domain_from_xpayment_header(self, caplog):
+        from agentsafe.server import _log_payment_error
+
+        class _Instr:
+            body = {"error": "invalid_exact_evm_signature"}
+
+        payload = {
+            "x402Version": 2,
+            "accepted": {
+                "network": "eip155:84532",
+                "asset": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+                "payTo": "0x03ee35B45382d19b7BDcE1A2B1eD72Aae01c48cc",
+                "amount": "10000",
+                "extra": {"name": "USDC", "version": "2"},
+            },
+            "payload": {
+                "authorization": {
+                    "from": "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
+                    "to": "0x03ee35B45382d19b7BDcE1A2B1eD72Aae01c48cc",
+                    "value": "10000",
+                    "nonce": "0x" + "ab" * 32,
+                }
+            },
+        }
+        header = base64.b64encode(json.dumps(payload).encode()).decode()
+
+        class _Req:
+            headers = {"X-PAYMENT": header}
+
+        class _Ctx:
+            request = _Req()
+
+        with caplog.at_level("WARNING", logger="agentSAFE.server"):
+            _log_payment_error(_Ctx(), _Instr(), b"")
+
+        joined = "\n".join(rec.getMessage() for rec in caplog.records)
+        assert "REST payment rejected" in joined
+        assert "invalid_exact_evm_signature" in joined
+        assert "USDC" in joined  # signed domain name surfaced
+        assert "eip155:84532" in joined
+        assert "'auth_nonce_hex_len': 64" in joined or "64" in joined
+
+    def test_logs_fallback_to_body(self, caplog):
+        from agentsafe.server import _log_payment_error
+
+        class _Instr:
+            body = {"error": "invalid_exact_evm_signature"}
+
+        class _Req:
+            headers = {}  # no X-PAYMENT header
+
+        class _Ctx:
+            request = _Req()
+
+        body = json.dumps(
+            {"accepted": {"network": "eip155:84532", "asset": "0x036CbD"}}
+        ).encode()
+        with caplog.at_level("WARNING", logger="agentSAFE.server"):
+            _log_payment_error(_Ctx(), _Instr(), body)
+        assert "eip155:84532" in "\n".join(r.getMessage() for r in caplog.records)

@@ -170,6 +170,63 @@ def _setup_logging(level: str) -> None:
     logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
+def _log_payment_error(ctx: Any, instr: Any, body_bytes: bytes) -> None:
+    """Emit a high-cardinality diagnostic when the facilitator rejects a
+    payment, so the browser-signed domain can be reconciled with the
+    facilitator's expectation (root cause of ``invalid_exact_evm_signature``
+    is usually a name/version/chainId/asset domain mismatch or a wallet
+    account mismatch). Extracts the signed domain from the submitted payload
+    and logs it alongside the exact rejection reason.
+    """
+    try:
+        reason = (instr.body or {}).get("error") if isinstance(instr.body, dict) else None
+        if not reason:
+            reason = getattr(instr, "status", None)
+        # Payload arrives in the X-PAYMENT header (base64) and/or body. Pull
+        # the EIP-712 domain components the browser actually signed with.
+        from base64 import b64decode
+        import json as _json
+
+        raw = b""
+        try:
+            for h in ("X-PAYMENT", "x-payment"):
+                hdr = (ctx.request.headers.get(h) if hasattr(ctx, "request") else None)
+                if hdr:
+                    raw = b64decode(hdr)
+                    break
+        except Exception:  # noqa: BLE001
+            raw = b""
+        if not raw and body_bytes:
+            raw = body_bytes
+        signed = {}
+        if raw:
+            try:
+                doc = _json.loads(raw)
+                acc = doc.get("accepted", doc.get("requirements", {})) or {}
+                auth = doc.get("payload", {}).get("authorization", {}) or {}
+                signed = {
+                    "network": acc.get("network"),
+                    "asset": acc.get("asset"),
+                    "payTo": acc.get("payTo"),
+                    "amount": acc.get("amount"),
+                    "extra": acc.get("extra"),
+                    "auth_from": auth.get("from"),
+                    "auth_to": auth.get("to"),
+                    "auth_nonce_hex_len": (
+                        (len(str(auth.get("nonce", ""))) - 2) if auth.get("nonce") else None
+                    ),
+                }
+            except Exception:  # noqa: BLE001
+                signed = {"unparseable": True}
+        logger.warning(
+            "REST payment rejected reason=%r signed=%r",
+            reason,
+            signed,
+        )
+    except Exception:  # noqa: BLE001 - diagnostics must never break the request
+        logger.warning("REST payment rejected (diagnostics unavailable)")
+
+
 def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
     """Construct the FastMCP instance. Fails fast on bad config.
 
@@ -546,6 +603,10 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
             if result.type == "payment-error":
                 instr = result.response
                 assert instr is not None  # SDK contract: error carries instructions
+                # Diagnostic: log why payment was rejected (e.g.
+                # invalid_exact_evm_signature) so the frontend's signed
+                # domain can be reconciled with the facilitator's expectation.
+                _log_payment_error(ctx, instr, body_bytes)
                 headers = {
                     k: v for k, v in (instr.headers or {}).items() if k.lower() != "content-type"
                 }
