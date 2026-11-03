@@ -275,6 +275,20 @@ def _build_index_html() -> str:
         if (String(cur).toLowerCase() !== want.toLowerCase()) {{
           try {{
             await withWalletTimeout(eth.request({{ method: "wallet_switchEthereumChain", params: [{{ chainId: want }}] }}), "Switch network");
+            // MetaMask resolves the switch RPC before the wallet actually
+            // re-reads its new chain; re-read eth_chainId until it matches so
+            // we never sign an EIP-712 digest on the wrong chain (which would
+            // recover a different signer -> invalid_exact_evm_signature).
+            for (var k = 0; k < 8; k++) {{
+              var after = String(await withWalletTimeout(eth.request({{ method: "eth_chainId" }}), "Wallet")).toLowerCase();
+              if (after === want.toLowerCase()) break;
+              await new Promise(function (r) {{ setTimeout(r, 150); }});
+            }}
+            var confirmed = String(await withWalletTimeout(eth.request({{ method: "eth_chainId" }}), "Wallet")).toLowerCase();
+            if (confirmed !== want.toLowerCase()) {{
+              throw new Error("Wallet is still on chain " + confirmed + " (expected " + want + "). Please switch to "
+                + meta.name + " in MetaMask and retry.");
+            }}
           }} catch (sw) {{
             if (sw && sw.code === 4902 && meta.rpc) {{
               // Chain not in wallet yet: offer to add it (MetaMask pops an
@@ -318,6 +332,13 @@ def _build_index_html() -> str:
         "Signature"
       );
       var payload = signed.payload;
+      // Diagnostic: record what was actually signed so a rejection can be
+      // debugged from the page. Surface it only on failure below.
+      var signedChain = "?";
+      try {{ signedChain = String(await eth.request({{ method: "eth_chainId" }})).toLowerCase(); }} catch (e) {{ signedChain = "?"; }}
+      var diag = {{ network: accept.network, chainIdAtSign: signedChain, from: from,
+        nonceLen: (payload && payload.payload && payload.payload.authorization
+          && String(payload.payload.authorization.nonce || "").length) || -1 }};
       var res = await fetch(REST, {{
         method: "POST",
         headers: {{
@@ -332,6 +353,9 @@ def _build_index_html() -> str:
       if (!res.ok) {{
         var msg = (data && (data.error_description || data.error)) || ("HTTP " + res.status);
         if (res.status === 402) msg = "Payment rejected: " + msg;
+        msg += "<br><span class='text-[11px] text-zinc-500'>signed on " + esc(diag.chainIdAtSign)
+          + " / accepted " + esc(diag.network) + " / from " + esc((diag.from || "").slice(0, 10)) + "&hellip;"
+          + " / nonce len " + diag.nonceLen + "</span>";
         throw new Error(msg);
       }}
       return data;

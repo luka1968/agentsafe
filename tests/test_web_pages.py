@@ -125,6 +125,19 @@ class TestPublicPages:
         assert 'a.network === "eip155:84532"' in r.text
         assert "accs.sort" in r.text
         assert "eip155:84532" in r.text
+        # after wallet_switchEthereumChain, re-read eth_chainId and confirm it
+        # actually changed before signing; if the user dismissed the switch
+        # popup, throw instead of signing a wrong-chain EIP-712 digest
+        # (recovered signer != from -> invalid_exact_evm_signature).
+        assert "wallet is still on chain" in r.text.lower()
+        assert "var confirmed = String(await" in r.text
+        # on a rejection, surface what was actually signed so the mismatch is
+        # visible on the page (signed chain vs accepted network, signer, nonce).
+        assert "signedChain" in r.text
+        assert "chainIdAtSign" in r.text
+        assert "nonce len" in r.text
+        assert "signedChain" in r.text
+        assert "chainIdAtSign" in r.text
         assert "eth_signTypedData_v4" in r.text
         # wallet session lock: only one pending request at a time; a second
         # click while the wallet popup is open gets a friendly hint instead of
