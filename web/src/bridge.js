@@ -25,6 +25,32 @@ function jsonSafe(obj) {
 }
 
 /**
+ * EIP-712 domain type fields, in canonical field order.
+ *
+ * MetaMask's eth_signTypedData_v4 REQUIRES the `EIP712Domain` entry to be
+ * present in `types` and hashes the domain separator from it. Without it,
+ * MetaMask derives a DIFFERENT domain hash than viem / the x402 facilitator,
+ * so the recovered signer no longer equals the authorization `from` and the
+ * facilitator rejects the payment with `invalid_exact_evm_signature`.
+ *
+ * viem's own signTypedData injects exactly this list before signing; our
+ * MetaMask bridge must do the same (it cannot rely on viem because it calls
+ * the wallet RPC directly).
+ */
+function eip712DomainTypes(domain) {
+  return [
+    typeof domain?.name === "string" && { name: "name", type: "string" },
+    typeof domain?.version === "string" && { name: "version", type: "string" },
+    (typeof domain?.chainId === "number" || typeof domain?.chainId === "bigint") && {
+      name: "chainId",
+      type: "uint256",
+    },
+    domain?.verifyingContract && { name: "verifyingContract", type: "address" },
+    domain?.salt && { name: "salt", type: "bytes32" },
+  ].filter(Boolean);
+}
+
+/**
  * Wrap a MetaMask-like provider (`window.ethereum`) as a ClientEvmSigner.
  * The official scheme only needs `address` + `signTypedData`; domain/nonce
  * construction is entirely the SDK's responsibility.
@@ -36,9 +62,15 @@ export function metaMaskSigner(eth, address) {
   return {
     address,
     async signTypedData({ domain, types, primaryType, message }) {
+      // Inject EIP712Domain exactly like viem does; MetaMask needs it to
+      // build the same domain separator the facilitator verifies against.
+      const fullTypes = {
+        EIP712Domain: eip712DomainTypes(domain || {}),
+        ...types,
+      };
       const result = await eth.request({
         method: "eth_signTypedData_v4",
-        params: [address, jsonSafe({ domain, types, primaryType, message })],
+        params: [address, jsonSafe({ domain, types: fullTypes, primaryType, message })],
       });
       return result;
     },
@@ -88,5 +120,5 @@ export async function createPaymentPayload(eth, from, accept, resourceUrl) {
   return { payload, requirements };
 }
 
-/** Browserideshield: expose for the landing page (IIFE global). */
-export default { ExactEvmScheme, metaMaskSigner, toRequirements, createPaymentPayload };
+/** Browser global: expose for the landing page (IIFE global). */
+export default { ExactEvmScheme, metaMaskSigner, eip712DomainTypes, toRequirements, createPaymentPayload };

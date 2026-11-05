@@ -309,6 +309,16 @@ results.nonce_32bytes = (auth.nonce.length - 2) === 64;
 results.domain_name = captured.domain.name;
 results.domain_version = captured.domain.version;
 results.domain_chainid = captured.domain.chainId;
+// MetaMask's sanitizeData defaults a MISSING EIP712Domain type to [] (empty),
+// then hashes the domain type as keccak("EIP712Domain()") instead of
+// keccak("EIP712Domain(string name,string version,uint256 chainId,address
+// verifyingContract)") -> a different domain separator -> ecrecover yields a
+// different signer -> facilitator rejects with invalid_exact_evm_signature.
+// The bridge must inject EIP712Domain exactly like viem does.
+results.types_has_domain = Array.isArray(captured.types && captured.types.EIP712Domain);
+results.domain_type_fields = ((captured.types && captured.types.EIP712Domain) || [])
+  .map((f) => f.name + ":" + f.type);
+results.transfer_type_present = Array.isArray(captured.types && captured.types.TransferWithAuthorization);
 results.verifying_contract = captured.domain.verifyingContract;
 results.primary_type = captured.primaryType;
 results.scheme = out.payload.scheme;
@@ -351,6 +361,21 @@ console.log(JSON.stringify(results));
         # SDK's getAddress — compare case-insensitively to the raw input)
         assert results["verifying_contract"].lower() == ASSET_HEX.lower()
         assert results["primary_type"] == "TransferWithAuthorization"
+        # CRITICAL: MetaMask requires EIP712Domain in `types`; if omitted it
+        # hashes an EMPTY domain type and silently produces a signature the
+        # facilitator rejects (invalid_exact_evm_signature). Regression guard
+        # for the real production bug.
+        assert results["types_has_domain"] is True, (
+            "eth_signTypedData_v4 types must include EIP712Domain (MetaMask "
+            "defaults it to [] otherwise -> wrong domain separator)"
+        )
+        assert results["domain_type_fields"] == [
+            "name:string",
+            "version:string",
+            "chainId:uint256",
+            "verifyingContract:address",
+        ]
+        assert results["transfer_type_present"] is True
         assert results["scheme"] == "exact"
         assert results["x402_version"] == 2
         assert results["accepted_network"] == "eip155:84532"
