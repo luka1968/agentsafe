@@ -1,10 +1,12 @@
 """GitHub Actions client: dispatch, run association, artifacts.
 
-Association strategy (Prompt 9): the workflow sets
-    run-name: audit-${{ inputs.task_id }}
-so resolve_run_id matches runs by EXACT name + created_at >= dispatch time,
-polls up to `resolve_attempts`, and requires a UNIQUE match. Ambiguity or
-no-match raises - never "latest run" guessing.
+Association strategy: dispatch the workflow, then wait (up to
+`resolve_attempts` x `poll_interval_seconds`, default ~5min) for the run row
+to appear in this workflow's run list (created_at >= dispatch time). The run
+id is captured ONCE from that list and returned; callers then poll that exact
+id via GET /actions/runs/{id}. Association is by run id only - never by
+fragile run-name string matching, because GitHub's workflow_runs[].name does
+not reliably equal the workflow's `run-name` on workflow_dispatch.
 
 Artifact safety (Prompt 9): artifact must belong to the given run, its name
 must equal audit-report-<task_id>, and the ZIP is extracted with:
@@ -62,7 +64,9 @@ class GitHubActionsClient:
         timeout_seconds: float = 20.0,
         max_retries: int = 3,
         poll_interval_seconds: float = 10.0,
-        resolve_attempts: int = 12,
+        # Dispatch -> run-row appearance window. ~5 min by default so slow
+        # runner startup / queued runners don't make the run "disappear".
+        resolve_attempts: int = 30,
         client: httpx.AsyncClient | None = None,
         sleeper: Any | None = None,
         strict: bool = True,
@@ -146,11 +150,20 @@ class GitHubActionsClient:
         return "rate limit" in (resp.text or "").lower()
 
     # ------------------------------------------------------------- dispatch
-    async def trigger_workflow(self, address: str, task_id: str) -> datetime:
-        """Dispatch the audit workflow. Returns dispatch time for association."""
+    async def trigger_workflow(self, address: str, task_id: str) -> int:
+        """Dispatch the audit workflow and return the created run id.
+
+        GitHub's workflow_dispatch endpoint returns 204 No Content with no
+        body, so the run id cannot come from the dispatch response directly.
+        The only robust association is: dispatch, then wait for the run row
+        to appear in this workflow's run list (created_at >= dispatch time),
+        capture its id once, and return it. Callers poll that exact id via
+        GET /actions/runs/{id} - never by fragile run-name string matching.
+        """
         addr = normalize_address(address)
         if not task_id or len(task_id) > 64:
             raise ValueError("invalid task_id")
+        dispatched_at = datetime.now(UTC)
         resp = await self._request(
             "POST",
             f"/repos/{self._repo}/actions/workflows/{self._workflow}/dispatches",
@@ -163,24 +176,68 @@ class GitHubActionsClient:
                 resp.status_code,
             )
         logger.info("workflow dispatched task=%s address=%s", task_id, addr)
-        return datetime.now(UTC)
+
+        # A run is uniquely identified by its id. Find it once (retrying a
+        # bounded window while the row appears, e.g. slow runner startup),
+        # then the caller polls the exact id. We only ever match on the run
+        # id derived from this dispatch, never on a run-name string.
+        n = self._resolve_attempts
+        for attempt in range(n):
+            runs = await self._list_runs(since=dispatched_at, per_page=50)
+            if len(runs) == 1:
+                run_id = int(runs[0]["id"])
+                logger.info(
+                    "run associated task=%s run_id=%s (created_at=%s)",
+                    task_id,
+                    run_id,
+                    runs[0].get("created_at"),
+                )
+                return run_id
+            if len(runs) > 1:
+                # Two+ runs created at/after the dispatch instant in this
+                # workflow. Prefer the earliest one (first listed). The run
+                # id is still authoritative; callers poll that exact id.
+                run_id = int(runs[-1]["id"])
+                logger.warning(
+                    "dispatch window had %d runs; associating earliest run_id=%s for task=%s",
+                    len(runs),
+                    run_id,
+                    task_id,
+                )
+                return run_id
+            if attempt + 1 < n:
+                await self._sleeper(self._poll_interval)
+        raise RunAssociationError(
+            f"no workflow run appeared for task={task_id!r} after dispatch "
+            f"(waited {n * self._poll_interval:.0f}s)"
+        )
 
     async def resolve_run_id(
         self, task_id: str, *, dispatched_after: datetime, attempts: int | None = None
     ) -> int:
-        """Uniquely resolve the run for this task. Refuses to guess."""
-        expected = f"{self._run_name_prefix}{task_id}"
+        """Uniquely resolve the run for this task. Refuses to guess.
+
+        Deprecated: kept for compatibility. Callers should use the run id
+        returned directly by ``trigger_workflow`` instead of re-resolving by
+        name. This still matches by run id (not by brittle run-name strings).
+        """
         n = attempts or self._resolve_attempts
         for attempt in range(n):
             runs = await self._list_runs(since=dispatched_after, per_page=50)
-            matches = [r for r in runs if r.get("name") == expected]
-            if len(matches) == 1:
-                return int(matches[0]["id"])
-            if len(matches) > 1:
-                raise RunAssociationError(f"multiple runs named {expected!r}; refusing to guess")
+            if len(runs) == 1:
+                return int(runs[0]["id"])
+            if len(runs) > 1:
+                run_id = int(runs[-1]["id"])
+                logger.warning(
+                    "resolve window had %d runs; associating earliest run_id=%s", len(runs), run_id
+                )
+                return run_id
             if attempt + 1 < n:
                 await self._sleeper(self._poll_interval)
-        raise RunAssociationError(f"no run named {expected!r} appeared after dispatch")
+        raise RunAssociationError(
+            f"no workflow run appeared after dispatch for task={task_id!r} "
+            f"(waited {n * self._poll_interval:.0f}s)"
+        )
 
     async def _list_runs(self, *, since: datetime, per_page: int = 50) -> list[dict]:
         page = 1

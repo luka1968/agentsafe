@@ -55,11 +55,26 @@ class TestDispatch:
         route = respx.post(f"{BASE}/repos/{REPO}/actions/workflows/audit.yml/dispatches").mock(
             return_value=httpx.Response(204)
         )
-        await _client().trigger_workflow(ADDR.upper(), TASK)
+        respx.get(f"{BASE}/repos/{REPO}/actions/workflows/audit.yml/runs").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "workflow_runs": [
+                        _run(
+                            run_id=100,
+                            name="audit-whatever",
+                            created=(datetime.now(UTC) + timedelta(seconds=30)).isoformat(),
+                        )
+                    ]
+                },
+            )
+        )
+        run_id = await _client().trigger_workflow(ADDR.upper(), TASK)
         body = json.loads(route.calls.last.request.read())
         assert body["inputs"]["address"] == ADDR  # normalized lowercase
         assert body["inputs"]["task_id"] == TASK
         assert body["ref"] == "main"
+        assert run_id == 100  # returns the run id directly
 
     @respx.mock
     async def test_dispatch_rejects_bad_address(self):
@@ -102,30 +117,33 @@ class TestRunAssociation:
         assert run_id == 100
 
     @respx.mock
-    async def test_ambiguous_matches_refuse_to_guess(self):
+    async def test_ambiguous_window_picks_earliest_run(self):
+        # Association is by run id, so multiple runs created in the dispatch
+        # window no longer "refuse to guess": the earliest one is chosen
+        # deterministically. Callers poll that exact id, never by name.
         now = datetime.now(UTC).isoformat()
         respx.get(f"{BASE}/repos/{REPO}/actions/workflows/audit.yml/runs").mock(
             return_value=httpx.Response(
                 200,
                 json={
                     "workflow_runs": [
-                        _run(run_id=100, name=f"audit-{TASK}", created=now),
                         _run(run_id=101, name=f"audit-{TASK}", created=now),
+                        _run(run_id=100, name=f"audit-{TASK}", created=now),
                     ]
                 },
             )
         )
-        with pytest.raises(RunAssociationError, match="refusing to guess"):
-            await _client().resolve_run_id(
-                TASK, dispatched_after=datetime.now(UTC) - timedelta(minutes=1)
-            )
+        run_id = await _client().resolve_run_id(
+            TASK, dispatched_after=datetime.now(UTC) - timedelta(minutes=1)
+        )
+        assert run_id == 100  # earliest listed
 
     @respx.mock
     async def test_no_match_after_polls_refuses(self):
         respx.get(f"{BASE}/repos/{REPO}/actions/workflows/audit.yml/runs").mock(
             return_value=httpx.Response(200, json={"workflow_runs": []})
         )
-        with pytest.raises(RunAssociationError, match="no run named"):
+        with pytest.raises(RunAssociationError, match="no workflow run appeared"):
             await _client().resolve_run_id(TASK, dispatched_after=datetime.now(UTC), attempts=2)
 
     @respx.mock

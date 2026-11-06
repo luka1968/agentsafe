@@ -102,6 +102,10 @@ class Settings(BaseSettings):
     GITHUB_REF: str = "main"
     GITHUB_API_TIMEOUT_SECONDS: float = Field(default=20.0, ge=1.0, le=300.0)
     GITHUB_POLL_INTERVAL_SECONDS: float = Field(default=10.0, ge=1.0, le=600.0)
+    # Dispatch -> run-row appearance window (resolve_attempts * poll_interval).
+    # Raised so slow runner startup never makes a just-dispatched run seem
+    # to have "not appeared".
+    GITHUB_RUN_RESOLVE_ATTEMPTS: int = Field(default=30, ge=2, le=300)
     AUDIT_TIMEOUT_SECONDS: int = Field(default=900, ge=30, le=7_200)
     MAX_CONCURRENT_AUDITS: int = Field(default=1, ge=1, le=64)
     # Specialist-agent parallelism within ONE audit. Independent of

@@ -279,6 +279,7 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
         ref=settings.GITHUB_REF,
         timeout_seconds=settings.GITHUB_API_TIMEOUT_SECONDS,
         poll_interval_seconds=settings.GITHUB_POLL_INTERVAL_SECONDS,
+        resolve_attempts=settings.GITHUB_RUN_RESOLVE_ATTEMPTS,
         strict=validate,
     )
 
@@ -900,8 +901,7 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
             verified is not None,
         )
         try:
-            dispatched_at = await gh.trigger_workflow(addr, task.task_id)
-            run_id = await gh.resolve_run_id(task.task_id, dispatched_after=dispatched_at)
+            run_id = await gh.trigger_workflow(addr, task.task_id)
             task_store.link_run(task.task_id, run_id)
             task_store.set_state(task.task_id, TaskState.RUNNING)
         except GitHubClientError as exc:
@@ -1022,8 +1022,7 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
         task_store.set_state(task.task_id, TaskState.QUEUED)
         logger.info("audit_contract address=%s task_id=%s", addr, task.task_id)
         try:
-            dispatched_at = await gh.trigger_workflow(addr, task.task_id)
-            run_id = await gh.resolve_run_id(task.task_id, dispatched_after=dispatched_at)
+            run_id = await gh.trigger_workflow(addr, task.task_id)
             task_store.link_run(task.task_id, run_id)
             task_store.set_state(task.task_id, TaskState.RUNNING)
         except RunAssociationError as exc:
