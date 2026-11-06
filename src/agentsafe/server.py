@@ -304,6 +304,14 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
         # extra chains from X402_NETWORKS_JSON). Each carries its own asset
         # and pay_to so x402 clients can settle on Base, Arbitrum, Polygon,
         # or any other configured chain.
+        def _primary_rest_price(settings: Any) -> str:
+            """Advertised flat fee for the PRIMARY REST network. A testnet
+            primary (X402_NETWORK == Base Sepolia) charges the nominal
+            X402_TESTNET_PRICE instead of the real-money X402_REST_PRICE."""
+            if str(settings.X402_NETWORK).strip() == str(settings.X402_NETWORK_TESTNET).strip():
+                return settings.X402_TESTNET_PRICE
+            return settings.X402_REST_PRICE
+
         def _payment_option(net: str, pay_to: str, asset: str, price: str | None = None) -> PaymentOption:
             extra = {"asset": asset} if asset else None
             # The EIP-712 domain name/version the frontend must sign with
@@ -335,7 +343,12 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
             )
 
         rest_accepts: list[PaymentOption] = [
-            _payment_option(payment.network, payment.pay_to, settings.X402_ASSET)
+            _payment_option(
+                payment.network,
+                payment.pay_to,
+                settings.X402_ASSET,
+                _primary_rest_price(settings),
+            )
         ]
         for net, terms in payment.extra_networks.items():
             rest_accepts.append(

@@ -268,6 +268,14 @@ def _build_index_html() -> str:
         accounts = await withWalletTimeout(eth.request({{ method: "eth_requestAccounts" }}), "Wallet connect");
         from = accounts && accounts[0];
         if (!from) throw new Error("Wallet connection rejected.");
+      }} else {{
+        // eth_accounts returning an address does NOT mean the site is
+        // authorized to sign. Newer MetaMask rejects eth_signTypedData_v4
+        // on an un-authorized site with "not been authorized by the user".
+        // Ask explicitly so the sign call below works.
+        try {{
+          await withWalletTimeout(eth.request({{ method: "wallet_requestPermissions", params: [{{ eth_accounts: {{}} }}] }}), "Authorize");
+        }} catch (e) {{ /* already granted or unsupported; signing will surface the real problem */ }}
       }}
       if (meta.chainId) {{
         var cur = await withWalletTimeout(eth.request({{ method: "eth_chainId" }}), "Wallet");
@@ -327,10 +335,28 @@ def _build_index_html() -> str:
       var live = [];
       try {{ live = await withWalletTimeout(eth.request({{ method: "eth_accounts" }}), "Wallet"); }} catch (e) {{ live = []; }}
       if (live && live[0]) from = live[0];
-      var signed = await withWalletTimeout(
-        bridge.createPaymentPayload(eth, from, accept, window.location.origin + REST),
-        "Signature"
-      );
+      var signed;
+      try {{
+        signed = await withWalletTimeout(
+          bridge.createPaymentPayload(eth, from, accept, window.location.origin + REST),
+          "Signature"
+        );
+      }} catch (sigErr) {{
+        var sigMsg = (sigErr && sigErr.message) || String(sigErr);
+        if (/not been authorized by the user/i.test(sigMsg)) {{
+          // First attempt was rejected because the site was never
+          // authorized. Ask once, then retry the signature.
+          try {{
+            await withWalletTimeout(eth.request({{ method: "wallet_requestPermissions", params: [{{ eth_accounts: {{}} }}] }}), "Authorize");
+          }} catch (e) {{ /* fall through; the retry surfaces the real error */ }}
+          signed = await withWalletTimeout(
+            bridge.createPaymentPayload(eth, from, accept, window.location.origin + REST),
+            "Signature"
+          );
+        }} else {{
+          throw sigErr;
+        }}
+      }}
       var payload = signed.payload;
       // Diagnostic: record what was actually signed so a rejection can be
       // debugged from the page. Surface it only on failure below.

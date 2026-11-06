@@ -226,6 +226,13 @@ class Settings(BaseSettings):
     # pricing; the REST path only serves contracts up to REST_AUDIT_MAX_LINES
     # (see server.py) so it can never undercut the higher MCP tiers.
     X402_REST_PRICE: str = "$3.00"
+    # Price when the PRIMARY network (X402_NETWORK) is the Base Sepolia
+    # testnet. Without this, a testnet-primary deployment would advertise
+    # X402_REST_PRICE ($3.00) - a confusing amount for a free test channel.
+    # Testnets default to a nominal $0.10 so the full payment chain can be
+    # exercised cheaply; mainnet deployments set X402_ALLOW_MAINNET=true and
+    # this is ignored (X402_REST_PRICE applies).
+    X402_TESTNET_PRICE: str = "$0.10"
     X402_ASSET: str = ""
     X402_MAX_TIMEOUT_SECONDS: int = Field(default=300, ge=1, le=3600)
     X402_ALLOW_MAINNET: bool = False
