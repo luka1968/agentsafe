@@ -28,6 +28,16 @@ from agentsafe.schemas import StageState, StageStatus, TaskState, TaskStatus
 
 logger = logging.getLogger("agentSAFE.taskstore")
 
+def redis_ttl_seconds(retention_days: int) -> int:
+    """Redis ``EX`` is in SECONDS: a retention day is 86,400 seconds.
+
+    The historical ``60*24*days`` computed MINUTES-as-seconds, expiring paid
+    tasks (and their replay-protection payment refs) in 48 minutes at the
+    default retention of 2 days.
+    """
+    return 86_400 * max(1, int(retention_days))
+
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS tasks (
     task_id     TEXT PRIMARY KEY,
@@ -452,7 +462,7 @@ class RedisTaskStore:
         key = self._key("task", task.task_id)
         pipeline = self._client.pipeline()
         try:
-            pipeline.set(key, self._serialize_task(task), ex=60*24*self._retention_days)  # TTL = retention_days
+            pipeline.set(key, self._serialize_task(task), ex=redis_ttl_seconds(self._retention_days))  # TTL = retention_days
             pipeline.execute()
         except redis_client.RedisError as e:
             logger.error(f"Failed to create task in Redis: {e}")
@@ -491,7 +501,7 @@ class RedisTaskStore:
             task.updated_at = datetime.now(UTC)
             
             try:
-                self._client.set(key, self._serialize_task(task), ex=60*24*self._retention_days)
+                self._client.set(key, self._serialize_task(task), ex=redis_ttl_seconds(self._retention_days))
             except redis_client.RedisError as e:
                 logger.error(f"Failed to update task in Redis: {e}")
                 raise
@@ -510,7 +520,7 @@ class RedisTaskStore:
             
             key = self._key("task", task_id)
             try:
-                self._client.set(key, self._serialize_task(task), ex=60*24*self._retention_days)
+                self._client.set(key, self._serialize_task(task), ex=redis_ttl_seconds(self._retention_days))
             except redis_client.RedisError as e:
                 logger.error(f"Failed to set task state in Redis: {e}")
                 raise
@@ -528,7 +538,7 @@ class RedisTaskStore:
             
             key = self._key("task", task_id)
             try:
-                self._client.set(key, self._serialize_task(task), ex=60*24*self._retention_days)
+                self._client.set(key, self._serialize_task(task), ex=redis_ttl_seconds(self._retention_days))
             except redis_client.RedisError as e:
                 logger.error(f"Failed to mark task paid in Redis: {e}")
                 raise
@@ -563,7 +573,7 @@ class RedisTaskStore:
                 "finished_at": stage.finished_at.isoformat() if stage.finished_at else None,
             }
             try:
-                self._client.set(stage_key, json.dumps(stage_data), ex=60*24*self._retention_days)
+                self._client.set(stage_key, json.dumps(stage_data), ex=redis_ttl_seconds(self._retention_days))
             except redis_client.RedisError as e:
                 logger.error(f"Failed to upsert stage in Redis: {e}")
                 raise

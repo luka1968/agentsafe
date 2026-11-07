@@ -52,6 +52,8 @@ from agentsafe.payment.x402_adapter import (
     VerifiedPayment,
     X402PaymentAdapter,
 )
+from x402.http.facilitator_client_base import FacilitatorResponseError
+import httpx
 from agentsafe.pricing import (
     CUSTOM_PRICING_CONTACT_URL,
     ContractTooLargeError,
@@ -394,6 +396,146 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
             }
         )
 
+        def _canonical_request_url(request: Request) -> str:
+            """The externally visible URL the SDK used to build the 402 terms
+            (forwarded-proxy aware). A payment payload is only bound to THIS
+            resource when its resource.url matches."""
+            return StarletteRequestAdapter(request, parsed_body=None).get_url()
+
+        def _validate_payment_binding(request: Request, result: Any) -> JSONResponse | None:
+            """Step B binding checks on a facilitator-verified payment.
+
+            Runs AFTER SDK verification (signature, facilitator policy) and
+            BEFORE replay recording, so a rejected binding never consumes a
+            payment fingerprint. Returns a 402/500 JSONResponse to reject, or
+            None when every binding holds:
+
+            1. protocol version — v2 only (this service speaks exactly one
+               version; a v1 payload must never be silently upgraded);
+            2. request/resource association — the signed payload must name
+               THIS endpoint. The exact scheme signs only (from, to, value,
+               window, nonce): without this check the same authorization
+               bytes could be presented to a different x402 resource;
+            3. server-side terms conformance — network/asset/recipient/scheme
+               of the MATCHED requirements must equal the centralized network
+               configuration. The matched requirements are server-built (the
+               client echo is compared by the SDK), so a mismatch here is a
+               server integrity failure -> fail closed with 500;
+            4. authorization validity window — a local, cheap check that the
+               signed window is currently open (the facilitator also verifies
+               this; belt and braces with an actionable error).
+            """
+            from agentsafe.payment.networks import X402_PROTOCOL_VERSION
+
+            payload = result.payment_payload
+            reqs = result.payment_requirements
+
+            # 1) protocol version
+            if int(getattr(payload, "x402_version", 0)) != X402_PROTOCOL_VERSION:
+                return JSONResponse(
+                    {
+                        "ok": False,
+                        "error_code": "unsupported_protocol_version",
+                        "error": (
+                            "payment payload uses x402 protocol version "
+                            f"{getattr(payload, 'x402_version', None)!r}; this "
+                            f"service requires version {X402_PROTOCOL_VERSION}"
+                        ),
+                    },
+                    status_code=402,
+                )
+
+            # 2) request/resource association
+            resource = getattr(payload, "resource", None)
+            resource_url = str(getattr(resource, "url", "") or "") if resource is not None else ""
+            canonical = _canonical_request_url(request)
+            if not resource_url:
+                return JSONResponse(
+                    {
+                        "ok": False,
+                        "error_code": "payment_resource_missing",
+                        "error": (
+                            "payment payload does not identify the paid resource; "
+                            f"expected {canonical}"
+                        ),
+                    },
+                    status_code=402,
+                )
+            if resource_url.rstrip("/") != canonical.rstrip("/"):
+                return JSONResponse(
+                    {
+                        "ok": False,
+                        "error_code": "payment_resource_mismatch",
+                        "error": (
+                            "payment payload was signed for a different resource "
+                            f"({resource_url}); expected {canonical}"
+                        ),
+                    },
+                    status_code=402,
+                )
+
+            # 3) server-side terms conformance (defense in depth)
+            cfgs = {c.identifier: c for c in settings.payment_network_configs()}
+            cfg = cfgs.get(str(getattr(reqs, "network", "")))
+            if (
+                cfg is None
+                or str(getattr(reqs, "scheme", "")) not in ("exact",)
+                or str(getattr(reqs, "pay_to", "")).lower() != cfg.pay_to.lower()
+                or str(getattr(reqs, "asset", "")).lower() != cfg.usdc_address.lower()
+            ):
+                # The requirements were built by this server from its own
+                # configuration; a divergence cannot be caused by the client.
+                logger.error(
+                    "payment binding integrity failure: network=%r pay_to=%r asset=%r",
+                    getattr(reqs, "network", None),
+                    getattr(reqs, "pay_to", None),
+                    getattr(reqs, "asset", None),
+                )
+                return JSONResponse(
+                    {
+                        "ok": False,
+                        "error_code": "payment_config_mismatch",
+                        "error": "verified payment does not match the server's payment configuration",
+                    },
+                    status_code=500,
+                )
+
+            # 4) signed authorization validity window (seconds since epoch)
+            inner = getattr(payload, "payload", None)
+            auth = inner.get("authorization") or {} if isinstance(inner, dict) else {}
+            now = int(time.time())
+
+            def _to_int(name: str) -> int | None:
+                raw = auth.get(name)
+                if raw in (None, ""):
+                    return None
+                try:
+                    return int(str(raw))
+                except (TypeError, ValueError):
+                    return None
+
+            valid_before = _to_int("validBefore")
+            valid_after = _to_int("validAfter")
+            if valid_before is not None and now >= valid_before:
+                return JSONResponse(
+                    {
+                        "ok": False,
+                        "error_code": "payment_authorization_expired",
+                        "error": "the signed payment authorization has expired; request new payment terms and retry",
+                    },
+                    status_code=402,
+                )
+            if valid_after is not None and now < valid_after:
+                return JSONResponse(
+                    {
+                        "ok": False,
+                        "error_code": "payment_authorization_not_yet_valid",
+                        "error": "the signed payment authorization is not valid yet",
+                    },
+                    status_code=402,
+                )
+            return None
+
     @asynccontextmanager
     async def _startup_validation(server: FastMCP) -> AsyncIterator[None]:
         if not validate:
@@ -640,34 +782,134 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
                 path=REST_AUDIT_PATH,
                 method="POST",
             )
-            result = await x402_http.process_http_request(ctx)
+            # Step B gate 0 — protocol version, BEFORE the SDK flow. The SDK
+            # decodes a v1 payload into PaymentPayloadV1, which lacks the v2
+            # fields and crashes inside find_matching_requirements
+            # (AttributeError -> 500). Using the OFFICIAL decoder here turns a
+            # cross-version payment into a clean 402 rejection. A payload that
+            # fails to decode at all is left to the SDK's official
+            # invalid-payload handling.
+            payment_header = request.headers.get("payment-signature") or request.headers.get(
+                "x-payment"
+            )
+            if payment_header:
+                from x402.http.utils import decode_payment_signature_header
+                from x402.schemas import PaymentPayloadV1
+
+                try:
+                    decoded_payment = decode_payment_signature_header(payment_header)
+                except Exception:  # noqa: BLE001 - SDK owns malformed-payload errors
+                    decoded_payment = None
+                if isinstance(decoded_payment, PaymentPayloadV1):
+                    logger.info("REST payment rejected: v1 payload on a v2-only service")
+                    return JSONResponse(
+                        {
+                            "ok": False,
+                            "error_code": "unsupported_protocol_version",
+                            "error": (
+                                "payment payload uses x402 protocol version 1; "
+                                "this service requires version 2"
+                            ),
+                        },
+                        status_code=402,
+                    )
+            try:
+                result = await x402_http.process_http_request(ctx)
+            except FacilitatorResponseError:
+                # Fail closed: the facilitator answered with malformed /
+                # schema-invalid data. Verification is INCONCLUSIVE, so the
+                # payment is not accepted, nothing is dispatched, and the
+                # client gets a clean upstream error (never a silent pass).
+                logger.warning("REST payment rejected: facilitator malformed response")
+                return JSONResponse(
+                    {
+                        "ok": False,
+                        "error_code": "facilitator_malformed",
+                        "error": "payment verification failed (facilitator returned malformed data)",
+                    },
+                    status_code=502,
+                )
+            except (httpx.TimeoutException, httpx.TransportError):
+                # Fail closed: timeout / transport failure is an inconclusive
+                # verification, not a payment success or a simple retry-able
+                # 402 (the payload must be treated as consumed-pending until
+                # proven otherwise).
+                logger.warning("REST payment rejected: facilitator unreachable")
+                return JSONResponse(
+                    {
+                        "ok": False,
+                        "error_code": "facilitator_unreachable",
+                        "error": "payment verification failed (facilitator unreachable)",
+                    },
+                    status_code=502,
+                )
             if result.type == "payment-error":
                 instr = result.response
                 assert instr is not None  # SDK contract: error carries instructions
+                headers = {
+                    k: v for k, v in (instr.headers or {}).items() if k.lower() != "content-type"
+                }
+                # Resolve the machine-readable error body. The SDK usually
+                # carries the full payment-required object ONLY in the base64
+                # PAYMENT-REQUIRED header and leaves instructions.body empty,
+                # so decode the header when the body is not already a dict.
+                effective_body: dict | None = None
+                if isinstance(instr.body, dict) and instr.body:
+                    effective_body = instr.body
+                else:
+                    required_header = headers.get("PAYMENT-REQUIRED") or headers.get(
+                        "payment-required"
+                    )
+                    if required_header:
+                        try:
+                            decoded = json.loads(base64.b64decode(required_header).decode("utf-8"))
+                            if isinstance(decoded, dict):
+                                effective_body = decoded
+                        except Exception:  # noqa: BLE001 - fall back to minimal body
+                            logger.warning(
+                                "could not decode PAYMENT-REQUIRED header for body mirror"
+                            )
+                # Facilitator infrastructure failure (timeout / malformed /
+                # HTTP error from the facilitator itself): the SDK folds the
+                # exception into a generic payment-error 402, but an
+                # INCONCLUSIVE verification must never be answered with
+                # "please pay again" (double-payment risk). Map the guarded
+                # marker to a fail-closed 502 before anything is dispatched.
+                from agentsafe.payment.x402_adapter import _FACILITATOR_INFRA_PREFIX
+
+                _err = str((effective_body or {}).get("error") or "")
+                if _err.startswith(_FACILITATOR_INFRA_PREFIX):
+                    infra_kind = _err[len(_FACILITATOR_INFRA_PREFIX):].split(":", 1)[0]
+                    logger.warning(
+                        "REST payment rejected: facilitator infrastructure failure (%s)",
+                        infra_kind,
+                    )
+                    return JSONResponse(
+                        {
+                            "ok": False,
+                            "error_code": (
+                                "facilitator_unreachable"
+                                if infra_kind == "unreachable"
+                                else "facilitator_malformed"
+                            ),
+                            "error": (
+                                "payment verification failed (facilitator "
+                                f"{infra_kind}); retry after the facilitator recovers"
+                            ),
+                        },
+                        status_code=502,
+                    )
                 # Diagnostic: log why payment was rejected (e.g.
                 # invalid_exact_evm_signature) so the frontend's signed
                 # domain can be reconciled with the facilitator's expectation.
                 _log_payment_error(ctx, instr, body_bytes)
-                headers = {
-                    k: v for k, v in (instr.headers or {}).items() if k.lower() != "content-type"
-                }
                 # Official x402 v2 wire format carries the machine-readable
                 # requirements in the base64 PAYMENT-REQUIRED header with an
                 # empty body. Mirror the decoded JSON into the body as well:
                 # the body is free-form per spec, and human/indexer fallback
                 # parsers (x402scan variants) get the terms without having to
                 # decode the header.
-                body = instr.body if isinstance(instr.body, dict) and instr.body else None
-                if body is None:
-                    required_header = headers.get("PAYMENT-REQUIRED") or headers.get(
-                        "payment-required"
-                    )
-                    body = {"error": "Payment Required"}
-                    if required_header:
-                        try:
-                            body = json.loads(base64.b64decode(required_header).decode("utf-8"))
-                        except Exception:  # noqa: BLE001 - fall back to minimal body
-                            logger.warning("could not decode PAYMENT-REQUIRED header for body mirror")  # noqa: E501
+                body = effective_body if effective_body is not None else {"error": "Payment Required"}
                 return JSONResponse(body, status_code=instr.status, headers=headers)
             if result.type != "payment-verified" or result.payment_payload is None:
                 return JSONResponse(
@@ -678,6 +920,13 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
                     },
                     status_code=402,
                 )
+            # Step B binding checks (protocol version, resource association,
+            # server-side terms conformance, authorization validity window).
+            # These run on the SDK-verified payload BEFORE replay recording so
+            # a rejected binding never consumes a payment fingerprint.
+            binding_error = _validate_payment_binding(request, result)
+            if binding_error is not None:
+                return binding_error
             ref = X402PaymentAdapter.payment_ref(result.payment_payload)
             if payment.replay_seen(ref):
                 logger.info("REST payment replay rejected ref=%s", ref[:16])
@@ -985,6 +1234,7 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
 
         headers: dict[str, str] = {}
         settlement_error: str | None = None
+        payment_info: dict[str, Any] | None = None
         if verified is not None and x402_http is not None and ctx is not None:
             settle = await x402_http.process_settlement(
                 verified.payload,
@@ -1006,6 +1256,27 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
                 settlement_error = (
                     f"payment settlement failed: {settle.error_reason or 'unknown failure'}"
                 )
+            # Step E structured payment record. The payer is the facilitator's
+            # recovered signer when settlement reported it, else the signed
+            # authorization's from (signature-bound, facilitator-verified).
+            # The transaction hash is present ONLY when the settlement
+            # operation itself succeeded - never fabricated.
+            payer = ""
+            try:
+                inner = verified.payload.payload
+                if isinstance(inner, dict):
+                    payer = str((inner.get("authorization") or {}).get("from") or "")
+            except Exception:  # noqa: BLE001 - payer is best-effort metadata
+                payer = ""
+            payment_info = {
+                "status": "settled" if settle.success else "settlement_failed",
+                "network": verified.requirements.network,
+                "payer": (settle.payer if settle.success and settle.payer else payer) or "",
+                "payment_ref": verified.ref,
+                "service_ref": task.task_id,
+            }
+            if settle.success and settle.transaction:
+                payment_info["transaction"] = settle.transaction
         body: dict[str, Any] = {
             "ok": True,
             "task_id": task.task_id,
@@ -1014,6 +1285,8 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
             "run_id": run_id,
             "note": "report retrieval via the agentSAFE MCP tool check_audit_status",
         }
+        if payment_info is not None:
+            body["payment"] = payment_info
         if settlement_error:
             body["settlement_error"] = settlement_error
         return JSONResponse(body, status_code=202, headers=headers)

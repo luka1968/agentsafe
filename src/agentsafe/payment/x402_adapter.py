@@ -51,6 +51,8 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+import httpx
+
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from fastmcp import Context
     from fastmcp.tools import ToolResult
@@ -108,6 +110,79 @@ class PaymentsNotEnabledError(RuntimeError):
 
 class X402NotIntegratedError(RuntimeError):
     """Raised when payments are enabled but the pinned-SDK adapter is unavailable."""
+
+
+class FacilitatorInfrastructureError(ValueError):
+    """Facilitator verify/settle failed at the INFRASTRUCTURE level (HTTP 5xx,
+    malformed response body, timeout / transport error).
+
+    Verification is INCONCLUSIVE, not negative: the payment must neither be
+    accepted nor answered with a plain 'try paying again' 402, because the
+    same authorization may already be pending on-chain. The SDK converts
+    every verify exception into a payment-error, so this error carries a
+    deterministic message marker the server layer maps to a fail-closed 502.
+    """
+
+
+_FACILITATOR_INFRA_PREFIX = "FACILITATOR_INFRASTRUCTURE_FAILURE:"
+
+
+def _infrastructure_message(kind: str, exc: BaseException) -> str:
+    return f"{_FACILITATOR_INFRA_PREFIX}{kind}: {exc}"
+
+
+class _GuardedFacilitator:
+    """Transparent proxy tagging infrastructure-level facilitator failures.
+
+    The SDK's HTTP flow folds every exception raised by facilitator
+    verify/settle into a generic 402 payment-error. That turns an
+    inconclusive verification (facilitator down / malformed response) into
+    'please pay again', which invites double payment. This proxy re-raises
+    such failures as FacilitatorInfrastructureError with a stable marker;
+    the server layer maps it to 502 before anything is dispatched.
+    """
+
+    def __init__(self, inner: Any) -> None:
+        object.__setattr__(self, "_inner", inner)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(object.__getattribute__(self, "_inner"), name)
+
+    async def verify(self, payload: Any, requirements: Any) -> Any:
+        try:
+            return await self._inner.verify(payload, requirements)
+        except FacilitatorInfrastructureError:
+            raise
+        except (httpx.TimeoutException, httpx.TransportError) as exc:
+            raise FacilitatorInfrastructureError(
+                _infrastructure_message("unreachable", exc)
+            ) from exc
+        except ValueError as exc:
+            # The facilitator client signals HTTP-error responses and
+            # unparsable bodies with ValueError (both mean: unusable
+            # verification data, not an invalid payment).
+            raise FacilitatorInfrastructureError(
+                _infrastructure_message("malformed", exc)
+            ) from exc
+
+    async def settle(self, payload: Any, requirements: Any) -> Any:
+        try:
+            return await self._inner.settle(payload, requirements)
+        except FacilitatorInfrastructureError:
+            raise
+        except (httpx.TimeoutException, httpx.TransportError) as exc:
+            raise FacilitatorInfrastructureError(
+                _infrastructure_message("unreachable", exc)
+            ) from exc
+        except ValueError as exc:
+            raise FacilitatorInfrastructureError(
+                _infrastructure_message("malformed", exc)
+            ) from exc
+
+
+def guarded_facilitator(client: Any) -> Any:
+    """Wrap a facilitator client so infrastructure failures are tagged."""
+    return _GuardedFacilitator(client)
 
 
 @dataclass(slots=True)
@@ -184,7 +259,14 @@ class X402PaymentAdapter:
 
         self._x402 = x402
         _patch_loop_safe_facilitator_client()
-        facilitator = HTTPFacilitatorClient(FacilitatorConfig(url=facilitator_url))
+        # Guard: facilitator infrastructure failures (timeout / malformed /
+        # HTTP error) are tagged with a deterministic marker so the server
+        # layer can answer 502 fail-closed instead of the SDK's generic
+        # payment-error 402 ("please pay again"), which invites double
+        # payment on an inconclusive verification.
+        facilitator = guarded_facilitator(
+            HTTPFacilitatorClient(FacilitatorConfig(url=facilitator_url))
+        )
         self._server = x402ResourceServer(facilitator)
         # Register the primary chain plus every extra chain with the same
         # exact EIP-3009 scheme (the SDK picks the scheme server per
@@ -453,6 +535,19 @@ class X402PaymentAdapter:
         if data is None:
             return None, await self.payment_required_result(
                 tool_name, "Payment Required", requirements=accepts
+            )
+
+        from agentsafe.payment.networks import X402_PROTOCOL_VERSION
+
+        # Protocol version: this service speaks exactly one version; a v1
+        # (or future v3) payload must never be silently re-interpreted.
+        if data.get("x402Version") != X402_PROTOCOL_VERSION:
+            return None, await self.payment_required_result(
+                tool_name,
+                "Unsupported x402 protocol version "
+                f"{data.get('x402Version')!r}; this service requires version "
+                f"{X402_PROTOCOL_VERSION}",
+                requirements=accepts,
             )
 
         from x402.schemas import PaymentPayload
