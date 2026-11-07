@@ -183,10 +183,14 @@ class Settings(BaseSettings):
     def resolved_task_store(self) -> str:
         """Explicit TASK_STORE, or auto-selected backend: 'redis' (serverless-
         safe, survives cold starts) when a Redis URL is detectable, else
-        'sqlite' for durable local state."""
+        'sqlite' for durable local state. 'postgres' is an explicit opt-in
+        (Neon) that additionally provides the payments table + atomic replay
+        protection."""
         if self.TASK_STORE:
             return self.TASK_STORE
-        return "redis" if self.effective_redis_url else "sqlite"
+        if self.effective_redis_url:
+            return "redis"
+        return "sqlite"
 
     # --- Security Knowledge Base (AgentSafe G+) ---
     # Storage: 'neon' (persistent Postgres + pgvector) when NEON_DATABASE_URL is
@@ -202,6 +206,13 @@ class Settings(BaseSettings):
         if self.KB_STORAGE:
             return self.KB_STORAGE
         return "neon" if self.NEON_DATABASE_URL.strip() else "jsonl"
+
+    @property
+    def payment_database_url(self) -> str:
+        """Postgres DSN for the payments table (PROMPT 5). Explicit
+        PAYMENT_DATABASE_URL wins; otherwise the shared Neon database is
+        reused (the payments table is additive alongside knowledge_*)."""
+        return (self.PAYMENT_DATABASE_URL or self.NEON_DATABASE_URL).strip()
 
     # --- HTTP access log (PRIVACY_POLICY.md: IP + time, 30-day retention) ---
     ACCESS_LOG_DB_PATH: str = "data/access_log.db"
@@ -236,6 +247,10 @@ class Settings(BaseSettings):
     X402_ASSET: str = ""
     X402_MAX_TIMEOUT_SECONDS: int = Field(default=300, ge=1, le=3600)
     X402_ALLOW_MAINNET: bool = False
+    # Postgres DSN for the payments table (PROMPT 5). Empty = reuse
+    # NEON_DATABASE_URL (additive payments table alongside knowledge_*).
+    # Required when TASK_STORE=postgres.
+    PAYMENT_DATABASE_URL: str = ""
     # Optional multi-chain payment support (CAIP-2 -> per-chain terms).
     # JSON dict: {"eip155:42161": {"asset": "0x...", "pay_to": "0x..."},
     #             "eip155:137":   {"asset": "0x...", "pay_to": "0x..."}}
@@ -298,9 +313,9 @@ class Settings(BaseSettings):
     @classmethod
     def _validate_task_store(cls, v: str) -> str:
         v = v.strip().lower()
-        if v not in {"", "sqlite", "memory", "redis"}:
+        if v not in {"", "sqlite", "memory", "redis", "postgres"}:
             raise ValueError(
-                f"TASK_STORE must be '', 'sqlite', 'memory', or 'redis', got {v!r}"
+                f"TASK_STORE must be '', 'sqlite', 'memory', 'redis', or 'postgres', got {v!r}"
             )
         return v
 

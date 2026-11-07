@@ -62,6 +62,29 @@ logger = logging.getLogger("agentSAFE.payment")
 PINNED_X402_VERSION = "2.25.0"
 
 
+def _extract_payer(payload: Any) -> str | None:
+    """Best-effort payer from the signed EIP-3009 authorization (from is
+    signature-bound and facilitator-verified)."""
+    try:
+        inner = payload.payload
+        if isinstance(inner, dict):
+            auth = inner.get("authorization")
+            if isinstance(auth, dict) and auth.get("from"):
+                return str(auth["from"])
+    except Exception:  # noqa: BLE001 - payer is best-effort metadata
+        return None
+    return None
+
+
+def _chain_id(network: str) -> int | None:
+    if network.startswith("eip155:"):
+        try:
+            return int(network.split(":", 1)[1])
+        except (ValueError, IndexError):
+            return None
+    return None
+
+
 # The Vercel Python runtime rotates the asyncio event loop between warm
 # invocations of the same process (see api/index.py header). The SDK's
 # HTTPFacilitatorClient caches an httpx.AsyncClient bound to the loop it
@@ -210,6 +233,7 @@ class X402PaymentAdapter:
         asset: str = "",
         max_timeout_seconds: int = 300,
         extra_networks: dict[str, dict[str, str]] | None = None,
+        replay_store: Any = None,
     ) -> None:
         self.enabled = enabled
         self.network = network
@@ -217,6 +241,11 @@ class X402PaymentAdapter:
         self._asset = asset.strip()
         self._max_timeout_seconds = max_timeout_seconds
         self._base_price = price
+        # PROMPT 5: when provided, replay protection is database-backed (the
+        # Postgres payments table reserves the payload_ref atomically). The
+        # in-memory ledger is then only a fast-path cache, never the sole
+        # guard across serverless instances.
+        self._replay_store = replay_store
         # Extra chains: CAIP-2 network -> {asset, pay_to}. The primary
         # network (X402_NETWORK) always comes first in the advertised
         # accepts list; extras extend it so x402 clients can pay on any of
@@ -515,6 +544,11 @@ class X402PaymentAdapter:
         canonical = json.dumps(payload.model_dump(by_alias=True, exclude_none=True), sort_keys=True)
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
+    def seed_replay_ledger(self, refs: set[str]) -> None:
+        """Re-arm replay protection after a restart. With a database-backed
+        store the DB is authoritative; the ledger remains a fast-path cache."""
+        self._replay_ledger.update(refs)
+
     async def verify(
         self,
         ctx: Context | None,
@@ -560,7 +594,41 @@ class X402PaymentAdapter:
             )
 
         ref = self.payment_ref(payload)
-        if ref in self._replay_ledger:
+        if self._replay_store is not None and hasattr(self._replay_store, "reserve_payment"):
+            # Database-backed replay protection (PROMPT 5): the payload_ref is
+            # reserved atomically (UNIQUE constraint); None means this exact
+            # authorization was already consumed.
+            try:
+                matched = self._server.find_matching_requirements(accepts, payload)
+                if matched is None:
+                    return None, await self.payment_required_result(
+                        tool_name,
+                        "No matching payment requirements found (check amount/network/asset)",
+                        requirements=accepts,
+                    )
+                row = self._replay_store.reserve_payment(
+                    ref,
+                    payer=_extract_payer(payload),
+                    network=str(matched.network),
+                    chain_id=_chain_id(str(matched.network)),
+                    token_contract=str(matched.asset),
+                    token_decimals=6,
+                    amount=str(matched.amount),
+                    recipient=str(matched.pay_to),
+                    scheme=str(matched.scheme),
+                    protocol_version=2,
+                )
+            except Exception as exc:  # noqa: BLE001 - DB down must not pass payments
+                return None, await self.payment_required_result(
+                    tool_name,
+                    f"Payment could not be registered: {type(exc).__name__}",
+                    requirements=accepts,
+                )
+            if row is None:
+                return None, await self.payment_required_result(
+                    tool_name, "Payment already used (replay rejected)", requirements=accepts
+                )
+        elif ref in self._replay_ledger:
             return None, await self.payment_required_result(
                 tool_name, "Payment already used (replay rejected)", requirements=accepts
             )

@@ -591,10 +591,13 @@ def open_task_store(
     mode: str, 
     db_path: Path, 
     redis_url: str = "",
-    *, 
-    retention_days: int = 14
+    *,
+    retention_days: int = 14,
+    dsn: str = "",
 ) -> TaskStore:
-    """Factory. mode: 'sqlite' (durable) | 'memory' (restart-loses-links) | 'redis' (Upstash)."""
+    """Factory. mode: 'sqlite' (durable) | 'memory' (restart-loses-links) |
+    'redis' (Upstash) | 'postgres' (Neon; task + payment state, atomic replay
+    protection)."""
     if mode == "sqlite":
         return SqliteTaskStore(db_path, retention_days=retention_days)
     if mode == "memory":
@@ -603,6 +606,12 @@ def open_task_store(
         if not redis_url:
             raise ValueError("REDIS_URL is required for redis task store mode")
         return RedisTaskStore(redis_url, retention_days=retention_days)
+    if mode == "postgres":
+        if not dsn:
+            raise ValueError("PAYMENT_DATABASE_URL (or NEON_DATABASE_URL) is required for postgres task store mode")
+        import psycopg
+
+        return PostgresTaskStore(dsn, retention_days=retention_days)
     raise ValueError(f"unknown task store mode: {mode!r}")
 
 
@@ -631,7 +640,7 @@ def _row_to_task(row: sqlite3.Row, stages: list[sqlite3.Row]) -> TaskStatus:
 
 
 class TaskStore(Protocol):
-    """Structural interface both stores satisfy; lets server code type-check."""
+    """Structural interface every store satisfies; lets server code type-check."""
 
     def create_task(self, address: str) -> TaskStatus: ...
 
@@ -650,11 +659,384 @@ class TaskStore(Protocol):
     def cleanup_expired(self, retention_days: int) -> int: ...
 
 
+class PostgresTaskStore:
+    """Neon/Postgres task AND payment store (PROMPT 5).
+
+    Implements the same TaskStore protocol as the sqlite/redis/memory stores,
+    plus a ``payments`` table with a payment state machine, atomic replay
+    protection (UNIQUE payload_ref), a single-credit transaction guard, and
+    reconciliation for ambiguous settlement states.
+
+    Isolation: the migration ONLY creates ``tasks``, ``task_stages`` and
+    ``payments``. The knowledge-base tables (``knowledge_*``) in the same
+    database are never touched - this store is purely additive.
+
+    Concurrency: every operation opens its own connection (serverless-safe),
+    and replay/state transitions are guarded by database uniqueness
+    constraints and conditional UPDATEs, so concurrent or crashed retries
+    cannot double-consume a payment or double-dispatch an audit.
+    """
+
+    def __init__(self, dsn: str, *, retention_days: int = 14) -> None:
+        self._dsn = dsn
+        self._retention_days = retention_days
+        self._lock = threading.Lock()
+        self._migrate()
+
+    # -- connection / schema -------------------------------------------------
+    @contextmanager
+    def _connect(self) -> Iterator[Any]:
+        import psycopg
+        from psycopg.rows import dict_row
+
+        conn = psycopg.connect(self._dsn, connect_timeout=15, row_factory=dict_row)
+        try:
+            with conn:  # transaction scope: commit / rollback
+                yield conn
+        finally:
+            conn.close()
+
+    def _migrate(self) -> None:
+        ddl = """
+        CREATE TABLE IF NOT EXISTS tasks (
+            task_id      text PRIMARY KEY,
+            address      text,
+            run_id       bigint,
+            state        text NOT NULL,
+            error_code   text,
+            paid         boolean NOT NULL DEFAULT false,
+            payment_ref  text,
+            created_at   timestamptz NOT NULL DEFAULT now(),
+            updated_at   timestamptz NOT NULL DEFAULT now()
+        );
+        CREATE TABLE IF NOT EXISTS task_stages (
+            task_id     text NOT NULL REFERENCES tasks(task_id) ON DELETE CASCADE,
+            name        text NOT NULL,
+            state       text NOT NULL,
+            detail      text,
+            started_at  timestamptz,
+            finished_at timestamptz,
+            PRIMARY KEY (task_id, name)
+        );
+        CREATE TABLE IF NOT EXISTS payments (
+            payment_id          text PRIMARY KEY,
+            task_id             text,
+            payer               text,
+            service_type        text NOT NULL DEFAULT 'audit',
+            resource_id         text,
+            network             text NOT NULL,
+            chain_id            bigint,
+            token_contract      text NOT NULL,
+            token_decimals      int  NOT NULL,
+            amount              text NOT NULL,
+            recipient           text NOT NULL,
+            scheme              text NOT NULL,
+            protocol_version    int  NOT NULL,
+            payload_ref         text NOT NULL UNIQUE,
+            transaction_hash    text,
+            facilitator_response jsonb,
+            status              text NOT NULL,
+            created_at          timestamptz NOT NULL DEFAULT now(),
+            updated_at          timestamptz NOT NULL DEFAULT now()
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS payments_tx_uniq
+            ON payments (transaction_hash) WHERE transaction_hash IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS payments_status_idx ON payments (status);
+        CREATE INDEX IF NOT EXISTS payments_task_idx ON payments (task_id);
+        CREATE INDEX IF NOT EXISTS payments_payload_ref_idx ON payments (payload_ref);
+        """
+        with self._connect() as conn:
+            conn.execute(ddl)
+
+    # -- TaskStore protocol (mirrors sqlite store) ---------------------------
+    def create_task(self, address: str) -> TaskStatus:
+        now = datetime.now(UTC)
+        task = TaskStatus(
+            task_id=new_task_id(),
+            address=address,
+            state=TaskState.QUEUED,
+            created_at=now,
+            updated_at=now,
+        )
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                "INSERT INTO tasks (task_id, address, run_id, state, error_code,"
+                " paid, payment_ref, created_at, updated_at)"
+                " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                (task.task_id, task.address, None, task.state.value, None,
+                 False, None, now.isoformat(), now.isoformat()),
+            )
+        return task
+
+    def get(self, task_id: str) -> TaskStatus | None:
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM tasks WHERE task_id = %s", (task_id,)
+            ).fetchone()
+            if row is None:
+                return None
+            stages = conn.execute(
+                "SELECT * FROM task_stages WHERE task_id = %s ORDER BY name",
+                (task_id,),
+            ).fetchall()
+            pay = conn.execute(
+                "SELECT status, payload_ref FROM payments WHERE task_id = %s "
+                "ORDER BY created_at DESC LIMIT 1",
+                (task_id,),
+            ).fetchone()
+        paid = bool(pay and pay["status"] in ("verified", "resource_processing",
+                                              "settlement_pending", "settled", "completed"))
+        return TaskStatus(
+            task_id=row["task_id"],
+            address=row["address"],
+            state=TaskState(row["state"]),
+            run_id=row["run_id"],
+            error_code=row["error_code"],
+            created_at=datetime.fromisoformat(row["created_at"].isoformat()),
+            updated_at=datetime.fromisoformat(row["updated_at"].isoformat()),
+            paid=paid,
+            payment_ref=(pay["payload_ref"] if pay else None),
+            stages=[
+                StageStatus(
+                    name=s["name"],
+                    state=StageState(s["state"]),
+                    detail=s["detail"],
+                    started_at=datetime.fromisoformat(s["started_at"].isoformat()) if s["started_at"] else None,
+                    finished_at=datetime.fromisoformat(s["finished_at"].isoformat()) if s["finished_at"] else None,
+                )
+                for s in stages
+            ],
+        )
+
+    def link_run(self, task_id: str, run_id: int) -> None:
+        with self._lock, self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE tasks SET run_id = %s, updated_at = %s WHERE task_id = %s",
+                (run_id, _now_iso(), task_id),
+            )
+            if cur.rowcount == 0:
+                raise KeyError(f"unknown task_id: {task_id}")
+
+    def set_state(self, task_id: str, state: TaskState, error_code: str | None = None) -> None:
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                "UPDATE tasks SET state = %s, error_code = COALESCE(%s, error_code),"
+                " updated_at = %s WHERE task_id = %s",
+                (state.value, error_code, _now_iso(), task_id),
+            )
+
+    def mark_paid(self, task_id: str, payment_ref: str) -> None:
+        with self._lock, self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE tasks SET paid = true, payment_ref = %s, updated_at = %s"
+                " WHERE task_id = %s",
+                (payment_ref, _now_iso(), task_id),
+            )
+            if cur.rowcount == 0:
+                raise KeyError(f"unknown task_id: {task_id}")
+
+    def payment_refs(self) -> set[str]:
+        """All payment payload refs ever reserved (replay seed after restart)."""
+        with self._lock, self._connect() as conn:
+            rows = conn.execute("SELECT payload_ref FROM payments").fetchall()
+        return {r["payload_ref"] for r in rows}
+
+    def upsert_stage(self, task_id: str, stage: StageStatus) -> None:
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                "INSERT INTO task_stages (task_id, name, state, detail, started_at,"
+                " finished_at) VALUES (%s,%s,%s,%s,%s,%s)"
+                " ON CONFLICT(task_id, name) DO UPDATE SET"
+                " state=excluded.state, detail=COALESCE(excluded.detail, detail),"
+                " started_at=COALESCE(excluded.started_at, started_at),"
+                " finished_at=COALESCE(excluded.finished_at, finished_at)",
+                (
+                    task_id,
+                    stage.name,
+                    stage.state.value,
+                    stage.detail,
+                    stage.started_at.isoformat() if stage.started_at else None,
+                    stage.finished_at.isoformat() if stage.finished_at else None,
+                ),
+            )
+
+    def cleanup_expired(self, retention_days: int | None = None) -> int:
+        days = retention_days if retention_days is not None else self._retention_days
+        cutoff = (datetime.now(UTC) - timedelta(days=days)).isoformat()
+        with self._lock, self._connect() as conn:
+            cur = conn.execute("DELETE FROM tasks WHERE created_at < %s", (cutoff,))
+            conn.execute(
+                "DELETE FROM task_stages WHERE task_id NOT IN (SELECT task_id FROM tasks)"
+            )
+            return cur.rowcount
+
+    # -- payments ------------------------------------------------------------
+    def reserve_payment(self, payload_ref: str, *, payment_id: str | None = None,
+                        payer: str | None = None, service_type: str = "audit",
+                        resource_id: str | None = None, network: str,
+                        chain_id: int | None, token_contract: str,
+                        token_decimals: int, amount: str, recipient: str,
+                        scheme: str = "exact", protocol_version: int = 2) -> dict:
+        """Atomically reserve a payment payload ref (once). Returns the payment
+        row, or None when the ref was already consumed (replay / retry)."""
+        pid = payment_id or new_payment_id()
+        now = datetime.now(UTC).isoformat()
+        try:
+            with self._lock, self._connect() as conn:
+                row = conn.execute(
+                    "INSERT INTO payments (payment_id, payer, service_type,"
+                    " resource_id, network, chain_id, token_contract,"
+                    " token_decimals, amount, recipient, scheme, protocol_version,"
+                    " payload_ref, status, created_at, updated_at)"
+                    " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"
+                    " ON CONFLICT (payload_ref) DO NOTHING RETURNING *",
+                    (pid, payer, service_type, resource_id, network, chain_id,
+                     token_contract, token_decimals, amount, recipient, scheme,
+                     protocol_version, payload_ref, "verified", now, now),
+                ).fetchone()
+                if row is not None:
+                    return row
+                return None
+        except Exception as exc:  # noqa: BLE001 - surface clearly without URL
+            logger.error("postgres reserve_payment failed: %s", type(exc).__name__)
+            raise
+
+    def get_payment_by_ref(self, payload_ref: str) -> dict | None:
+        with self._lock, self._connect() as conn:
+            return conn.execute(
+                "SELECT * FROM payments WHERE payload_ref = %s", (payload_ref,)
+            ).fetchone()
+
+    def get_payment(self, payment_id: str) -> dict | None:
+        with self._lock, self._connect() as conn:
+            return conn.execute(
+                "SELECT * FROM payments WHERE payment_id = %s", (payment_id,)
+            ).fetchone()
+
+    def transition_payment(self, payment_id: str, target: str) -> bool:
+        """Atomic state transition guarded by allowed source states. Returns
+        True when applied, False when the row does not exist, and raises
+        InvalidPaymentTransition on an illegal/raced move."""
+        from agentsafe.payment.states import PaymentStatus, sources_for
+
+        target_enum = PaymentStatus(target)
+        sources = sources_for(target_enum)
+        with self._lock, self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE payments SET status = %s, updated_at = now()"
+                " WHERE payment_id = %s AND status IN %s",
+                (target_enum.value, payment_id, tuple(s.value for s in sources)),
+            )
+            if cur.rowcount == 1:
+                return True
+            if cur.rowcount == 0:
+                existing = conn.execute(
+                    "SELECT status FROM payments WHERE payment_id = %s", (payment_id,)
+                ).fetchone()
+                if existing is None:
+                    return False
+                if existing["status"] == target_enum.value:
+                    return True  # idempotent no-op
+                from agentsafe.payment.states import InvalidPaymentTransition
+
+                raise InvalidPaymentTransition(
+                    f"payment {payment_id}: {existing['status']} -> {target}"
+                )
+            return False  # pragma: no cover - multiple rows impossible (PK)
+
+    def link_payment_task(self, payment_id: str, task_id: str) -> None:
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                "UPDATE payments SET task_id = %s, updated_at = now()"
+                " WHERE payment_id = %s",
+                (task_id, payment_id),
+            )
+
+    def record_settlement(self, payment_id: str, *, success: bool,
+                          transaction_hash: str | None = None,
+                          facilitator_response: dict | None = None,
+                          error_reason: str | None = None) -> bool:
+        """Record the settlement outcome atomically (SETTLED or FAILED),
+        including the on-chain transaction hash when the settlement op
+        confirmed it. Never fabricated."""
+        import json as _json
+
+        target = "settled" if success else "failed"
+        try:
+            self.transition_payment(payment_id, target)
+        except Exception:  # noqa: BLE001 - map to False (illegal/absent rollback)
+            logger.error(
+                "record_settlement transition failed payment=%s target=%s reason=%s",
+                payment_id, target, error_reason,
+            )
+            return False
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                "UPDATE payments SET transaction_hash = %s,"
+                " facilitator_response = %s, status = %s, updated_at = now()"
+                " WHERE payment_id = %s",
+                (
+                    transaction_hash if success else None,
+                    _json.dumps(facilitator_response) if facilitator_response else None,
+                    target,
+                    payment_id,
+                ),
+            )
+        return True
+
+    def reconcile_pending_settlements(self, now: datetime | None = None) -> list[str]:
+        """Reconciliation for ambiguous settlement states (PROMPT 5 #9/#10):
+        payments left in SETTLEMENT_PENDING (e.g. settlement op confirmed but
+        the follow-up write was interrupted) with a stored transaction hash are
+        moved to SETTLED idempotently. Returns the reconciled payment ids."""
+        from agentsafe.payment.states import sources_for
+
+        sources = tuple(s.value for s in sources_for("settled"))
+        reconciled: list[str] = []
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT payment_id, transaction_hash, status FROM payments"
+                " WHERE status = 'settlement_pending'"
+            ).fetchall()
+            for row in rows:
+                if not row.get("transaction_hash"):
+                    continue
+                cur = conn.execute(
+                    "UPDATE payments SET status = 'settled', updated_at = now()"
+                    " WHERE payment_id = %s AND status = 'settlement_pending'"
+                    " AND transaction_hash IS NOT NULL",
+                    (row["payment_id"],),
+                )
+                if cur.rowcount == 1:
+                    reconciled.append(row["payment_id"])
+        return reconciled
+
+    def ambiguous_payments(self, older_than_minutes: int = 60) -> list[dict]:
+        """Rows in a non-terminal but stale state - for manual reconciliation /
+        operator inspection."""
+        cutoff = (datetime.now(UTC) - timedelta(minutes=older_than_minutes)).isoformat()
+        with self._lock, self._connect() as conn:
+            return conn.execute(
+                "SELECT payment_id, status, payload_ref, task_id, network, amount"
+                " FROM payments"
+                " WHERE status IN ('verified','resource_processing','settlement_pending')"
+                " AND updated_at < %s ORDER BY updated_at",
+                (cutoff,),
+            ).fetchall()
+
+
+def new_payment_id() -> str:
+    """Unguessable internal payment id (not the on-chain id)."""
+    return "pay_" + secrets.token_urlsafe(12)
+
+
 __all__ = [
     "MemoryTaskStore",
     "SqliteTaskStore", 
     "RedisTaskStore",
+    "PostgresTaskStore",
     "TaskStore",
     "open_task_store",
     "new_task_id",
+    "new_payment_id",
 ]

@@ -282,9 +282,13 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
         Path(settings.TASK_DB_PATH),
         redis_url=settings.effective_redis_url if store_mode == "redis" else "",
         retention_days=settings.ARTIFACT_RETENTION_DAYS,
+        dsn=settings.payment_database_url if store_mode == "postgres" else "",
     )
 
-    # Payments gate (fail-closed; disabled = dev no-op)
+    # Payments gate (fail-closed; disabled = dev no-op). When the task store
+    # is the Postgres store, its payments table is the authoritative replay /
+    # state machine; the adapter uses it (replay_store) so MCP-tool payments
+    # enjoy the same atomic replay protection as the REST flow.
     payment = X402PaymentAdapter(
         enabled=settings.PAYMENTS_ENABLED,
         sdk_version=settings.X402_SDK_VERSION,
@@ -295,11 +299,23 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
         asset=settings.X402_ASSET,
         max_timeout_seconds=settings.X402_MAX_TIMEOUT_SECONDS,
         extra_networks=settings.multichain_networks,
+        replay_store=task_store if hasattr(task_store, "reserve_payment") else None,
     )
     # Re-arm replay protection: payloads already consumed before a restart
     # must stay rejected (bounded by the task-store retention window).
     if payment.enabled:
         payment.seed_replay_ledger(task_store.payment_refs())
+    # Reconcile ambiguous settlements at startup (PROMPT 5): rows left in
+    # SETTLEMENT_PENDING with a stored transaction hash (e.g. an on-chain
+    # settlement that confirmed right before a database write failed) are
+    # moved to SETTLED idempotently.
+    if hasattr(task_store, "reconcile_pending_settlements"):
+        try:
+            reconciled = task_store.reconcile_pending_settlements()
+            if reconciled:
+                logger.info("reconciled %d pending settlements to settled", len(reconciled))
+        except Exception:  # noqa: BLE001 - reconciliation must never block startup
+            logger.exception("postgres settlement reconciliation failed at startup")
 
     gh = GitHubActionsClient(
         token=settings.GITHUB_TOKEN,
@@ -928,23 +944,61 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
             if binding_error is not None:
                 return binding_error
             ref = X402PaymentAdapter.payment_ref(result.payment_payload)
-            if payment.replay_seen(ref):
-                logger.info("REST payment replay rejected ref=%s", ref[:16])
-                return JSONResponse(
-                    {
-                        "ok": False,
-                        "error_code": "payment_replay",
-                        "error": "Payment already used (replay rejected)",
-                    },
-                    status_code=402,
-                )
-            payment.record_replay(ref)
+            # Postgres store: atomic, database-backed replay protection
+            # (UNIQUE payload_ref). The in-memory ledger is only used by
+            # memory/sqlite/redis stores - never the sole guard for Neon.
+            payment_row: dict | None = None
+            if hasattr(task_store, "reserve_payment"):
+                try:
+                    payment_row = task_store.reserve_payment(
+                        ref,
+                        payer=_payer_from_payload(result.payment_payload),
+                        network=str(result.payment_requirements.network),
+                        chain_id=_chain_id_from_network(str(result.payment_requirements.network)),
+                        token_contract=str(result.payment_requirements.asset),
+                        token_decimals=6,
+                        amount=str(result.payment_requirements.amount),
+                        recipient=str(result.payment_requirements.pay_to),
+                        scheme=str(result.payment_requirements.scheme),
+                        protocol_version=X402_PROTOCOL_VERSION,
+                    )
+                except InvalidPaymentTransition:
+                    logger.error("REST payment reserve failed to register ref=%s", ref[:16])
+                    return JSONResponse(
+                        {"ok": False, "error_code": "internal_error",
+                         "error": "payment could not be registered"},
+                        status_code=500,
+                    )
+                if payment_row is None:
+                    logger.info("REST payment replay rejected ref=%s", ref[:16])
+                    return JSONResponse(
+                        {
+                            "ok": False,
+                            "error_code": "payment_replay",
+                            "error": "Payment already used (replay rejected)",
+                        },
+                        status_code=402,
+                    )
+            else:
+                if payment.replay_seen(ref):
+                    logger.info("REST payment replay rejected ref=%s", ref[:16])
+                    return JSONResponse(
+                        {
+                            "ok": False,
+                            "error_code": "payment_replay",
+                            "error": "Payment already used (replay rejected)",
+                        },
+                        status_code=402,
+                    )
+                payment.record_replay(ref)
             verified = VerifiedPayment(
                 payload=result.payment_payload,
                 requirements=result.payment_requirements,
                 ref=ref,
             )
-            return await _dispatch_audit_rest(request, verified, parsed_body, ctx)
+            return await _dispatch_audit_rest(
+                request, verified, parsed_body, ctx, payment_row=payment_row
+            )
         except Exception as exc:  # noqa: BLE001 - never leak internals to HTTP clients
             logger.exception("REST audit endpoint failed")
             # Surface the exception class + a short message (no traceback, no
@@ -1110,11 +1164,35 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
                 status_code=500,
             )
 
+    def _payer_from_payload(payload: Any) -> str | None:
+        """Best-effort payer address from the signed EIP-3009 authorization.
+        The facilitator's verify has already recovered the signer; the
+        authorization.from is signature-bound, so this is authoritative for
+        the record."""
+        try:
+            inner = payload.payload
+            if isinstance(inner, dict):
+                auth = inner.get("authorization")
+                if isinstance(auth, dict) and auth.get("from"):
+                    return str(auth["from"])
+        except Exception:  # noqa: BLE001 - payer is best-effort metadata
+            return None
+        return None
+
+    def _chain_id_from_network(network: str) -> int | None:
+        if network.startswith("eip155:"):
+            try:
+                return int(network.split(":", 1)[1])
+            except (ValueError, IndexError):
+                return None
+        return None
+
     async def _dispatch_audit_rest(
         request: Request,
         verified: VerifiedPayment | None,
         parsed_body: Any,
         ctx: Any = None,
+        payment_row: dict | None = None,
     ) -> Response:
         """Shared dispatch pipeline for POST /api/audit (x402-paid or free in
         dev mode). The source-size guard runs BEFORE any settlement, so a
@@ -1208,6 +1286,9 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
         if verified is not None:
             task_store.mark_paid(task.task_id, verified.ref)
         task_store.set_state(task.task_id, TaskState.QUEUED)
+        if payment_row is not None and hasattr(task_store, "link_payment_task"):
+            # Bind the payment row to its service/audit id (entitlement tie).
+            task_store.link_payment_task(payment_row["payment_id"], task.task_id)
         logger.info(
             "REST audit dispatch address=%s task_id=%s paid=%s",
             addr,
@@ -1218,10 +1299,20 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
             run_id = await gh.trigger_workflow(addr, task.task_id)
             task_store.link_run(task.task_id, run_id)
             task_store.set_state(task.task_id, TaskState.RUNNING)
+            if payment_row is not None and hasattr(task_store, "transition_payment"):
+                try:
+                    task_store.transition_payment(payment_row["payment_id"], "resource_processing")
+                except Exception:  # noqa: BLE001 - state bookkeeping; dispatch already succeeded
+                    logger.exception("postgres payment transition failed (resource_processing)")
         except GitHubClientError as exc:
             # Dispatch failed: settlement is NOT attempted (verify-only so
             # far; the on-chain transfer never executes -> no funds move).
             task_store.set_state(task.task_id, TaskState.FAILED, error_code="dispatch_failed")
+            if payment_row is not None and hasattr(task_store, "transition_payment"):
+                try:
+                    task_store.transition_payment(payment_row["payment_id"], "failed")
+                except Exception:  # noqa: BLE001 - state bookkeeping must not mask the 502
+                    logger.exception("postgres payment transition failed (dispatch)")
             return JSONResponse(
                 {
                     "ok": False,
@@ -1236,6 +1327,11 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
         settlement_error: str | None = None
         payment_info: dict[str, Any] | None = None
         if verified is not None and x402_http is not None and ctx is not None:
+            if payment_row is not None and hasattr(task_store, "transition_payment"):
+                try:
+                    task_store.transition_payment(payment_row["payment_id"], "settlement_pending")
+                except Exception:  # noqa: BLE001 - bookkeeping only
+                    logger.exception("postgres payment transition failed (settlement_pending)")
             settle = await x402_http.process_settlement(
                 verified.payload,
                 verified.requirements,
@@ -1256,6 +1352,20 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
                 settlement_error = (
                     f"payment settlement failed: {settle.error_reason or 'unknown failure'}"
                 )
+            # Persist the settlement outcome atomically (PROMPT 5): status
+            # SETTLED (with the on-chain transaction hash) or FAILED, plus the
+            # facilitator response for reconciliation. Never fabricated.
+            if payment_row is not None and hasattr(task_store, "record_settlement"):
+                try:
+                    task_store.record_settlement(
+                        payment_row["payment_id"],
+                        success=settle.success,
+                        transaction_hash=getattr(settle, "transaction", None) or None,
+                        facilitator_response={"error_reason": settle.error_reason} if not settle.success else {},
+                        error_reason=settle.error_reason if not settle.success else None,
+                    )
+                except Exception:  # noqa: BLE001 - settlement already confirmed; do not 500
+                    logger.exception("postgres settlement record failed")
             # Step E structured payment record. The payer is the facilitator's
             # recovered signer when settlement reported it, else the signed
             # authorization's from (signature-bound, facilitator-verified).
