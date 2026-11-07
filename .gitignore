@@ -45,6 +45,3 @@ llm_providers_for_vercel.txt
 # secret backups — never commit
 .env.bak*
 *.bak
-
-# ad-hoc diagnostic script (not part of the service)
-scripts/diag_report_task.py
