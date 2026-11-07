@@ -406,7 +406,12 @@ def _build_index_html() -> str:
       var data = null;
       try {{ data = JSON.parse(text); }} catch (e) {{ data = {{}}; }}
       if (!res.ok) {{
-        var msg = (data && (data.error_description || data.error)) || ("HTTP " + res.status);
+        // Prefer the backend's machine error_description, then its error_code,
+        // then (for 500s) the diagnostic `detail` (exception class + message)
+        // so a server-side failure is visible instead of a bare "internal error".
+        var msg = (data && (data.error_description || data.error || data.error_code))
+          || (data && data.detail) || ("HTTP " + res.status);
+        if (data && data.detail && data.error) msg = data.error + " (" + data.detail + ")";
         if (res.status === 402) msg = "Payment rejected: " + msg;
         msg += "<br><span class='text-[11px] text-zinc-500'>signed on " + esc(diag.chainIdAtSign)
           + " / accepted " + esc(diag.network) + " / from " + esc((diag.from || "").slice(0, 10)) + "&hellip;"
