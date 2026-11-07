@@ -669,10 +669,14 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
                 ref=ref,
             )
             return await _dispatch_audit_rest(request, verified, parsed_body, ctx)
-        except Exception:  # noqa: BLE001 - never leak internals to HTTP clients
+        except Exception as exc:  # noqa: BLE001 - never leak internals to HTTP clients
             logger.exception("REST audit endpoint failed")
+            # Surface the exception class + a short message (no traceback, no
+            # secrets) so a 500 here is diagnosable from the response body
+            # instead of a useless opaque "internal error".
+            detail = f"{type(exc).__name__}: {str(exc)[:200]}"
             return JSONResponse(
-                {"ok": False, "error_code": "internal_error", "error": "internal error"},
+                {"ok": False, "error_code": "internal_error", "error": "internal error", "detail": detail},
                 status_code=500,
             )
 
