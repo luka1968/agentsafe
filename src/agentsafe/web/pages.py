@@ -259,6 +259,138 @@ def _build_index_html() -> str:
         + "per size tier on the MCP endpoint."
         + "</div>";
     }}
+    // ---- PROMPT 4: explicit payment-state machine --------------------------
+    // Each state maps to a distinct visual (badge + body) so the user can tell
+    // "wallet approval pending" from "payment settled" from "status unknown".
+    // The page NEVER claims "success" from a wallet signature alone: it only
+    // reports "settled" when the backend's structured payment object says so
+    // (status === "settled", which requires the facilitator's settlement op).
+    var PS = {{
+      REQUIRED: "payment-required",          // server asked for payment (402)
+      WALLET: "wallet-approval-pending",     // wallet popup for connect/switch/sign
+      SUBMITTED: "payment-submitted",        // signed; request in flight
+      VERIFYING: "payment-verification-pending", // awaiting the backend's 202
+      SETTLED: "payment-settled",            // backend reports settlement succeeded
+      FAILED: "payment-failed",              // 402/502/413 or wallet rejection
+      UNKNOWN: "payment-status-unknown"      // timeout/network after submit
+    }};
+    var STATE_COLOR = {{
+      "payment-required": "text-yellow-300",
+      "wallet-approval-pending": "text-cyan-300",
+      "payment-submitted": "text-cyan-300",
+      "payment-verification-pending": "text-cyan-300",
+      "payment-settled": "text-emerald-400",
+      "payment-failed": "text-red-400",
+      "payment-status-unknown": "text-amber-300"
+    }};
+    function statePill(state) {{
+      var labels = {{
+        "payment-required": "Payment required",
+        "wallet-approval-pending": "Wallet approval pending",
+        "payment-submitted": "Payment submitted",
+        "payment-verification-pending": "Payment verification pending",
+        "payment-settled": "Payment settled",
+        "payment-failed": "Payment failed",
+        "payment-status-unknown": "Payment status unknown"
+      }};
+      var cls = STATE_COLOR[state] || "text-zinc-300";
+      return "<span class='inline-flex items-center gap-1 rounded bg-zinc-800/80 px-2 py-0.5 text-[11px] " + cls + "'>"
+        + "&bull; " + esc(labels[state] || state) + "</span>";
+    }}
+    // Map the backend's machine error_code to a human, state-appropriate line.
+    // Falls through to the raw message when the code is unknown.
+    function paymentErrorLine(code, msg) {{
+      if (code === "invalid_exact_evm_insufficient_balance")
+        return "Insufficient USDC balance on the selected network. Top up and retry.";
+      if (code === "payment_replay")
+        return "This payment was already used (duplicate submission). The audit is not re-dispatched.";
+      if (code === "payment_authorization_expired")
+        return "The signed payment authorization has expired. Refresh the terms and sign again.";
+      if (code === "payment_authorization_not_yet_valid")
+        return "The signed payment authorization is not valid yet (start time is in the future).";
+      if (code === "payment_resource_mismatch")
+        return "This payment was signed for a different resource. Refresh and sign for this audit.";
+      if (code === "payment_resource_missing")
+        return "The payment payload did not identify the resource. Refresh and retry.";
+      if (code === "unsupported_protocol_version")
+        return "The payment uses an unsupported protocol version. Refresh the page and retry.";
+      if (code === "facilitator_unreachable")
+        return "Payment verification is temporarily unavailable (facilitator unreachable). Try again shortly. Your funds were not moved.";
+      if (code === "facilitator_malformed")
+        return "Payment verification is temporarily unavailable (facilitator error). Try again shortly. Your funds were not moved.";
+      if (code === "REST_FLAT_FEE_LINE_LIMIT") return msg;
+      return msg;
+    }}
+    function extractError(data, status) {{
+      return {{
+        code: (data && data.error_code) || "",
+        msg: (data && (data.error_description || data.error || data.error_code))
+          || (data && data.detail) || ("HTTP " + status)
+      }};
+    }}
+    // A confirmed payment summary. The user EXPLICITLY confirms paying the
+    // exact amount/recipient/network shown before the wallet opens. This is
+    // what makes the Mainnet<->Testnet choice deliberate: the page never picks
+    // or switches a chain on its own.
+    function paymentSummary(acc, meta, onConfirm) {{
+      var price = (Number(acc.amount) / 1e6).toFixed(6).replace(/0+$/, "").replace(/\.$/, "");
+      var payTo = acc.payTo || "";
+      var netName = (meta && meta.name) || acc.network;
+      var env = meta && meta.testnet
+        ? "<span class='rounded bg-amber-900/60 px-1.5 py-0.5 text-[10px] text-amber-300'>TESTNET (Base Sepolia)</span>"
+        : "<span class='rounded bg-emerald-900/60 px-1.5 py-0.5 text-[10px] text-emerald-300'>MAINNET (Base)</span>";
+      var envNote = meta && meta.testnet
+        ? "<p class='mt-1 text-[11px] text-zinc-400'>This is the <b>testnet</b> chain. No real money moves, but the wallet still signs a real EIP-3009 authorization.</p>"
+        : "<p class='mt-1 text-[11px] text-zinc-400'>This is the <b>mainnet</b> chain. USDC will be transferred on Base mainnet.</p>";
+      var s = "s" + Math.random().toString(36).slice(2);
+      return "<div class='mt-3 rounded-lg border border-zinc-700 bg-zinc-900 p-4'>"
+        + "<p class='flex items-center gap-2 text-sm'><span class='font-semibold text-cyan-300'>Confirm payment</span>" + env + "</p>"
+        + "<dl class='mt-3 space-y-1 text-sm'>"
+        + "<div class='flex justify-between'><dt class='text-zinc-500'>Network</dt><dd class='font-mono text-zinc-200'>" + esc(netName) + " (" + esc(acc.network) + ")</dd></div>"
+        + "<div class='flex justify-between'><dt class='text-zinc-500'>Amount</dt><dd class='font-mono text-zinc-200'>" + esc(price) + " USDC</dd></div>"
+        + "<div class='flex justify-between'><dt class='text-zinc-500'>Token</dt><dd class='font-mono text-zinc-200'>USDC</dd></div>"
+        + "<div class='flex justify-between'><dt class='text-zinc-500'>Recipient</dt><dd class='font-mono text-zinc-200 break-all'>" + esc(payTo) + "</dd></div>"
+        + "</dl>" + envNote
+        + "<div class='mt-3 flex gap-2'>"
+        + "<button id='" + s + "-ok' class='rounded bg-emerald-700 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-600'>Approve &amp; pay</button>"
+        + "<button id='" + s + "-back' class='rounded border border-zinc-600 px-4 py-2 text-sm text-zinc-300 hover:border-zinc-400'>Back</button>"
+        + "</div></div>";
+    }}
+    // ---- PROMPT 4: refresh / interrupted-request resume ---------------------
+    // Persist the last accepted task so a page refresh never double-pays: the
+    // resume affordance links to the report endpoints and the address/network
+    // that were used, so the user can check the outcome instead of paying again.
+    var LAST_TASK_KEY = "agentsafe_last_task";
+    function persistTask(tid, address, network) {{
+      try {{
+        sessionStorage.setItem(LAST_TASK_KEY, JSON.stringify({{ task_id: tid, address: address, network: network, at: Date.now() }}));
+      }} catch (e) {{ /* storage unavailable; ignore */ }}
+    }}
+    function resumeView() {{
+      var raw = null;
+      try {{ raw = sessionStorage.getItem(LAST_TASK_KEY); }} catch (e) {{ return ""; }}
+      if (!raw) return "";
+      var rec = null;
+      try {{ rec = JSON.parse(raw); }} catch (e) {{ return ""; }}
+      if (!rec || !rec.task_id) return "";
+      var ago = Math.round((Date.now() - (rec.at || 0)) / 60000);
+      return "<div class='mt-3 rounded-lg border border-zinc-700 bg-zinc-900/70 p-3 text-sm'>"
+        + "<p class='text-zinc-300'>You have a recently submitted audit. <b>Do not pay again</b> unless the report is truly missing.</p>"
+        + "<p class='mt-1 text-xs text-zinc-500'>Task: <code class='text-cyan-300'>" + esc(rec.task_id) + "</code>"
+        + (rec.network ? " &middot; paid on " + esc(rec.network) : "")
+        + (rec.address ? " &middot; " + esc(rec.address.slice(0, 10)) + "&hellip;" : "")
+        + (rec.at ? " &middot; " + ago + "m ago" : "") + "</p>"
+        + "<p class='mt-2 text-xs'>Reports: "
+        + "<a class='text-cyan-300 hover:underline' href='/api/audit/" + esc(rec.task_id) + "/report' target='_blank'>HTML</a> &middot; "
+        + "<a class='text-cyan-300 hover:underline' href='/api/audit/" + esc(rec.task_id) + "/report.json' target='_blank'>JSON</a> &middot; "
+        + "<a class='text-cyan-300 hover:underline' href='/api/audit/" + esc(rec.task_id) + "/report.md' target='_blank'>Markdown</a> &middot; "
+        + "<a class='text-cyan-300 hover:underline' href='/api/audit/" + esc(rec.task_id) + "/report.pdf' target='_blank'>PDF</a></p>"
+        + "<button id='resume-clear' class='mt-2 text-xs text-zinc-400 hover:text-zinc-200 underline'>Dismiss</button></div>";
+    }}
+    // Render a payment state: statePill + optional body.
+    function showState(state, html) {{
+      show(statePill(state) + (html || ""));
+    }}
     function fmtTask(tid) {{
       return "<p class='text-emerald-400'>Audit dispatched!</p>"
         + "<p class='mt-1 text-zinc-300'>Task ID: <code class='text-cyan-300'>" + esc(tid) + "</code></p>"
@@ -267,6 +399,151 @@ def _build_index_html() -> str:
         + "<a class='text-cyan-300 hover:underline' href='/api/audit/" + esc(tid) + "/report.json' target='_blank'>JSON</a> &middot; "
         + "<a class='text-cyan-300 hover:underline' href='/api/audit/" + esc(tid) + "/report.md' target='_blank'>Markdown</a> &middot; "
         + "<a class='text-cyan-300 hover:underline' href='/api/audit/" + esc(tid) + "/report.pdf' target='_blank'>PDF</a></p>";
+    }}
+    // Structured payment receipt from the backend 202 body (PROMPT 3): shows
+    // the settlement outcome and the on-chain transaction hash ONLY when the
+    // backend's settlement op confirmed it - never fabricated client-side.
+    function paymentReceipt(p) {{
+      if (!p) return "";
+      var rows = "<p class='mt-2 rounded border border-emerald-800/60 bg-emerald-900/20 p-3 text-xs text-emerald-200'>"
+        + "<b>Payment status:</b> " + esc(p.status)
+        + (p.network ? " &middot; " + esc(p.network) : "");
+      if (p.transaction) rows += "<br><span class='text-zinc-300'>Transaction:</span> <code class='break-all text-cyan-300'>" + esc(p.transaction) + "</code>";
+      if (p.payer) rows += "<br><span class='text-zinc-300'>Payer:</span> <code class='break-all'>" + esc(p.payer) + "</code>";
+      if (p.payment_ref) rows += "<br><span class='text-zinc-300'>Payment ref:</span> <code class='break-all'>" + esc(p.payment_ref) + "</code>";
+      if (p.status !== "settled") rows += "<br><span class='text-amber-300'>Settlement did not confirm. The audit still runs; the report is not withheld, but no payment success is reported.</span>";
+      return rows + "</p>";
+    }}
+    // Guidance shown when the submit request was interrupted and the payment
+    // outcome is genuinely unknown (network error / timeout after signing).
+    function statusUnknownNote() {{
+      return "<div class='mt-3 rounded border border-amber-700/60 bg-amber-900/20 p-3 text-xs text-amber-200'>"
+        + "<b>How to check</b>: if the audit was accepted you will have a Task ID and free report links. "
+        + "Look above for the resume card, or re-enter the same address and check whether the report loads. "
+        + "Do <b>not</b> sign a second payment for the same audit unless the report is missing."
+        + "</div>";
+    }}
+    // Renders the network-choice buttons from the 402 terms AND binds the
+    // click handler. Reusable so a user who backs out of the confirmation
+    // summary can pick a different network without re-requesting terms.
+    function renderChoices(accs, a, clickFn) {{
+      var lines = [];
+      lines.push("<p class='text-yellow-300'>Payment required to start this audit. Pick the network you want to pay on:</p>");
+      lines.push("<p class='text-xs text-zinc-500'>The flat fee covers contracts up to <b>500 source lines</b>. "
+        + "Larger contracts are billed per size tier on the MCP endpoint (tool "
+        + "<code>audit_contract</code>); requesting one here is refused <i>before</i> "
+        + "settlement, so no USDC is ever taken.</p>");
+      accs.forEach(function (acc, i) {{
+        var meta = CHAINS[acc.network] || {{ name: acc.network }};
+        // USDC is 6 decimals. Show the true amount without padding the
+        // trailing zeros so a sub-cent testnet price ($0.0001) does not
+        // render as "0.00 USDC".
+        var price = (Number(acc.amount) / 1e6).toFixed(6).replace(/0+$/, "").replace(/\.$/, "");
+        var payTo = acc.payTo || "";
+        var tag = meta.testnet
+          ? " <span class='rounded bg-amber-900/60 px-1.5 py-0.5 text-[10px] text-amber-300'>TESTNET (free USDC)</span>"
+          : "";
+        lines.push("<button data-chain='" + i + "' class='chain-opt mt-2 w-full rounded-lg border border-zinc-700 bg-zinc-900 px-4 py-3 text-left text-sm hover:border-cyan-400'>"
+          + "<span class='font-semibold text-cyan-300'>Pay with " + esc(meta.name) + "</span>" + tag
+          + " <span class='text-zinc-300'>" + esc(acc.network) + "</span>"
+          + " &mdash; <b>" + price + " USDC</b>"
+          + "<br><span class='text-xs text-zinc-500'>pay to: <code class='break-all'>" + esc(payTo) + "</code></span>"
+          + "</button>");
+      }});
+      lines.push("<p class='mt-3 text-xs text-zinc-500'>Your wallet will open and switch to that network, then ask you to approve the payment. "
+        + "Prefer the terminal? Run the curl command below with an x402-enabled client:</p>");
+      var curlCmd = "curl -X POST " + window.location.origin + REST
+        + " -H 'content-type: application/json' -d '" + JSON.stringify({{"address": a}}) + "'";
+      lines.push("<pre class='mt-2 overflow-x-auto rounded border border-zinc-800 bg-zinc-900 p-3 text-xs text-cyan-300'><code>"
+        + esc(curlCmd) + "</code></pre>");
+      showState(PS.REQUIRED, resumeView() + lines.join(""));
+      flow.querySelectorAll("button.chain-opt").forEach(function (b) {{
+        b.addEventListener("click", function () {{ clickFn(b, accs, a); }});
+      }});
+    }}
+    // Click handler for one network choice: explicit payment summary first
+    // (amount / token / recipient / network), then the wallet dance, then the
+    // submitted -> settled / failed / unknown states.
+    async function bindChainClick(btn, accs, a) {{
+      if (paying) {{
+        // A request may have hung (ignored popup / wedged wallet).
+        // After the stale-lock window the lock self-releases so the
+        // user is never stuck.
+        var staleMs = 60000;
+        if (Date.now() - payingSince < staleMs) {{
+          show("<p class='text-yellow-300'>A wallet request is already open. "
+            + "Complete or close the wallet popup (or wait " + Math.ceil((staleMs - (Date.now() - payingSince)) / 1000)
+            + "s for the lock to reset), then try again.</p>");
+          return;
+        }}
+        paying = false;
+      }}
+      var idx = Number(btn.getAttribute("data-chain"));
+      var accept = accs[idx];
+      if (!accept) return;
+      var meta = CHAINS[accept.network] || {{ name: accept.network, chainId: null }};
+      // Explicit payment summary FIRST: the user sees and confirms the
+      // exact amount / USDC token / recipient / network before the
+      // wallet opens. This is the deliberate Mainnet<->Testnet choice;
+      // the page never switches a chain on its own.
+      showState(PS.REQUIRED, resumeView() + paymentSummary(accept, meta));
+      var confirmed = await new Promise(function (resolve) {{
+        var okBtn = document.querySelector("button[id$='-ok']");
+        var backBtn = document.querySelector("button[id$='-back']");
+        if (okBtn) okBtn.addEventListener("click", function () {{ resolve(true); }});
+        if (backBtn) backBtn.addEventListener("click", function () {{ resolve(false); }});
+      }});
+      if (!confirmed) {{
+        // User backed out of paying on this network - do not open the
+        // wallet or switch to any chain. Re-render the choices (with a
+        // fresh click binding).
+        paying = false;
+        renderChoices(accs, a, bindChainClick);
+        return;
+      }}
+      paying = true;
+      payingSince = Date.now();
+      flow.querySelectorAll("button.chain-opt").forEach(function (b) {{ b.disabled = true; }});
+      showState(PS.WALLET, "<p class='text-zinc-300'>Opening your wallet to approve the payment on " + esc(meta.name) + " (USDC to " + esc(accept.payTo || "") + ")...</p>");
+      if (hint) hint.classList.remove("hidden");
+      try {{
+        var out = await payOnChain(a, accept);
+        if (out && out.__unknown) {{
+          // Request never got a response: settlement outcome unknown.
+          showState(PS.UNKNOWN,
+            "<p class='text-zinc-300'>The request was interrupted and the payment status is <b>unknown</b>. "
+            + "It may or may not have settled. <b>Check before paying again</b> - "
+            + "duplicate payments are rejected and never double-settle.</p>"
+            + statusUnknownNote());
+          persistTask("unknown:" + String(a).slice(0, 10) + ":" + (accept.network || ""), a, accept.network);
+          return;
+        }}
+        var tid = (out && (out.task_id || out.taskId)) || "";
+        if (tid) {{
+          persistTask(tid, a, (out && out.payment && out.payment.network) || accept.network);
+          showState(PS.SETTLED, fmtTask(tid) + paymentReceipt(out.payment));
+        }} else {{
+          showState(PS.SETTLED, "<pre class='mt-2 overflow-x-auto rounded border border-zinc-800 bg-zinc-900 p-3 text-xs text-cyan-300'>"
+            + esc(JSON.stringify(out, null, 2)) + "</pre>");
+        }}
+      }} catch (err) {{
+        var emsg = friendlyErr(err);
+        var code = (err && err.error_code) || "";
+        var shown = paymentErrorLine(code, emsg);
+        if (code === "payment_replay") {{
+          // Duplicate submission - the task may already exist; guide
+          // toward the resume view instead of a dead error.
+          shown += " " + resumeView();
+        }}
+        showState(PS.FAILED,
+          "<p>" + esc(shown) + "</p>"
+          + (err && err.diag ? "<p class='mt-1 text-[11px] text-zinc-500'>" + err.diag + "</p>" : "")
+          + (isLineLimit(shown) ? lineLimitNote() : ""));
+      }} finally {{
+        paying = false;
+        flow.querySelectorAll("button.chain-opt").forEach(function (b) {{ b.disabled = false; }});
+        if (hint) hint.classList.add("hidden");
+      }}
     }}
     // Sign an EIP-3009 transferWithAuthorization with the user's wallet and
     // retry the audit request with the x402 payment header (X-PAYMENT).
@@ -405,14 +682,27 @@ def _build_index_html() -> str:
           && String(payload.payload.authorization.nonce || "").length) || -1 }};
       var codec = paymentCodec();
       if (!codec) throw new Error("Payment module not loaded. Hard-refresh the page and retry.");
-      var res = await fetch(REST, {{
-        method: "POST",
-        headers: {{
-          "content-type": "application/json",
-          "X-PAYMENT": codec.safeBase64Encode(JSON.stringify(payload))
-        }},
-        body: JSON.stringify({{ "address": a }})
-      }});
+      var submittedState = function () {{ showState(PS.SUBMITTED, "<p class='text-zinc-300'>Payment signed. Submitting to the service...</p>"); }};
+      submittedState();
+      // Retry the ORIGINAL audit request with the official x402 V2 payment
+      // header (safeBase64Encode of the SDK-built payload). No hand-rolled
+      // base64, no hand-assembled protocol object.
+      var res;
+      try {{
+        res = await fetch(REST, {{
+          method: "POST",
+          headers: {{
+            "content-type": "application/json",
+            "X-PAYMENT": codec.safeBase64Encode(JSON.stringify(payload))
+          }},
+          body: JSON.stringify({{ "address": a }})
+        }});
+      }} catch (netErr) {{
+        // Request never got a response: the payment may or may not have been
+        // settled. This is an UNKNOWN state - tell the user explicitly so they
+        // do not assume success or blindly re-pay.
+        return {{ __unknown: true, address: a, network: accept.network, error: netErr }};
+      }}
       var text = await res.text();
       var data = null;
       try {{ data = JSON.parse(text); }} catch (e) {{ data = {{}}; }}
@@ -423,12 +713,17 @@ def _build_index_html() -> str:
         var msg = (data && (data.error_description || data.error || data.error_code))
           || (data && data.detail) || ("HTTP " + res.status);
         if (data && data.detail && data.error) msg = data.error + " (" + data.detail + ")";
-        if (res.status === 402) msg = "Payment rejected: " + msg;
-        msg += "<br><span class='text-[11px] text-zinc-500'>signed on " + esc(diag.chainIdAtSign)
+        var friendly = paymentErrorLine((data && data.error_code) || "", msg);
+        if (res.status === 402) friendly = "Payment rejected: " + friendly;
+        var e = new Error(friendly);
+        e.status = res.status;
+        e.error_code = (data && data.error_code) || "";
+        e.diag = "signed on " + esc(diag.chainIdAtSign)
           + " / accepted " + esc(diag.network) + " / from " + esc((diag.from || "").slice(0, 10)) + "&hellip;"
-          + " / nonce len " + diag.nonceLen + "</span>";
-        throw new Error(msg);
+          + " / nonce len " + diag.nonceLen;
+        throw e;
       }}
+      data.__submitted = true;
       return data;
     }}
     start.addEventListener("click", async function () {{
@@ -444,7 +739,8 @@ def _build_index_html() -> str:
         }});
         if (res.status === 202) {{
           var d = await res.json().catch(function () {{ return {{}}; }});
-          show(fmtTask(d.task_id || ""));
+          if (d.task_id) persistTask(d.task_id, a, (d.payment && d.payment.network) || "");
+          show(fmtTask(d.task_id || "") + (d.payment ? paymentReceipt(d.payment) : ""));
           return;
         }}
         if (res.status !== 402) {{
@@ -466,78 +762,7 @@ def _build_index_html() -> str:
         // payable network first (mainnet Base by default), then the extra
         // chains. Re-sorting here could surface a testnet ahead of the
         // real-money chain a mainnet deployment actually charges on.
-        var lines = [];
-        lines.push("<p class='text-yellow-300'>Payment required to start this audit. Pick the network you want to pay on:</p>");
-        lines.push("<p class='text-xs text-zinc-500'>The flat fee covers contracts up to <b>500 source lines</b>. "
-          + "Larger contracts are billed per size tier on the MCP endpoint (tool "
-          + "<code>audit_contract</code>); requesting one here is refused <i>before</i> "
-          + "settlement, so no USDC is ever taken.</p>");
-        accs.forEach(function (acc, i) {{
-          var meta = CHAINS[acc.network] || {{ name: acc.network }};
-          // USDC is 6 decimals. Show the true amount without padding the
-          // trailing zeros so a sub-cent testnet price ($0.0001) does not
-          // render as "0.00 USDC".
-          var price = (Number(acc.amount) / 1e6).toFixed(6).replace(/0+$/, "").replace(/\.$/, "");
-          var payTo = acc.payTo || "";
-          var tag = meta.testnet
-            ? " <span class='rounded bg-amber-900/60 px-1.5 py-0.5 text-[10px] text-amber-300'>TESTNET (free USDC)</span>"
-            : "";
-          lines.push("<button data-chain='" + i + "' class='chain-opt mt-2 w-full rounded-lg border border-zinc-700 bg-zinc-900 px-4 py-3 text-left text-sm hover:border-cyan-400'>"
-            + "<span class='font-semibold text-cyan-300'>Pay with " + esc(meta.name) + "</span>" + tag
-            + " <span class='text-zinc-300'>" + esc(acc.network) + "</span>"
-            + " &mdash; <b>" + price + " USDC</b>"
-            + "<br><span class='text-xs text-zinc-500'>pay to: <code class='break-all'>" + esc(payTo) + "</code></span>"
-            + "</button>");
-        }});
-        lines.push("<p class='mt-3 text-xs text-zinc-500'>Your wallet will open and switch to that network, then ask you to approve the payment. "
-          + "Prefer the terminal? Run the curl command below with an x402-enabled client:</p>");
-        var curlCmd = "curl -X POST " + window.location.origin + REST
-          + " -H 'content-type: application/json' -d '" + JSON.stringify({{"address": a}}) + "'";
-        lines.push("<pre class='mt-2 overflow-x-auto rounded border border-zinc-800 bg-zinc-900 p-3 text-xs text-cyan-300'><code>"
-          + esc(curlCmd) + "</code></pre>");
-        show(lines.join(""));
-        flow.querySelectorAll("button.chain-opt").forEach(function (btn) {{
-          btn.addEventListener("click", async function () {{
-            if (paying) {{
-              // A request may have hung (ignored popup / wedged wallet).
-              // After the stale-lock window the lock self-releases so the
-              // user is never stuck.
-              var staleMs = 60000;
-              if (Date.now() - payingSince < staleMs) {{
-                show("<p class='text-yellow-300'>A wallet request is already open. "
-                  + "Complete or close the wallet popup (or wait " + Math.ceil((staleMs - (Date.now() - payingSince)) / 1000)
-                  + "s for the lock to reset), then try again.</p>");
-                return;
-              }}
-              paying = false;
-            }}
-            var idx = Number(btn.getAttribute("data-chain"));
-            var accept = accs[idx];
-            if (!accept) return;
-            paying = true;
-            payingSince = Date.now();
-            var origText = btn.innerHTML;
-            flow.querySelectorAll("button.chain-opt").forEach(function (b) {{ b.disabled = true; }});
-            btn.textContent = "Opening wallet...";
-            if (hint) hint.classList.remove("hidden");
-            try {{
-              var out = await payOnChain(a, accept);
-              var tid = (out && (out.task_id || out.taskId)) || "";
-              if (tid) show(fmtTask(tid));
-              else show("<p class='text-emerald-400'>Payment accepted.</p><pre class='mt-2 overflow-x-auto rounded border border-zinc-800 bg-zinc-900 p-3 text-xs text-cyan-300'>"
-                + esc(JSON.stringify(out, null, 2)) + "</pre>");
-            }} catch (err) {{
-              var emsg = friendlyErr(err);
-              show("<p class='text-red-400'>" + esc(emsg) + "</p>"
-                + (isLineLimit(emsg) ? lineLimitNote() : ""));
-            }} finally {{
-              paying = false;
-              flow.querySelectorAll("button.chain-opt").forEach(function (b) {{ b.disabled = false; }});
-              btn.innerHTML = origText;
-              if (hint) hint.classList.add("hidden");
-            }}
-          }});
-        }});
+        renderChoices(accs, a, bindChainClick);
       }} catch (err) {{
         show("<p class='text-red-400'>Request failed: " + esc((err && err.message) || String(err)) + "</p>");
       }} finally {{

@@ -467,6 +467,138 @@ console.log(JSON.stringify(results));
         assert body["accepts"][0]["payTo"].lower() == _payments_settings().X402_PAY_TO.lower()
 
 
+class TestPaymentFlowStates:
+    """PROMPT 4: the landing page must expose an explicit payment-state
+    machine, an explicit confirm-payment summary (deliberate network choice),
+    refresh-resume, and per-error-code messaging - without ever reporting
+    success from a wallet signature alone."""
+
+    @pytest.fixture(scope="class")
+    def js(self) -> str:
+        from agentsafe.web.pages import INDEX_HTML
+
+        m = re.search(r"<script>([\s\S]*?)</script>", INDEX_HTML)
+        assert m, "inline script block missing"
+        return m.group(1)
+
+    def test_all_seven_states_exist(self, js: str):
+        # Payment required / wallet approval pending / payment submitted /
+        # verification pending / settled / failed / status unknown.
+        for state in (
+            "payment-required",
+            "wallet-approval-pending",
+            "payment-submitted",
+            "payment-verification-pending",
+            "payment-settled",
+            "payment-failed",
+            "payment-status-unknown",
+        ):
+            assert state in js, f"state {state!r} missing from the page"
+        # Human labels for each state (badge text).
+        for label in (
+            "Payment required",
+            "Wallet approval pending",
+            "Payment submitted",
+            "Payment verification pending",
+            "Payment settled",
+            "Payment failed",
+            "Payment status unknown",
+        ):
+            assert label in js, f"state label {label!r} missing"
+
+    def test_success_requires_backend_settlement_not_signature(self, js: str):
+        # The settled state is driven by the backend's structured payment
+        # object (payment.status === "settled" from the 202), never by the
+        # signature step alone. The signature step only reaches SUBMITTED.
+        assert 'PS.SUBMITTED, "<p class=\'text-zinc-300\'>Payment signed.' in js
+        assert 'showState(PS.SETTLED, fmtTask(tid) + paymentReceipt(out.payment))' in js
+        assert "paymentReceipt" in js
+        # The receipt renders the backend status; a non-settled status is
+        # explicitly flagged instead of hidden.
+        assert 'p.status !== "settled"' in js
+
+    def test_transaction_hash_never_fabricated(self, js: str):
+        # The receipt only renders a transaction when the backend sent one.
+        assert "if (p.transaction)" in js
+
+    def test_explicit_payment_summary_before_wallet(self, js: str):
+        # The user confirms amount / token / recipient / network BEFORE the
+        # wallet opens (deliberate mainnet<->testnet choice; no auto-switch).
+        assert "Confirm payment" in js
+        assert "paymentSummary(accept, meta)" in js
+        assert ">Approve" in js and ">Back<" in js
+        assert "MAINNET (Base)" in js and "TESTNET (Base Sepolia)" in js
+
+    def test_no_automatic_chain_switch_outside_explicit_flow(self, js: str):
+        # wallet_switchEthereumChain may only fire inside payOnChain, which is
+        # reached exclusively from the confirmed summary flow. It must never
+        # run unconditionally on page load or on a payment failure.
+        switches = [m.start() for m in re.finditer("wallet_switchEthereumChain", js)]
+        assert switches, "chain switch call missing"
+        pay_start = js.find("async function payOnChain")
+        pay_end = js.find("start.addEventListener")
+        assert pay_start != -1 and pay_end != -1 and pay_start < pay_end
+        for pos in switches:
+            # every occurrence must be inside the payOnChain function body
+            assert pay_start < pos < pay_end, (
+                "wallet_switchEthereumChain found outside payOnChain (auto-switch risk)"
+            )
+
+    def test_refresh_resume_never_double_pays(self, js: str):
+        assert "sessionStorage" in js
+        assert "agentsafe_last_task" in js
+        assert "persistTask" in js and "resumeView" in js
+        # The resume card explicitly warns against paying again.
+        assert "Do not pay again" in js
+
+    def test_interrupted_request_shows_unknown_state(self, js: str):
+        # A network error after signing must surface the UNKNOWN state with
+        # guidance, never success and never a silent failure.
+        assert "__unknown" in js
+        assert "PS.UNKNOWN" in js
+        assert "statusUnknownNote" in js
+
+    def test_error_codes_map_to_distinct_messages(self, js: str):
+        for code in (
+            "invalid_exact_evm_insufficient_balance",
+            "payment_replay",
+            "payment_authorization_expired",
+            "payment_resource_mismatch",
+            "unsupported_protocol_version",
+            "facilitator_unreachable",
+            "facilitator_malformed",
+        ):
+            assert code in js, f"error code {code!r} not handled in the UI"
+        # wallet rejection gets its own friendly line
+        assert "rejected by user" in js
+
+    def test_amount_usdc_recipient_network_shown(self, js: str):
+        # Choices show price in USDC, the recipient, and the network; the
+        # summary repeats them before confirmation.
+        assert "USDC</b>" in js
+        assert "pay to:" in js
+        assert '" &mdash; <b>" + price + " USDC</b>"' in js
+
+    def test_no_secrets_in_frontend(self, js: str):
+        # No private-key material, tokens, or server-only config may reach the
+        # landing page script.
+        for forbidden in ("private_key", "PRIVATE_KEY", "GITHUB_TOKEN", "REDIS_URL",
+                          "api_key", "apiKey", "secret", "bearer "):
+            assert forbidden.lower() not in js.lower(), (
+                f"possible secret reference {forbidden!r} in landing JS"
+            )
+        # The official SDK codecs are used for payment headers; no hand-rolled
+        # base64 of protocol payloads (btoa/atob removed in PROMPT 2/4).
+        assert "safeBase64Encode" in js
+        assert "btoa(" not in js and "atob(" not in js
+
+    def test_duplicate_submission_guides_to_resume(self, js: str):
+        # On payment_replay the UI appends the resume card instead of a dead
+        # error, and the mapper explains the duplicate was not re-dispatched.
+        assert 'code === "payment_replay"' in js
+        assert "duplicate submission" in js.lower()
+
+
 class TestAccessLogStore:
     def test_log_and_purge_30_day_retention(self, tmp_path):
         store = AccessLogStore(str(tmp_path / "access.db"))
