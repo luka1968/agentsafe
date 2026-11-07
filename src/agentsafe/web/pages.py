@@ -224,6 +224,14 @@ def _build_index_html() -> str:
       if (/already pending/i.test(msg)) {{
         return "Your wallet already has a pending request. Complete or close the wallet popup, then try again.";
       }}
+      if (/not been authorized by the user/i.test(msg)) {{
+        return "MetaMask has not granted this site permission to sign. "
+          + "Click the MetaMask icon, check the Connected sites / Permissions, "
+          + "and grant access to this site, then click the network again to retry.";
+      }}
+      if (/rejected by user|user rejected/i.test(msg)) {{
+        return "The request was cancelled in your wallet. Click the network again to retry.";
+      }}
       return msg;
     }}
     function isLineLimit(msg) {{
@@ -257,26 +265,35 @@ def _build_index_html() -> str:
       var meta = CHAINS[accept.network] || {{ name: accept.network, chainId: null }};
       if (!window.ethereum) throw new Error("No wallet found. Install MetaMask or another web3 wallet, then retry.");
       var eth = window.ethereum;
-      // Prefer the already-authorized account (zero wallet popups for
-      // returning visitors). Only fire eth_requestAccounts (the call that
-      // opens the connect popup and can be rejected with "already pending"
-      // if another request is stuck) when no account is authorized yet.
+      // Wallet connection mirrors the official x402 paywall (viem's wallet
+      // connect): read eth_accounts first (zero popups for an already-granted
+      // site); if the site is not yet authorized, ask with
+      // wallet_requestPermissions (which returns the granted accounts via its
+      // caveats); fall back to eth_requestAccounts only if that yields nothing.
+      // A MetaMask that returns an address from eth_accounts but rejects
+      // eth_signTypedData_v4 with "not been authorized by the user" is handled
+      // by the explicit permission request below plus the sign retry later.
       var accounts = [];
       try {{ accounts = await withWalletTimeout(eth.request({{ method: "eth_accounts" }}), "Wallet"); }} catch (e) {{ accounts = []; }}
-      var from = accounts && accounts[0];
-      if (!from) {{
-        accounts = await withWalletTimeout(eth.request({{ method: "eth_requestAccounts" }}), "Wallet connect");
-        from = accounts && accounts[0];
-        if (!from) throw new Error("Wallet connection rejected.");
-      }} else {{
-        // eth_accounts returning an address does NOT mean the site is
-        // authorized to sign. Newer MetaMask rejects eth_signTypedData_v4
-        // on an un-authorized site with "not been authorized by the user".
-        // Ask explicitly so the sign call below works.
+      if (!accounts || !accounts.length) {{
         try {{
-          await withWalletTimeout(eth.request({{ method: "wallet_requestPermissions", params: [{{ eth_accounts: {{}} }}] }}), "Authorize");
-        }} catch (e) {{ /* already granted or unsupported; signing will surface the real problem */ }}
+          var perm = await withWalletTimeout(
+            eth.request({{ method: "wallet_requestPermissions", params: [{{ eth_accounts: {{}} }}] }}),
+            "Authorize"
+          );
+          var caveat = perm && perm[0] && perm[0].caveats && perm[0].caveats[0]
+            && perm[0].caveats[0].value;
+          accounts = caveat && caveat.length ? caveat : [];
+          if (accounts.length) {{
+            try {{ accounts = await withWalletTimeout(eth.request({{ method: "eth_accounts" }}), "Wallet"); }} catch (e) {{}}
+          }}
+        }} catch (e) {{ /* fall through to eth_requestAccounts */ }}
+        if (!accounts || !accounts.length) {{
+          accounts = await withWalletTimeout(eth.request({{ method: "eth_requestAccounts" }}), "Wallet connect");
+        }}
       }}
+      var from = accounts && accounts[0];
+      if (!from) throw new Error("Wallet connection rejected.");
       if (meta.chainId) {{
         var cur = await withWalletTimeout(eth.request({{ method: "eth_chainId" }}), "Wallet");
         var want = "0x" + meta.chainId.toString(16);
@@ -343,16 +360,28 @@ def _build_index_html() -> str:
         );
       }} catch (sigErr) {{
         var sigMsg = (sigErr && sigErr.message) || String(sigErr);
+        // eth_requestAccounts above has already connected this dapp, but a
+        // stale/unauthorized session can still reject the FIRST typed-data
+        // signature with "not been authorized by the user". Ask for the
+        // account permission once and retry. If the retry also fails, stop
+        // with a clear, actionable message instead of looping silently.
         if (/not been authorized by the user/i.test(sigMsg)) {{
-          // First attempt was rejected because the site was never
-          // authorized. Ask once, then retry the signature.
           try {{
             await withWalletTimeout(eth.request({{ method: "wallet_requestPermissions", params: [{{ eth_accounts: {{}} }}] }}), "Authorize");
-          }} catch (e) {{ /* fall through; the retry surfaces the real error */ }}
-          signed = await withWalletTimeout(
-            bridge.createPaymentPayload(eth, from, accept, window.location.origin + REST),
-            "Signature"
-          );
+          }} catch (e) {{ /* fall through; the retry surfaces the real problem */ }}
+          try {{
+            signed = await withWalletTimeout(
+              bridge.createPaymentPayload(eth, from, accept, window.location.origin + REST),
+              "Signature"
+            );
+          }} catch (retryErr) {{
+            var rmsg = (retryErr && retryErr.message) || String(retryErr);
+            if (/not been authorized by the user/i.test(rmsg)) {{
+              throw new Error("MetaMask still does not authorize this site to sign. "
+                + "Open MetaMask > Permissions, allow this site, then click the network again to retry.");
+            }}
+            throw retryErr;
+          }}
         }} else {{
           throw sigErr;
         }}
@@ -411,14 +440,10 @@ def _build_index_html() -> str:
         var terms = req ? b64decode(req) : null;
         var accs = (terms && terms.accepts && terms.accepts.length) ? terms.accepts : [];
         if (!accs.length) {{ show("<p class='text-red-400'>Service did not return payment terms.</p>"); return; }}
-        // x402.org's facilitator only registers Base Sepolia (84532) today;
-        // 8453/42161/137 have no facilitator and cannot settle. Put the
-        // working network first so the default choice completes payment.
-        accs.sort(function (a, b) {{
-          var pa = a.network === "eip155:84532" ? 0 : 1;
-          var pb = b.network === "eip155:84532" ? 0 : 1;
-          return pa - pb;
-        }});
+        // Keep the server's accept order: the backend advertises the primary
+        // payable network first (mainnet Base by default), then the extra
+        // chains. Re-sorting here could surface a testnet ahead of the
+        // real-money chain a mainnet deployment actually charges on.
         var lines = [];
         lines.push("<p class='text-yellow-300'>Payment required to start this audit. Pick the network you want to pay on:</p>");
         lines.push("<p class='text-xs text-zinc-500'>The flat fee covers contracts up to <b>500 source lines</b>. "
@@ -427,7 +452,10 @@ def _build_index_html() -> str:
           + "settlement, so no USDC is ever taken.</p>");
         accs.forEach(function (acc, i) {{
           var meta = CHAINS[acc.network] || {{ name: acc.network }};
-          var price = (Number(acc.amount) / 1e6).toFixed(2);
+          // USDC is 6 decimals. Show the true amount without padding the
+          // trailing zeros so a sub-cent testnet price ($0.0001) does not
+          // render as "0.00 USDC".
+          var price = (Number(acc.amount) / 1e6).toFixed(6).replace(/0+$/, "").replace(/\.$/, "");
           var payTo = acc.payTo || "";
           var tag = meta.testnet
             ? " <span class='rounded bg-amber-900/60 px-1.5 py-0.5 text-[10px] text-amber-300'>TESTNET (free USDC)</span>"

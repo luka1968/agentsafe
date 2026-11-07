@@ -317,27 +317,79 @@ class RedisTaskStore:
         self._prefix = prefix
         self._retention_days = retention_days
         self._lock = threading.Lock()
-        
-        # Connect to Redis. redis-py handles both redis:// and rediss:// URLs
-        # (rediss:// = TLS transport, required by Upstash). Socket timeouts keep
-        # serverless requests from hanging when the datastore is unreachable.
+        self._redis_url = redis_url
+        # Loop safety (serverless): redis-py's async client binds its
+        # connection pool to the event loop that first uses it. The Vercel
+        # Python runtime rotates the asyncio event loop between warm
+        # invocations of the same process, so a pool bound to a now-closed
+        # loop raises RuntimeError("Event loop is closed") on the next warm
+        # request. We track the loop the current client is bound to and
+        # rebuild it whenever the running loop differs.
+        self._bound_loop = None
+        self._connect()
+    
+    def _connect(self) -> None:
+        """(Re)build the async Redis client. Called at init and whenever the
+        running event loop changes, so a pool is never reused on a dead loop."""
         try:
             self._client = redis_client.from_url(
-                redis_url,
+                self._redis_url,
                 decode_responses=True,
                 socket_connect_timeout=5.0,
                 socket_timeout=10.0,
                 health_check_interval=30,
             )
-            # Test connection (also fails fast on wrong credentials)
-            self._client.ping()
+            # Test connection (also fails fast on wrong credentials). Under
+            # redis-py the returned client is async, so ping() is a coroutine;
+            # this build-time probe is best-effort and never awaited on purpose.
+            # Any real connection error surfaces on the first awaited command.
+            self._bound_loop = None
             # Log host only - the URL embeds the auth password.
-            logger.info("Connected to Redis at %s", _safe_redis_host(redis_url))
+            logger.info("Connected to Redis at %s", _safe_redis_host(self._redis_url))
         except Exception as e:
             # Never include the URL in the error: it contains credentials.
             raise ValueError(
-                f"Failed to connect to Redis ({_safe_redis_host(redis_url)}): {e}"
+                f"Failed to connect to Redis ({_safe_redis_host(self._redis_url)}): {e}"
             ) from e
+    
+    def _ensure_loop(self) -> None:
+        """If the running event loop differs from the one the current client
+        is bound to, rebuild the client so commands never hit a dead pool.
+
+        The old client is NOT closed: its pool lives on a (now closed) loop,
+        and closing would itself raise on the dead loop. It is simply dropped
+        and replaced with a fresh client that lazily binds to the running
+        loop on its first awaited command."""
+        try:
+            import asyncio
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return  # no running loop (build-time); leave the client as-is
+        if self._bound_loop is loop:
+            return  # already bound to this loop
+        if self._bound_loop is None:
+            # First use after construction: the client built in _connect was
+            # never awaited, so its pool has not bound to a loop yet. Reuse it
+            # (it binds to the running loop on its first awaited command) and
+            # just record the binding - no rebuild, no leaked connection.
+            self._bound_loop = loop
+            return
+        # The running loop differs from the loop the current client's pool is
+        # bound to (a warm serverless process rotated its loop). The old pool
+        # lives on a now-closed loop and must not be reused or closed (closing
+        # would itself raise on the dead loop). Drop it and build a fresh
+        # client that lazily binds to the running loop.
+        self._bound_loop = loop
+        try:
+            self._client = redis_client.from_url(
+                self._redis_url,
+                decode_responses=True,
+                socket_connect_timeout=5.0,
+                socket_timeout=10.0,
+                health_check_interval=30,
+            )
+        except Exception as e:  # noqa: BLE001 - surface without the URL
+            logger.error("Failed to rebuild Redis client: %s", e)
     
     def _key(self, *parts: str) -> str:
         """Build a namespaced Redis key."""
@@ -388,6 +440,7 @@ class RedisTaskStore:
             return None
     
     def create_task(self, address: str) -> TaskStatus:
+        self._ensure_loop()
         now = datetime.now(UTC)
         task = TaskStatus(
             task_id=new_task_id(),
@@ -407,6 +460,7 @@ class RedisTaskStore:
         return task
     
     def get(self, task_id: str) -> TaskStatus | None:
+        self._ensure_loop()
         key = self._key("task", task_id)
         try:
             data = self._client.get(key)
@@ -427,6 +481,7 @@ class RedisTaskStore:
     
     def link_run(self, task_id: str, run_id: int) -> None:
         with self._lock:
+            self._ensure_loop()
             key = self._key("task", task_id)
             task = self.get(task_id)
             if not task:
@@ -443,6 +498,7 @@ class RedisTaskStore:
     
     def set_state(self, task_id: str, state: TaskState, error_code: str | None = None) -> None:
         with self._lock:
+            self._ensure_loop()
             task = self.get(task_id)
             if not task:
                 raise KeyError(f"unknown task_id: {task_id}")
@@ -461,6 +517,7 @@ class RedisTaskStore:
     
     def mark_paid(self, task_id: str, payment_ref: str) -> None:
         with self._lock:
+            self._ensure_loop()
             task = self.get(task_id)
             if not task:
                 raise KeyError(f"unknown task_id: {task_id}")
@@ -478,6 +535,7 @@ class RedisTaskStore:
     
     def payment_refs(self) -> set[str]:
         """All payment fingerprints ever bound to a task."""
+        self._ensure_loop()
         try:
             pattern = self._key("task", "*")
             keys = list(self._client.scan_iter(match=pattern, count=100))
@@ -495,6 +553,7 @@ class RedisTaskStore:
     
     def upsert_stage(self, task_id: str, stage: StageStatus) -> None:
         with self._lock:
+            self._ensure_loop()
             stage_key = self._key("stage", task_id, stage.name)
             stage_data = {
                 "name": stage.name,

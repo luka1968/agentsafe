@@ -119,11 +119,14 @@ class TestPublicPages:
         assert "payOnChain" in r.text
         assert "X-PAYMENT" in r.text
         assert "chain-opt" in r.text
-        # x402.org registers ONLY Base Sepolia (84532) for the exact scheme
-        # (8453/42161/137 return "No facilitator registered"), so the page
-        # must sort the working network first so the default choice settles.
-        assert 'a.network === "eip155:84532"' in r.text
-        assert "accs.sort" in r.text
+        # The page must preserve the server's accept order (the backend
+        # advertises the primary payable network first - mainnet Base by
+        # default - then the extra chains). It must NOT re-sort a testnet
+        # ahead of the real-money chain a mainnet deployment charges on.
+        assert "accs.sort" not in r.text
+        assert "Keep the server's accept order" in r.text
+        # every advertised network is still selectable (the testnet remains
+        # listed for free/low-cost testing behind the primary chain)
         assert "eip155:84532" in r.text
         # after wallet_switchEthereumChain, re-read eth_chainId and confirm it
         # actually changed before signing; if the user dismissed the switch
@@ -451,13 +454,16 @@ console.log(JSON.stringify(results));
         assert terms["payTo"].lower() == _payments_settings().X402_PAY_TO.lower()
         # Base network (testnet in tests; mainnet in prod config)
         assert terms["network"] == "eip155:84532"
-        # exact flat fee $3.00 at 6 USDC decimals
-        assert terms["amount"] == "3000000"
+        # The primary network here is the Base Sepolia testnet, so the
+        # advertised REST flat fee is the nominal X402_TESTNET_PRICE ($0.10)
+        # rather than the real-money X402_REST_PRICE ($3.00) - a testnet
+        # deployment must never quote mainnet pricing.
+        assert terms["amount"] == "100000"
         assert terms["scheme"] == "exact"
         assert payload["x402Version"] == 2
         # body mirrors the header (human/indexer fallback)
         body = resp.json()
-        assert body["accepts"][0]["amount"] == "3000000"
+        assert body["accepts"][0]["amount"] == "100000"
         assert body["accepts"][0]["payTo"].lower() == _payments_settings().X402_PAY_TO.lower()
 
 

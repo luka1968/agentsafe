@@ -779,6 +779,12 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
                 {"ok": False, "error_code": "upstream_error", "error": "report unavailable"},
                 status_code=502,
             )
+        except Exception:  # noqa: BLE001 - a non-standard fetch failure must be diagnosable
+            logger.exception("report endpoint: artifact fetch raised unexpected error")
+            return JSONResponse(
+                {"ok": False, "error_code": "upstream_unexpected", "error": "report retrieval failed"},
+                status_code=502,
+            )
         try:
             validated = AuditReport.model_validate(report)
         except Exception:  # noqa: BLE001 - artifact content is not trusted
@@ -787,27 +793,42 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
                 {"ok": False, "error_code": "invalid_report", "error": "stored report failed validation"},  # noqa: E501
                 status_code=502,
             )
-        if fmt == "html":
-            return HTMLResponse(render_html(validated))
-        if fmt == "md":
-            return HTMLResponse(
-                render_markdown(validated),
-                media_type="text/markdown; charset=utf-8",
-            )
-        if fmt == "json":
-            return JSONResponse(validated.model_dump(mode="json"))
+        # Render stage: every format is wrapped so a render bug cannot leak a
+        # bare 500 with no explanation. The full traceback goes to the service
+        # log; the client gets a stable error_code so the incident is
+        # diagnosable from the response body alone.
         try:
-            pdf_bytes = render_pdf(validated)
-        except ReportRenderError as exc:
-            return JSONResponse(
-                {"ok": False, "error_code": "renderer_unavailable", "error": str(exc)},
-                status_code=503,
+            if fmt == "html":
+                return HTMLResponse(render_html(validated))
+            if fmt == "md":
+                return HTMLResponse(
+                    render_markdown(validated),
+                    media_type="text/markdown; charset=utf-8",
+                )
+            if fmt == "json":
+                return JSONResponse(validated.model_dump(mode="json"))
+            try:
+                pdf_bytes = render_pdf(validated)
+            except ReportRenderError as exc:
+                return JSONResponse(
+                    {"ok": False, "error_code": "renderer_unavailable", "error": str(exc)},
+                    status_code=503,
+                )
+            return Response(
+                pdf_bytes,
+                media_type="application/pdf",
+                headers={"Content-Disposition": f'inline; filename="agentsafe-{task_id}.pdf"'},
             )
-        return Response(
-            pdf_bytes,
-            media_type="application/pdf",
-            headers={"Content-Disposition": f'inline; filename="agentsafe-{task_id}.pdf"'},
-        )
+        except Exception:  # noqa: BLE001 - render must never 500 without detail
+            logger.exception("report endpoint: render failed fmt=%s task_id=%s", fmt, task_id)
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error_code": "report_render_failed",
+                    "error": f"report rendering failed for format {fmt!r}",
+                },
+                status_code=500,
+            )
 
     async def _dispatch_audit_rest(
         request: Request,

@@ -154,7 +154,7 @@ class TestRestAuditFlow:
         body = resp.json()
         assert body["x402Version"] == 2
         assert body["accepts"][0]["scheme"] == "exact"
-        assert body["accepts"][0]["amount"] == "3000000"  # flat $3.00
+        assert body["accepts"][0]["amount"] == "100000"  # testnet primary $0.10
         assert body["accepts"][0]["payTo"].lower() == _settings().X402_PAY_TO.lower()
         assert body["accepts"][0]["network"] == "eip155:84532"
         # no dispatch happened
