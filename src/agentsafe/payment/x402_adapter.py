@@ -195,6 +195,25 @@ class X402PaymentAdapter:
         # Sync network call (facilitator /supported) - acceptable at startup.
         self._server.initialize()
 
+        # Startup capability check (fail closed): the facilitator must
+        # advertise the exact scheme at protocol version 2 for EVERY network
+        # this deployment would advertise. An unsupported network/scheme is a
+        # startup error, never a silent fallback to another chain, token,
+        # recipient, or facilitator.
+        from agentsafe.payment.networks import X402_PROTOCOL_VERSION
+
+        for net in (network, *self._extra_networks):
+            kind = self._server.get_supported_kind(
+                X402_PROTOCOL_VERSION, net, "exact"
+            )
+            if kind is None:
+                raise X402NotIntegratedError(
+                    f"facilitator {facilitator_url!r} does not support scheme "
+                    f"'exact' at x402 protocol version {X402_PROTOCOL_VERSION} "
+                    f"on network {net!r}; refusing to advertise payment options "
+                    f"(fail closed)"
+                )
+
         self._accepts = self._build_requirements(price)
         self._replay_ledger: set[str] = set()
         logger.info(
@@ -250,6 +269,21 @@ class X402PaymentAdapter:
             all_reqs.extend(
                 build_one(net, terms["pay_to"], terms["asset"], price=chain_price)
             )
+        # Protocol integrity post-check: every advertised entry must be one of
+        # the configured networks and the exact scheme. Anything the SDK built
+        # outside this surface would advertise a chain/token/recipient this
+        # deployment never configured - fail closed instead. (Protocol version
+        # is enforced by the startup capability check above.)
+        configured = {self.network, *self._extra_networks}
+        for req in all_reqs:
+            req_network = str(getattr(req, "network", ""))
+            req_scheme = str(getattr(req, "scheme", ""))
+            if req_network not in configured or req_scheme not in ("exact",):
+                raise X402NotIntegratedError(
+                    f"SDK built a payment requirement outside the configured "
+                    f"surface (network={req_network!r}, scheme={req_scheme!r}); "
+                    f"refusing to advertise it"
+                )
         return all_reqs
 
     def requirements_for_price(self, price: str) -> list[Any]:

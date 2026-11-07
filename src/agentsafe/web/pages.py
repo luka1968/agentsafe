@@ -185,8 +185,17 @@ def _build_index_html() -> str:
     var hint = document.getElementById("wallet-hint");
     function show(html) {{ flow.innerHTML = html; flow.classList.remove("hidden"); }}
     function esc(s) {{ return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;"); }}
-    function b64encode(obj) {{ return btoa(unescape(encodeURIComponent(JSON.stringify(obj)))); }}
-    function b64decode(s) {{ try {{ return JSON.parse(atob(s.replace(/-/g, "+").replace(/_/g, "/"))); }} catch (e) {{ return null; }} }}
+    // x402 payment-header base64 codecs come from the OFFICIAL SDK bundle
+    // (window.X402Bridge.safeBase64Encode / safeBase64Decode, @x402/core).
+    // Hand-rolling base64 here has a single alphabet/padding mistake away
+    // from silently corrupting a payment payload, so the manual btoa/atob
+    // helpers are gone on purpose. The bridge is mandatory for payment
+    // anyway (it performs the EIP-3009 signing).
+    function paymentCodec() {{
+      var bridge = window.X402Bridge;
+      if (!(bridge && bridge.safeBase64Encode && bridge.safeBase64Decode)) return null;
+      return bridge;
+    }}
     // Chain metadata for the networks this service advertises (EIP-3009).
     var CHAINS = {{
       // x402.org's facilitator currently registers ONLY Base Sepolia
@@ -394,11 +403,13 @@ def _build_index_html() -> str:
       var diag = {{ network: accept.network, chainIdAtSign: signedChain, from: from,
         nonceLen: (payload && payload.payload && payload.payload.authorization
           && String(payload.payload.authorization.nonce || "").length) || -1 }};
+      var codec = paymentCodec();
+      if (!codec) throw new Error("Payment module not loaded. Hard-refresh the page and retry.");
       var res = await fetch(REST, {{
         method: "POST",
         headers: {{
           "content-type": "application/json",
-          "X-PAYMENT": b64encode(payload)
+          "X-PAYMENT": codec.safeBase64Encode(JSON.stringify(payload))
         }},
         body: JSON.stringify({{ "address": a }})
       }});
@@ -441,8 +452,14 @@ def _build_index_html() -> str:
           show("<p class='text-red-400'>" + esc(e.error || ("HTTP " + res.status)) + "</p>");
           return;
         }}
+        var codec = paymentCodec();
+        if (!codec) {{
+          show("<p class='text-red-400'>Payment module not loaded. Hard-refresh the page and retry.</p>");
+          return;
+        }}
         var req = res.headers.get("PAYMENT-REQUIRED") || "";
-        var terms = req ? b64decode(req) : null;
+        var terms = null;
+        try {{ terms = req ? JSON.parse(codec.safeBase64Decode(req)) : null; }} catch (e) {{ terms = null; }}
         var accs = (terms && terms.accepts && terms.accepts.length) ? terms.accepts : [];
         if (!accs.length) {{ show("<p class='text-red-400'>Service did not return payment terms.</p>"); return; }}
         // Keep the server's accept order: the backend advertises the primary

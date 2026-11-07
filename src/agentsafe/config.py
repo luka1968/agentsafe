@@ -339,6 +339,44 @@ class Settings(BaseSettings):
                 "LLM_PROVIDERS_JSON")
         return next((p for p in provs if p.preferred), provs[0])
 
+    def payment_network_configs(self) -> list["NetworkPaymentConfig"]:
+        """Typed payment configuration for every network this deployment
+        advertises: the primary network first, then the X402_NETWORKS_JSON
+        extras in configured order.
+
+        Each entry is fully validated against the pinned SDK asset registry
+        (USDC contract, decimals, EIP-712 domain name/version) and the chain's
+        environment mode. Raises SettingsError on ANY divergence - fail closed
+        at startup instead of advertising a wrong token/recipient.
+        """
+        from agentsafe.payment.networks import NetworkConfigError, build_network_config
+
+        if not self.PAYMENTS_ENABLED:
+            return []
+        facilitator = self.X402_FACILITATOR_URL.strip()
+        configs: list[NetworkPaymentConfig] = []
+        try:
+            configs.append(
+                build_network_config(
+                    self.X402_NETWORK.strip(),
+                    self.X402_PAY_TO.strip(),
+                    facilitator,
+                    asset=self.X402_ASSET.strip(),
+                )
+            )
+            for net, terms in self.multichain_networks.items():
+                configs.append(
+                    build_network_config(
+                        net,
+                        terms["pay_to"],
+                        facilitator,
+                        asset=terms["asset"],
+                    )
+                )
+        except NetworkConfigError as exc:
+            raise SettingsError(f"invalid payment network configuration: {exc}") from exc
+        return configs
+
     @property
     def multichain_networks(self) -> dict[str, dict[str, str]]:
         """Parsed X402_NETWORKS_JSON: extra networks -> {asset, pay_to}.
@@ -481,6 +519,23 @@ def validate_runtime_settings(
                             errors.append(
                                 f"X402_NETWORKS_JSON[{net!r}].price must be a USD price string like '$0.0001'"
                             )
+                        # Mainnet gating applies to EVERY advertised chain,
+                        # not just the primary: an extra mainnet network must
+                        # also be explicitly opted in.
+                        if re.match(r"^eip155:8453$", net) and not settings.X402_ALLOW_MAINNET:
+                            errors.append(
+                                f"X402_NETWORKS_JSON mainnet {net!r} requires X402_ALLOW_MAINNET=true"
+                            )
+
+        # Typed network configuration cross-check (PROMPT 2 foundation):
+        # every advertised network must match the pinned SDK asset registry
+        # (USDC contract, decimals, EIP-712 domain) and its chain's
+        # environment mode. Any divergence fails startup - never advertise a
+        # payment option the facilitator/token configuration cannot honor.
+        try:
+            settings.payment_network_configs()
+        except SettingsError as exc:
+            errors.append(f"payment network configuration: {exc}")
 
     if errors:
         raise SettingsError("Invalid configuration:\n- " + "\n- ".join(errors))

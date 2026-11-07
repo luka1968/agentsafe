@@ -179,6 +179,11 @@ class TestStartupValidation:
         validate_runtime_settings(s)
 
     def test_multichain_networks_json_valid(self):
+        # Assets must match the official SDK registry (fail-closed cross-check).
+        from x402.mechanisms.evm.default_assets import get_default_asset
+
+        arb = get_default_asset("eip155:42161")["asset"]
+        sep = get_default_asset("eip155:84532")["asset"]
         s = _settings(
             PAYMENTS_ENABLED=True,
             X402_SDK_VERSION="2.25.0",
@@ -186,16 +191,16 @@ class TestStartupValidation:
             X402_NETWORK="eip155:8453",
             X402_ALLOW_MAINNET=True,
             X402_NETWORKS_JSON=(
-                '{"eip155:42161": {"asset": "0x' + "cd" * 20 + '", '
-                '"pay_to": "0x' + "ef" * 20 + '"}, '
-                '"eip155:84532": {"asset": "0x' + "56" * 20 + '", '
-                '"pay_to": "0x' + "78" * 20 + '", "price": "$0.0001"}}'
+                '{"eip155:42161": {"asset": "%s", '
+                '"pay_to": "0x' % arb + "ef" * 20 + '"}, '
+                '"eip155:84532": {"asset": "%s", ' % sep
+                + '"pay_to": "0x' + "78" * 20 + '", "price": "$0.0001"}}'
             ),
         )
         validate_runtime_settings(s)
         mc = s.multichain_networks
         assert set(mc) == {"eip155:42161", "eip155:84532"}
-        assert mc["eip155:42161"]["asset"].startswith("0xcd")
+        assert mc["eip155:42161"]["asset"].lower() == arb.lower()
         assert mc["eip155:42161"]["pay_to"].startswith("0xef")
         # per-chain price override is optional and preserved when present
         assert "price" not in mc["eip155:42161"]
@@ -212,6 +217,8 @@ class TestStartupValidation:
                 '"pay_to": "0x' + "ef" * 20 + '", "price": "3.00"}}'
             ),
         )
+        # Both the bad price AND the registry-diverging asset fail validation;
+        # the price error must still be present in the collected problems.
         with pytest.raises(SettingsError, match="price"):
             validate_runtime_settings(s)
 

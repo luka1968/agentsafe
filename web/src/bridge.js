@@ -15,9 +15,13 @@
  * no bundler inside the page: a single <script src="/static/x402-bridge.js">
  */
 
+import { x402Version as X402_VERSION } from "@x402/core";
+import { safeBase64Encode, safeBase64Decode } from "@x402/core/utils";
 import { ExactEvmScheme } from "@x402/evm";
 
-/** Serialize typed data for eth_signTypedData_v4 (BigInt -> decimal string). */
+/**
+ * Serialize typed data for eth_signTypedData_v4 (BigInt -> decimal string).
+ */
 function jsonSafe(obj) {
   return JSON.stringify(obj, (_k, v) =>
     typeof v === "bigint" ? v.toString(10) : v
@@ -100,17 +104,18 @@ export function toRequirements(accept) {
 
 /**
  * Build the complete v2 payment payload the backend verifies.
- * Returns { payload, requirements } — payload is ready for b64encoding into
- * the X-PAYMENT header exactly like the previous hand-rolled version.
+ * Returns { payload, requirements } — payload is ready for the payment
+ * header via the SDK's own base64 codec (never hand-rolled here).
  */
 export async function createPaymentPayload(eth, from, accept, resourceUrl) {
   const signer = metaMaskSigner(eth, from);
   const requirements = toRequirements(accept);
   const scheme = new ExactEvmScheme(signer);
-  // x402Version 2: exact/EIP-3009 transferWithAuthorization.
-  const created = await scheme.createPaymentPayload(2, requirements);
+  // x402Version 2: exact/EIP-3009 transferWithAuthorization. The version
+  // constant comes from the official @x402/core package, not a literal.
+  const created = await scheme.createPaymentPayload(X402_VERSION, requirements);
   const payload = {
-    x402Version: 2,
+    x402Version: X402_VERSION,
     scheme: "exact",
     network: accept.network,
     resource: { url: resourceUrl, mimeType: "application/json" },
@@ -120,5 +125,12 @@ export async function createPaymentPayload(eth, from, accept, resourceUrl) {
   return { payload, requirements };
 }
 
+/**
+ * Official SDK base64 codecs for the x402 payment headers. The landing page
+ * must never hand-roll base64 (alphabet/padding mistakes silently corrupt
+ * payment payloads).
+ */
+export { safeBase64Encode, safeBase64Decode, X402_VERSION };
+
 /** Browser global: expose for the landing page (IIFE global). */
-export default { ExactEvmScheme, metaMaskSigner, eip712DomainTypes, toRequirements, createPaymentPayload };
+export default { ExactEvmScheme, metaMaskSigner, eip712DomainTypes, toRequirements, createPaymentPayload, safeBase64Encode, safeBase64Decode, X402_VERSION };

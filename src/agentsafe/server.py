@@ -184,26 +184,53 @@ def _log_payment_error(ctx: Any, instr: Any, body_bytes: bytes) -> None:
             reason = getattr(instr, "status", None)
         # Payload arrives in the X-PAYMENT header (base64) and/or body. Pull
         # the EIP-712 domain components the browser actually signed with.
-        from base64 import b64decode
+        # The header is decoded with the SDK's official codec
+        # (decode_payment_signature_header) so diagnostics always see the
+        # payload exactly as the payment layer parses it.
         import json as _json
 
-        raw = b""
+        from x402.http.utils import decode_payment_signature_header
+
+        doc = None
         try:
-            for h in ("X-PAYMENT", "x-payment"):
+            for h in ("PAYMENT-SIGNATURE", "X-PAYMENT", "x-payment"):
                 hdr = (ctx.request.headers.get(h) if hasattr(ctx, "request") else None)
                 if hdr:
-                    raw = b64decode(hdr)
+                    doc = decode_payment_signature_header(hdr)
                     break
         except Exception:  # noqa: BLE001
-            raw = b""
-        if not raw and body_bytes:
-            raw = body_bytes
-        signed = {}
-        if raw:
+            doc = None
+        if doc is None:
+            # Diagnostics-only lenient fallback: this function's entire job is
+            # to surface MALFORMED payment payloads (the payment flow itself
+            # rejects them), so a strict SDK parse failure must not blind it.
+            # The lenient read never feeds verification or settlement.
+            from base64 import b64decode as _b64decode
+
             try:
-                doc = _json.loads(raw)
-                acc = doc.get("accepted", doc.get("requirements", {})) or {}
-                auth = doc.get("payload", {}).get("authorization", {}) or {}
+                for h in ("PAYMENT-SIGNATURE", "X-PAYMENT", "x-payment"):
+                    hdr = (ctx.request.headers.get(h) if hasattr(ctx, "request") else None)
+                    if hdr:
+                        doc = _json.loads(_b64decode(hdr))
+                        break
+            except Exception:  # noqa: BLE001
+                doc = None
+        if doc is None and body_bytes:
+            try:
+                doc = _json.loads(body_bytes)
+            except Exception:  # noqa: BLE001
+                doc = None
+        signed = {}
+        if doc is not None:
+            try:
+                if isinstance(doc, dict):
+                    acc = doc.get("accepted", doc.get("requirements", {})) or {}
+                    auth = (doc.get("payload", {}) or {}).get("authorization", {}) or {}
+                else:
+                    # Official PaymentPayload model (by_alias camelCase dump)
+                    dumped = doc.model_dump(by_alias=True, exclude_none=True)
+                    acc = dumped.get("accepted", {}) or {}
+                    auth = (dumped.get("payload", {}) or {}).get("authorization", {}) or {}
                 signed = {
                     "network": acc.get("network"),
                     "asset": acc.get("asset"),
