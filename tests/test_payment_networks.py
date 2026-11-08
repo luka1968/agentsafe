@@ -186,7 +186,7 @@ class TestSettingsNetworkConfigs:
             "ETHERSCAN_API_KEY": "k",
             "GITHUB_TOKEN": "t",
             "GITHUB_REPO": "owner/repo",
-            "LLM_PROVIDERS_JSON": "[]",
+            "LLM_PROVIDERS_JSON": '[{"name":"p","base_url":"https://llm.test/v1","api_key":"sk","model":"m","rpm_limit":60}]',
             "TASK_STORE": "memory",
             "PAYMENTS_ENABLED": True,
             "X402_NETWORK": "eip155:84532",
@@ -250,4 +250,89 @@ class TestSettingsNetworkConfigs:
         from agentsafe.config import validate_runtime_settings
 
         with pytest.raises(SettingsError, match="requires X402_ALLOW_MAINNET"):
+            validate_runtime_settings(s)
+
+
+class TestProductionControls:
+    """PROMPT 8: production kill-switch / environment-separation controls."""
+
+    def _base(self, **kw) -> Settings:
+        base = {
+            "INFURA_ETH_ENDPOINT": "https://rpc.test",
+            "ETHERSCAN_API_KEY": "k",
+            "GITHUB_TOKEN": "t",
+            "GITHUB_REPO": "owner/repo",
+            "LLM_PROVIDERS_JSON": '[{"name":"p","base_url":"https://llm.test/v1","api_key":"sk","model":"m","rpm_limit":60}]',
+            "TASK_STORE": "memory",
+            "PAYMENTS_ENABLED": True,
+            "X402_NETWORK": "eip155:84532",
+            "X402_PAY_TO": PAY_TO,
+            "X402_FACILITATOR_URL": FACILITATOR,
+            "X402_SDK_VERSION": "2.25.0",
+        }
+        base.update(kw)
+        return Settings(_env_file=None, **base)
+
+    def test_environment_must_agree_with_network(self):
+        from agentsafe.config import validate_runtime_settings
+
+        # testnet network + mainnet env -> refuse (never mix configs)
+        s = self._base(X402_ENVIRONMENT="mainnet")
+        with pytest.raises(SettingsError, match="contradicts"):
+            validate_runtime_settings(s)
+        # mainnet network + testnet env -> refuse
+        s = self._base(X402_NETWORK="eip155:8453", X402_ALLOW_MAINNET=True,
+                       X402_ENVIRONMENT="testnet")
+        with pytest.raises(SettingsError, match="contradicts"):
+            validate_runtime_settings(s)
+
+    def test_environment_matching_network_is_accepted(self):
+        from agentsafe.config import validate_runtime_settings
+
+        s = self._base(X402_ENVIRONMENT="testnet")
+        validate_runtime_settings(s)  # must not raise
+
+    def test_mainnet_requires_explicit_allow(self):
+        from agentsafe.config import validate_runtime_settings
+
+        s = self._base(X402_NETWORK="eip155:8453", X402_ALLOW_MAINNET=False)
+        with pytest.raises(SettingsError, match="X402_ALLOW_MAINNET"):
+            validate_runtime_settings(s)
+
+    def test_sepolia_recipient_override_applies(self):
+        sep_recipient = "0x" + "cd" * 20
+        s = self._base(X402_SEPOLIA_RECIPIENT=sep_recipient)
+        cfg = s.payment_network_configs()[0]
+        assert cfg.pay_to == sep_recipient.lower()
+
+    def test_mainnet_recipient_override_is_separate(self):
+        mainnet_recipient = "0x" + "ee" * 20
+        sep_recipient = "0x" + "cd" * 20
+        s = self._base(
+            X402_MAINNET_RECIPIENT=mainnet_recipient,
+            X402_SEPOLIA_RECIPIENT=sep_recipient,
+        )
+        # primary is testnet -> sepolia recipient applies
+        assert s.payment_network_configs()[0].pay_to == sep_recipient.lower()
+
+    def test_invalid_network_recipient_fails(self):
+        from agentsafe.config import validate_runtime_settings
+
+        s = self._base(X402_SEPOLIA_RECIPIENT="not-an-address")
+        with pytest.raises(SettingsError, match="EVM address"):
+            validate_runtime_settings(s)
+
+    def test_invalid_facilitator_url_fails(self):
+        from agentsafe.config import validate_runtime_settings
+
+        s = self._base(X402_SEPOLIA_FACILITATOR_URL="ftp://x")
+        with pytest.raises(SettingsError, match=r"http\(s\) URL"):
+            validate_runtime_settings(s)
+
+    def test_missing_shared_recipient_disables(self):
+        # PAYMENTS_ENABLED but no recipient anywhere -> must fail closed.
+        from agentsafe.config import validate_runtime_settings
+
+        s = self._base(X402_PAY_TO="", X402_SEPOLIA_RECIPIENT="")
+        with pytest.raises(SettingsError):
             validate_runtime_settings(s)

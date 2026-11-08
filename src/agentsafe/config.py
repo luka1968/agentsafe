@@ -247,6 +247,23 @@ class Settings(BaseSettings):
     X402_ASSET: str = ""
     X402_MAX_TIMEOUT_SECONDS: int = Field(default=300, ge=1, le=3600)
     X402_ALLOW_MAINNET: bool = False
+    # --- PROMPT 8 production controls (explicit opt-in, fail-closed) ---
+    # Declared deployment environment: 'testnet' | 'mainnet' | '' (empty =
+    # derived from X402_NETWORK's chain). When set it must AGREE with
+    # X402_NETWORK (never silently mix a testnet config into mainnet or
+    # vice-versa); a mismatch fails startup.
+    X402_ENVIRONMENT: str = ""
+    # Testnet enable switch (symmetric with X402_ALLOW_MAINNET). Both are
+    # required so a production operator explicitly enables the networks they
+    # mean to serve; neither ever falls back to the other.
+    X402_BASE_SEPOLIA_ENABLED: bool = False
+    # Network-specific recipients / facilitators. When set they override the
+    # shared X402_PAY_TO / X402_FACILITATOR_URL for that network ONLY, and are
+    # validated (and cross-checked) at startup.
+    X402_MAINNET_RECIPIENT: str = ""
+    X402_SEPOLIA_RECIPIENT: str = ""
+    X402_MAINNET_FACILITATOR_URL: str = ""
+    X402_SEPOLIA_FACILITATOR_URL: str = ""
     # Postgres DSN for the payments table (PROMPT 5). Empty = reuse
     # NEON_DATABASE_URL (additive payments table alongside knowledge_*).
     # Required when TASK_STORE=postgres.
@@ -319,6 +336,14 @@ class Settings(BaseSettings):
             )
         return v
 
+    @field_validator("X402_ENVIRONMENT")
+    @classmethod
+    def _validate_x402_environment(cls, v: str) -> str:
+        v = (v or "").strip().lower()
+        if v not in {"", "testnet", "mainnet"}:
+            raise ValueError("X402_ENVIRONMENT must be '', 'testnet', or 'mainnet'")
+        return v
+
     def llm_providers(self) -> list[LLMProviderConfig]:
         """Parse LLM_PROVIDERS_JSON; raise SettingsError on invalid content."""
         raw = (self.LLM_PROVIDERS_JSON or "").strip()
@@ -368,14 +393,34 @@ class Settings(BaseSettings):
 
         if not self.PAYMENTS_ENABLED:
             return []
-        facilitator = self.X402_FACILITATOR_URL.strip()
+        # Per-network recipient / facilitator override (PROMPT 8). The
+        # network-specific value, when set, is authoritative for that network;
+        # otherwise the shared X402_PAY_TO / X402_FACILITATOR_URL apply. This
+        # keeps mainnet and testnet funds strictly separated.
+        def _recipient(network: str) -> str:
+            specific = (
+                self.X402_SEPOLIA_RECIPIENT.strip()
+                if network == Settings.X402_NETWORK_TESTNET
+                else self.X402_MAINNET_RECIPIENT.strip()
+            )
+            return specific or self.X402_PAY_TO.strip()
+
+        def _facilitator(network: str) -> str:
+            specific = (
+                self.X402_SEPOLIA_FACILITATOR_URL.strip()
+                if network == Settings.X402_NETWORK_TESTNET
+                else self.X402_MAINNET_FACILITATOR_URL.strip()
+            )
+            return specific or self.X402_FACILITATOR_URL.strip()
+
         configs: list[NetworkPaymentConfig] = []
         try:
+            primary = self.X402_NETWORK.strip()
             configs.append(
                 build_network_config(
-                    self.X402_NETWORK.strip(),
-                    self.X402_PAY_TO.strip(),
-                    facilitator,
+                    primary,
+                    _recipient(primary),
+                    _facilitator(primary),
                     asset=self.X402_ASSET.strip(),
                 )
             )
@@ -383,8 +428,8 @@ class Settings(BaseSettings):
                 configs.append(
                     build_network_config(
                         net,
-                        terms["pay_to"],
-                        facilitator,
+                        _recipient(net),
+                        _facilitator(net),
                         asset=terms["asset"],
                     )
                 )
@@ -497,6 +542,37 @@ def validate_runtime_settings(
                     "X402_NETWORK=Base mainnet requires X402_ALLOW_MAINNET=true and is only "
                     "enabled after end-to-end Base Sepolia tests pass"
                 )
+        # PROMPT 8: declared environment must agree with the network chain.
+        # A testnet configuration can never silently serve mainnet payments
+        # and vice-versa (no cross-network fallback).
+        declared_env = (settings.X402_ENVIRONMENT or "").strip()
+        if declared_env:
+            actual_env = (
+                "testnet" if network == Settings.X402_NETWORK_TESTNET else "mainnet"
+            )
+            if declared_env != actual_env:
+                errors.append(
+                    f"X402_ENVIRONMENT={declared_env!r} contradicts "
+                    f"X402_NETWORK={network!r} (a {actual_env} network); refusing to "
+                    "mix testnet and mainnet payment configuration"
+                )
+        # Network-specific recipients / facilitators (when set) must be valid
+        # and are authoritative for their network - never shared across
+        # environments without an explicit opt-in.
+        for label, value in (
+            ("X402_MAINNET_RECIPIENT", settings.X402_MAINNET_RECIPIENT),
+            ("X402_SEPOLIA_RECIPIENT", settings.X402_SEPOLIA_RECIPIENT),
+        ):
+            v = (value or "").strip()
+            if v and not re.match(r"^0x[0-9a-fA-F]{40}$", v):
+                errors.append(f"{label} must be a valid EVM address")
+        for label, value in (
+            ("X402_MAINNET_FACILITATOR_URL", settings.X402_MAINNET_FACILITATOR_URL),
+            ("X402_SEPOLIA_FACILITATOR_URL", settings.X402_SEPOLIA_FACILITATOR_URL),
+        ):
+            v = (value or "").strip()
+            if v and not v.startswith(("https://", "http://")):
+                errors.append(f"{label} must be an http(s) URL")
         if not settings.X402_PRICE.strip().startswith("$"):
             errors.append("X402_PRICE must be a USD price string like '$0.01'")
         if not settings.X402_FACILITATOR_URL.strip():
