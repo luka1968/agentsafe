@@ -154,9 +154,31 @@ class EtherscanClient:
         self._client = client or httpx.AsyncClient(
             timeout=httpx.Timeout(timeout_seconds, connect=timeout_seconds),
         )
+        # Vercel loop-rotation safety: a caller-supplied client is managed
+        # externally; our own httpx client is rebuilt when the running loop
+        # changes so a warm request never reuses one bound to a closed loop.
+        self._caller_supplied = client is not None
+        self._client_loop = None
 
     async def aclose(self) -> None:
         await self._client.aclose()
+
+    def _ensure_loop_client(self) -> None:
+        import asyncio
+
+        if self._caller_supplied:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        if self._client_loop is loop:
+            return
+        self._client_loop = loop
+        try:
+            self._client = httpx.AsyncClient(timeout=self._client.timeout)
+        except Exception as exc:  # noqa: BLE001 - keep prior client on failure
+            logger.warning("etherscan client rebuild failed: %s", exc)
 
     async def get_verified_source(self, address: str) -> SourceBundle:
         """Fetch verification status + preserved source project for `address`.
@@ -209,6 +231,7 @@ class EtherscanClient:
         )
 
     async def _get(self, params: dict[str, str], addr: str) -> dict[str, Any]:
+        self._ensure_loop_client()  # serverless loop-rotation safety
         attempt = 0
         while True:
             transient: ExplorerError | None = None

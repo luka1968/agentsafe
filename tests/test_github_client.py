@@ -284,3 +284,57 @@ class TestRateLimit:
         )
         with pytest.raises(RateLimitedError):
             await _client().get_run(1)
+
+
+class TestLoopRotation:
+    """PROMPT 7/8: Vercel rotates the asyncio event loop between warm
+    invocations. Reusing a github httpx client bound to a now-closed loop
+    raised RuntimeError('Event loop is closed') -> bare 500 on report/status
+    endpoints. `_ensure_loop_client` must rebuild the client on a loop change
+    and never raise on the dead loop."""
+
+    @respx.mock
+    async def test_client_rebuilt_when_loop_changes(self):
+        respx.get(f"{BASE}/repos/{REPO}/actions/runs/1").mock(
+            return_value=httpx.Response(
+                200,
+                json={"id": 1, "name": "audit-x", "status": "completed",
+                      "conclusion": "success", "created_at": "2026-01-01T10:00:00Z"},
+            )
+        )
+        client = _client()
+        first = await client.get_run(1)
+        assert first["id"] == 1
+        orig = client._client
+        assert client._client_loop is not None
+        # Simulate a loop rotation: force the recorded loop to a sentinel so
+        # the next request sees a 'changed' loop and must rebuild the client.
+        sentinel = object()
+        client._client_loop = sentinel
+        second = await client.get_run(1)
+        assert second["id"] == 1
+        assert client._client_loop is not sentinel
+        assert client._client is not orig  # a fresh client was built
+
+    @respx.mock
+    async def test_caller_supplied_client_not_rebuilt(self):
+        from agentsafe.github_client import GitHubActionsClient
+
+        respx.get(f"{BASE}/repos/{REPO}/actions/runs/2").mock(
+            return_value=httpx.Response(
+                200,
+                json={"id": 2, "name": "audit-y", "status": "completed",
+                      "conclusion": "success", "created_at": "2026-01-01T10:00:00Z"},
+            )
+        )
+        external = httpx.AsyncClient()
+        try:
+            client = GitHubActionsClient(
+                token="ghp-test", repo=REPO, sleeper=_ns, client=external
+            )
+            orig = client._client
+            client._client_loop = object()  # pretend rotation
+            await client.get_run(2)
+            assert client._client is orig  # externally-managed client untouched
+        finally:
+            await external.aclose()

@@ -102,14 +102,48 @@ class GitHubActionsClient:
                 "User-Agent": "agentSAFE-mcp",
             },
         )
+        # Vercel rotates the asyncio event loop between warm invocations
+        # (see api/index.py). A caller-supplied client is managed externally;
+        # our own httpx.AsyncClient is rebuilt if the running loop changes so
+        # a warm request never reuses a client bound to a now-closed loop
+        # (RuntimeError: Event loop is closed -> bare 500).
+        self._caller_supplied = client is not None
+        self._client_loop = None
 
     async def aclose(self) -> None:
         await self._client.aclose()
+
+    def _ensure_loop_client(self) -> None:
+        """Rebuild the internal httpx client when the running event loop
+        differs from the loop it was created on. Never closes the old client
+        (closing on a dead loop raises); it is simply dropped. No-op when a
+        caller-supplied client is in use (managed externally) or the loop is
+        unchanged."""
+        import asyncio
+
+        if self._caller_supplied:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return  # no running loop (build-time); leave as-is
+        if self._client_loop is loop:
+            return
+        self._client_loop = loop
+        try:
+            self._client = httpx.AsyncClient(
+                timeout=self._client.timeout,
+                follow_redirects=True,
+                headers=dict(self._client.headers),
+            )
+        except Exception as exc:  # noqa: BLE001 - keep the prior client if rebuild fails
+            logger.warning("github client rebuild failed: %s", exc)
 
     # ------------------------------------------------------------------ core
     async def _request(
         self, method: str, path: str, *, json_body: dict | None = None, params: dict | None = None
     ) -> httpx.Response:
+        self._ensure_loop_client()  # serverless loop-rotation safety
         attempt = 0
         last_detail = "unknown"
         while True:
