@@ -394,11 +394,54 @@ def _build_index_html() -> str:
     function fmtTask(tid) {{
       return "<p class='text-emerald-400'>Audit dispatched!</p>"
         + "<p class='mt-1 text-zinc-300'>Task ID: <code class='text-cyan-300'>" + esc(tid) + "</code></p>"
-        + "<p class='mt-2 text-xs text-zinc-500'>Reports (free retrieval): "
-        + "<a class='text-cyan-300 hover:underline' href='/api/audit/" + esc(tid) + "/report' target='_blank'>HTML</a> &middot; "
-        + "<a class='text-cyan-300 hover:underline' href='/api/audit/" + esc(tid) + "/report.json' target='_blank'>JSON</a> &middot; "
-        + "<a class='text-cyan-300 hover:underline' href='/api/audit/" + esc(tid) + "/report.md' target='_blank'>Markdown</a> &middot; "
-        + "<a class='text-cyan-300 hover:underline' href='/api/audit/" + esc(tid) + "/report.pdf' target='_blank'>PDF</a></p>";
+        + "<p class='mt-2 text-zinc-300'>The audit is <b>running in the background</b> and takes a few minutes.</p>"
+        + "<p class='text-zinc-300'>Your report will appear here automatically when it is ready - no need to reload.</p>"
+        + "<div id='report-probe-" + esc(tid) + "'></div>";
+    }}
+    // Poll the lightweight STATUS endpoint (one GitHub lookup, no artifact
+    // download - the MythX-style async pattern) until the audit finishes.
+    // Only a COMPLETED audit reveals the report download links; a FAILED run
+    // shows a clear message with the credit/refund pointer.
+    var REPORT_POLL_MS = 7000;
+    var REPORT_POLL_MAX = 180;
+    function startReportProbe(tid) {{
+      var box = document.getElementById("report-probe-" + tid);
+      if (!box) return;
+      var attempt = 0;
+      var probe = function () {{
+        fetch("/api/audit/" + tid + "/status")
+          .then(function (res) {{ return res.json(); }})
+          .then(function (s) {{
+            var state = (s && s.state) || "";
+            if (state === "completed") {{
+              box.innerHTML = "<p class='mt-3 text-sm text-emerald-300'>Report ready - download:</p>"
+                + "<p class='mt-1 text-xs'>"
+                + "<a class='text-cyan-300 hover:underline' href='/api/audit/" + esc(tid) + "/report' target='_blank'>HTML</a> &middot; "
+                + "<a class='text-cyan-300 hover:underline' href='/api/audit/" + esc(tid) + "/report.json' target='_blank'>JSON</a> &middot; "
+                + "<a class='text-cyan-300 hover:underline' href='/api/audit/" + esc(tid) + "/report.md' target='_blank'>Markdown</a> &middot; "
+                + "<a class='text-cyan-300 hover:underline' href='/api/audit/" + esc(tid) + "/report.pdf' target='_blank'>PDF</a></p>";
+              return;
+            }}
+            if (state === "failed") {{
+              box.innerHTML = "<p class='mt-3 text-red-400'>The audit failed before producing a report. "
+                + "Your payment is preserved (settled) and the credit/refund policy applies - "
+                + "re-run the audit to retry.</p>";
+              return;
+            }}
+            if (state === "running" || state === "queued") {{
+              box.innerHTML = "<p class='mt-3 text-cyan-300'>Audit in progress&hellip; "
+                + "<span class='text-xs text-zinc-500'>the report download links appear here automatically when it completes</span></p>";
+              if (++attempt < REPORT_POLL_MAX) setTimeout(probe, REPORT_POLL_MS);
+              return;
+            }}
+            box.innerHTML = "<p class='mt-3 text-zinc-400'>Report not available yet. "
+              + "<a class='text-cyan-300 hover:underline' href='/api/audit/" + esc(tid) + "/report' target='_blank'>Check manually</a></p>";
+          }})
+          .catch(function () {{
+            if (++attempt < REPORT_POLL_MAX) setTimeout(probe, REPORT_POLL_MS);
+          }});
+      }};
+      setTimeout(probe, REPORT_POLL_MS);
     }}
     // Structured payment receipt from the backend 202 body (PROMPT 3): shows
     // the settlement outcome and the on-chain transaction hash ONLY when the
@@ -522,6 +565,9 @@ def _build_index_html() -> str:
         if (tid) {{
           persistTask(tid, a, (out && out.payment && out.payment.network) || accept.network);
           showState(PS.SETTLED, fmtTask(tid) + paymentReceipt(out.payment));
+          // Poll the report endpoint and reveal the links only when the audit
+          // actually completes (the audit runs in the background).
+          if (typeof startReportProbe === "function") startReportProbe(tid);
         }} else {{
           showState(PS.SETTLED, "<pre class='mt-2 overflow-x-auto rounded border border-zinc-800 bg-zinc-900 p-3 text-xs text-cyan-300'>"
             + esc(JSON.stringify(out, null, 2)) + "</pre>");

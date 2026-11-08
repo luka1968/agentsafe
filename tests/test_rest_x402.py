@@ -585,3 +585,64 @@ class TestRESTReportFailed:
         assert report.status_code == 409
         assert report.json()["error_code"] == "not_ready"
         assert report.json()["state"] == "running"
+
+
+class TestRESTStatusProbe:
+    """The lightweight status endpoint the frontend polls while the audit
+    runs: one GitHub lookup, no artifact download, states mapped."""
+
+    @respx.mock
+    async def test_status_reflects_run_states(self):
+        _mock_facilitator()
+        _wire_dispatch_and_runs()
+        from agentsafe.server import build_server
+
+        server = _settings(TASK_STORE="memory")
+        async with _http_client(build_server(server)) as client:
+            header = await _payment_header_from_402(client)
+            paid = await client.post(
+                "/api/audit",
+                json={"address": ADDR},
+                headers={"PAYMENT-SIGNATURE": header},
+            )
+            assert paid.status_code == 202
+            tid = paid.json()["task_id"]
+
+            # running
+            respx.get(f"{GH}/repos/owner/repo/actions/runs/5").mock(
+                return_value=httpx.Response(
+                    200, json={"id": 5, "status": "in_progress", "conclusion": None}
+                )
+            )
+            s1 = await client.get(f"/api/audit/{tid}/status")
+            assert s1.status_code == 200
+            assert s1.json()["state"] == "running"
+
+            # failed
+            respx.get(f"{GH}/repos/owner/repo/actions/runs/5").mock(
+                return_value=httpx.Response(
+                    200, json={"id": 5, "status": "completed", "conclusion": "failure"}
+                )
+            )
+            s2 = await client.get(f"/api/audit/{tid}/status")
+            assert s2.json()["state"] == "failed"
+
+            # completed
+            respx.get(f"{GH}/repos/owner/repo/actions/runs/5").mock(
+                return_value=httpx.Response(
+                    200, json={"id": 5, "status": "completed", "conclusion": "success"}
+                )
+            )
+            s3 = await client.get(f"/api/audit/{tid}/status")
+            assert s3.json()["state"] == "completed"
+
+    @respx.mock
+    async def test_status_unknown_task_404(self):
+        _mock_facilitator()
+        from agentsafe.server import build_server
+
+        server = _settings(TASK_STORE="memory")
+        async with _http_client(build_server(server)) as client:
+            resp = await client.get("/api/audit/doesnotexist/status")
+        assert resp.status_code == 404
+        assert resp.json()["error_code"] == "unknown_task"

@@ -1043,6 +1043,49 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
                 status_code=500,
             )
 
+    @app.custom_route("/api/audit/{task_id}/status", methods=["GET"])
+    async def _api_audit_status(request: Request) -> Response:
+        """Lightweight audit status probe (the MythX-style async pattern).
+
+        The frontend polls THIS endpoint while an audit runs: it returns only
+        the run state (one GitHub API call, no artifact download). When the
+        state is completed the client fetches the report once. Free, read-
+        only, never dispatches anything.
+        """
+        task_id = str(request.path_params.get("task_id", ""))
+        if not task_id or len(task_id) > 64:
+            return JSONResponse(
+                {"ok": False, "error_code": "invalid_task_id",
+                 "error": "task_id must be 1..64 chars"},
+                status_code=400,
+            )
+        task = task_store.get(task_id)
+        if task is None:
+            return JSONResponse(
+                {"ok": False, "error_code": "unknown_task",
+                 "error": "no such task (it may have expired or never existed)"},
+                status_code=404,
+            )
+        if task.run_id is None:
+            return JSONResponse(
+                {"ok": True, "task_id": task_id, "state": task.state.value},
+                status_code=200,
+            )
+        try:
+            run = await gh.get_run(task.run_id)
+        except GitHubClientError:
+            logger.exception("status endpoint: run lookup failed")
+            return JSONResponse(
+                {"ok": False, "error_code": "upstream_error", "error": "status lookup failed"},
+                status_code=502,
+            )
+        mapped = gh.map_run_status(run)
+        task_store.set_state(task_id, TaskState(mapped))
+        return JSONResponse(
+            {"ok": True, "task_id": task_id, "state": mapped},
+            status_code=200,
+        )
+
     @app.custom_route("/api/audit/{task_id}/report", methods=["GET"])
     async def _api_report_html(request: Request) -> Response:
         """Customer-facing HTML report (Section 8). The task id acts as a
