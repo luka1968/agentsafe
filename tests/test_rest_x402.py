@@ -522,3 +522,66 @@ class TestPaymentErrorDiagnostics:
         with caplog.at_level("WARNING", logger="agentSAFE.server"):
             _log_payment_error(_Ctx(), _Instr(), body)
         assert "eip155:84532" in "\n".join(r.getMessage() for r in caplog.records)
+
+
+class TestRESTReportFailed:
+    """A paid audit whose workflow FAILED (e.g. a build/image failure) must
+    surface a clear audit_failed response on the report endpoint - not a
+    vague 409 'not completed yet' - while preserving the settled payment."""
+
+    @respx.mock
+    async def test_failed_run_returns_audit_failed(self):
+        _mock_facilitator()
+        _wire_dispatch_and_runs()
+        from agentsafe.server import build_server
+
+        server = _settings(TASK_STORE="memory")
+        async with _http_client(build_server(server)) as client:
+            header = await _payment_header_from_402(client)
+            paid = await client.post(
+                "/api/audit",
+                json={"address": ADDR},
+                headers={"PAYMENT-SIGNATURE": header},
+            )
+            assert paid.status_code == 202
+            tid = paid.json()["task_id"]
+            # The workflow fails after dispatch (build/image failure).
+            respx.get(f"{GH}/repos/owner/repo/actions/runs/5").mock(
+                return_value=httpx.Response(
+                    200,
+                    json={"id": 5, "status": "completed", "conclusion": "failure"},
+                )
+            )
+            report = await client.get(f"/api/audit/{tid}/report.md")
+        assert report.status_code == 409
+        body = report.json()
+        assert body["error_code"] == "audit_failed"
+        assert body["state"] == "failed"
+        assert "credit/refund policy" in body["error"].lower()
+
+    @respx.mock
+    async def test_in_progress_run_still_returns_not_ready(self):
+        _mock_facilitator()
+        _wire_dispatch_and_runs()
+        from agentsafe.server import build_server
+
+        server = _settings(TASK_STORE="memory")
+        async with _http_client(build_server(server)) as client:
+            header = await _payment_header_from_402(client)
+            paid = await client.post(
+                "/api/audit",
+                json={"address": ADDR},
+                headers={"PAYMENT-SIGNATURE": header},
+            )
+            assert paid.status_code == 202
+            tid = paid.json()["task_id"]
+            respx.get(f"{GH}/repos/owner/repo/actions/runs/5").mock(
+                return_value=httpx.Response(
+                    200,
+                    json={"id": 5, "status": "in_progress", "conclusion": None},
+                )
+            )
+            report = await client.get(f"/api/audit/{tid}/report.md")
+        assert report.status_code == 409
+        assert report.json()["error_code"] == "not_ready"
+        assert report.json()["state"] == "running"

@@ -1116,6 +1116,24 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
         mapped = gh.map_run_status(run)
         task_store.set_state(task_id, TaskState(mapped))
         if mapped != "completed":
+            # Distinguish "still running" (keep waiting) from "failed"
+            # (no report will ever exist; payment is preserved and the
+            # credit/refund policy in REFUND_POLICY.md applies).
+            if mapped == "failed":
+                return JSONResponse(
+                    {
+                        "ok": False,
+                        "error_code": "audit_failed",
+                        "state": "failed",
+                        "task_id": task_id,
+                        "error": (
+                            "the audit workflow failed before producing a report. "
+                            "Your payment is preserved (settled) and the credit/refund "
+                            "policy applies - see /refund. Re-run the audit to retry."
+                        ),
+                    },
+                    status_code=409,
+                )
             return JSONResponse(
                 {"ok": False, "error_code": "not_ready", "state": mapped,
                  "error": "audit run is not completed yet"},

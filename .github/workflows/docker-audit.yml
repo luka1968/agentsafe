@@ -29,7 +29,10 @@ concurrency:
 
 jobs:
   audit:
-    runs-on: ubuntu-latest
+    # Pin the runner to a concrete major version so the base image cannot
+    # drift under `ubuntu-latest` (a drift is a common cause of flaky
+    # container-image builds for a heavy Dockerfile like ours).
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
       AUDIT_ADDRESS: ${{ inputs.address }}
@@ -53,8 +56,26 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Build image (no secrets in build context)
-        run: docker build -t agentsafe:audit .
+      # Free disk before a heavy build: the base image + 8 solc versions +
+      # slither/mythril/aderyn/heimdall can OOM or exhaust the runner disk.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc 2>/dev/null || true
+          df -h .
+
+      # Docker layer cache across runs makes rebuilds fast and far less
+      # likely to hit the 30-min wall or a transient download failure.
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image (no secrets in build context), cached + one retry
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: agentsafe:audit
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
       - name: Run audit in container
         env:
