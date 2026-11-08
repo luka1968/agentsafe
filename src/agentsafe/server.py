@@ -970,15 +970,48 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
                         status_code=500,
                     )
                 if payment_row is None:
-                    logger.info("REST payment replay rejected ref=%s", ref[:16])
-                    return JSONResponse(
-                        {
-                            "ok": False,
-                            "error_code": "payment_replay",
-                            "error": "Payment already used (replay rejected)",
-                        },
-                        status_code=402,
-                    )
+                    # Idempotent retry / duplicate submission (PROMPT 6 req 7):
+                    # the same payload_ref was already consumed. Look up the
+                    # existing payment: if it is already bound to a task, this
+                    # is a retry of a COMPLETED/IN-FLIGHT payment - return the
+                    # SAME task (no new billing, no re-dispatch). If it exists
+                    # but has no task yet (a crash between verify and dispatch),
+                    # resume the SAME payment row instead of charging again.
+                    existing = task_store.get_payment_by_ref(ref)
+                    if existing is not None and existing.get("task_id"):
+                        tid = str(existing["task_id"])
+                        logger.info(
+                            "REST payment retry: idempotent return task=%s ref=%s",
+                            tid, ref[:16],
+                        )
+                        return JSONResponse(
+                            {
+                                "ok": True,
+                                "task_id": tid,
+                                "state": "running",
+                                "note": "this payment was already used for an audit; the same task is returned (no second charge)",
+                            },
+                            status_code=202,
+                        )
+                    if existing is not None and existing.get("status") == "verified":
+                        # Interrupted between verify and dispatch: reuse the
+                        # reserved payment row; the audit below dispatches for
+                        # this exact entitlement without a second payment.
+                        logger.warning(
+                            "REST payment resume: verified but undispatched ref=%s",
+                            ref[:16],
+                        )
+                        payment_row = existing
+                    else:
+                        logger.info("REST payment replay rejected ref=%s", ref[:16])
+                        return JSONResponse(
+                            {
+                                "ok": False,
+                                "error_code": "payment_replay",
+                                "error": "Payment already used (replay rejected)",
+                            },
+                            status_code=402,
+                        )
             else:
                 if payment.replay_seen(ref):
                     logger.info("REST payment replay rejected ref=%s", ref[:16])
@@ -1709,6 +1742,71 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
             "contract_name": bundle.contract_name,
             "compiler_version": bundle.compiler_version,
             "files": files,
+            "price_paid": settings.X402_SOURCE_RETRIEVAL_PRICE,
+        }
+
+    @app.tool
+    async def retrieve_knowledge(query: str, ctx: Context, limit: int = 3,
+                                 focus: str = "") -> dict[str, Any] | ToolResult:
+        """Standalone security-knowledge retrieval at a flat $0.01 USDC
+        (PROMPT 6 req 9: the knowledge base is charged only when accessed
+        standalone; the SAME retrieval inside a paid audit remains free - the
+        audit tier already covers it).
+
+        Returns matched historical knowledge records (id, category, title,
+        summary, remediation, source URL). Never returns embeddings, internal
+        storage paths, or secrets. In dev mode (PAYMENTS_ENABLED=false) it is
+        free, mirroring the other paid tools.
+        """
+        query = (query or "").strip()
+        if not query:
+            return {"ok": False, "error_code": "empty_query", "error": "query must not be empty"}
+        if limit < 1 or limit > 20:
+            return {"ok": False, "error_code": "invalid_limit", "error": "limit must be 1..20"}
+
+        verified: VerifiedPayment | None = None
+        if payment.enabled:
+            # Flat standalone price, quoted before any work so the advertised
+            # amount is fixed and non-influenceable. Same $0.01 as source
+            # retrieval; the pricing model is unchanged.
+            requirements = payment.requirements_for_price(settings.X402_SOURCE_RETRIEVAL_PRICE)
+            verified, deny = await payment.verify(
+                ctx, "retrieve_knowledge", requirements=requirements
+            )
+            if deny is not None:
+                return deny
+
+        try:
+            from agentsafe.knowledge import KnowledgeBase
+
+            kb = KnowledgeBase.load_default()
+            records = kb.search(query, focus=focus, limit=limit)
+        except Exception as exc:
+            return {
+                "ok": False,
+                "error_code": "knowledge_unavailable",
+                "error": f"knowledge base unavailable: {exc}",
+            }
+
+        out = []
+        for r in records:
+            out.append(
+                {
+                    "id": r.get("id"),
+                    "category": r.get("category"),
+                    "mechanism": r.get("mechanism"),
+                    "root_cause": r.get("root_cause"),
+                    "impact": r.get("impact"),
+                    "remediation": r.get("remediation"),
+                    "source": r.get("source"),
+                    "url": r.get("url"),
+                }
+            )
+        return {
+            "ok": True,
+            "query": query,
+            "count": len(out),
+            "results": out,
             "price_paid": settings.X402_SOURCE_RETRIEVAL_PRICE,
         }
 
