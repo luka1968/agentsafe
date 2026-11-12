@@ -47,6 +47,7 @@ from agentsafe.github_client import (
     RunAssociationError,
 )
 from agentsafe.metrics import get_metrics
+from agentsafe import notify
 from agentsafe.payment.x402_adapter import (
     StarletteRequestAdapter,
     VerifiedPayment,
@@ -80,6 +81,54 @@ logger = logging.getLogger("agentSAFE.server")
 # flow. This is NOT part of the MCP protocol surface; it exists so that
 # x402 indexers and plain-HTTP x402 clients can discover and pay for audits.
 REST_AUDIT_PATH = "/api/audit"
+
+
+def _clean_email(raw: Any) -> str | None:
+    """Optional customer email from the dispatch body. Returns a trimmed,
+    validated address or None; an invalid non-empty value raises ValueError
+    (the dispatch responds 400 invalid_email). Empty/absent -> None (feature
+    off for this task; audits without email keep working unchanged)."""
+    if raw is None:
+        return None
+    email = str(raw).strip()
+    if not email:
+        return None
+    if not notify.is_valid_email(email):
+        raise ValueError(
+            "email must be a valid address like name@example.com")
+    return email
+
+
+def _maybe_notify_report_ready(task_store, task_id: str, base_url: str,
+                               report_markdown: str | None = None) -> None:
+    """Send the single report-ready email when the customer supplied an
+    address at dispatch. Idempotent by construction: the send happens only
+    when the task has an email AND notified_at is unset; a successful send
+    marks notified_at. Mail failures are logged, never raised, and leave
+    notified_at unset so the next status/report probe retries."""
+    try:
+        task = task_store.get(task_id)
+        if task is None or not task.email or task.notified_at is not None:
+            return
+        ok = notify.send_report_ready_email(
+            task.email, task_id, base_url, report_markdown=report_markdown)
+        if ok:
+            task_store.mark_notified(task_id)
+    except Exception:  # noqa: BLE001 - notification must never break the route
+        logger.exception("report-ready notify failed task=%s", task_id)
+
+
+def _base_url_from_request(request: Any) -> str:
+    """Public base URL for report links (honors proxy headers on Vercel)."""
+    try:
+        host = (request.headers.get("x-forwarded-host")
+                or request.headers.get("host") or "localhost")
+        proto = (request.headers.get("x-forwarded-proto")
+                 or ("https" if "workfern.com" in host or "vercel.app" in host
+                     else "http"))
+        return f"{proto}://{host}"
+    except Exception:  # noqa: BLE001 - best-effort only
+        return ""
 # The REST endpoint's flat fee (X402_REST_PRICE) only covers contracts up to
 # this many source lines on mainnet chains. Larger contracts must use the MCP
 # endpoint's tiered pricing (audit_contract) or the enterprise channel; this
@@ -1081,6 +1130,11 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
             )
         mapped = gh.map_run_status(run)
         task_store.set_state(task_id, TaskState(mapped))
+        if mapped == "completed":
+            # Report is ready: deliver the single report-ready email if the
+            # customer supplied an address at dispatch (idempotent).
+            _maybe_notify_report_ready(task_store, task_id,
+                                       _base_url_from_request(request))
         return JSONResponse(
             {"ok": True, "task_id": task_id, "state": mapped},
             status_code=200,
@@ -1229,8 +1283,14 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
             if fmt == "html":
                 return HTMLResponse(render_html(validated))
             if fmt == "md":
+                md_text = render_markdown(validated)
+                # Report is definitively served: single report-ready email
+                # (links + attached markdown) for customers who opted in.
+                _maybe_notify_report_ready(
+                    task_store, task_id, _base_url_from_request(request),
+                    report_markdown=md_text)
                 return HTMLResponse(
-                    render_markdown(validated),
+                    md_text,
                     media_type="text/markdown; charset=utf-8",
                 )
             if fmt == "json":
@@ -1308,6 +1368,13 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
                 status_code=400,
             )
         try:
+            email = _clean_email(parsed_body.get("email"))
+        except ValueError as exc:
+            return JSONResponse(
+                {"ok": False, "error_code": "invalid_email", "error": str(exc)},
+                status_code=400,
+            )
+        try:
             bundle = await explorer.get_verified_source(addr)
         except ContractNotVerifiedError:
             return JSONResponse(
@@ -1376,7 +1443,7 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
                 status_code=422,
             )
 
-        task = task_store.create_task(addr)
+        task = task_store.create_task(addr, email=email)
         if verified is not None:
             task_store.mark_paid(task.task_id, verified.ref)
         task_store.set_state(task.task_id, TaskState.QUEUED)

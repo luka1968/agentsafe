@@ -59,6 +59,8 @@ INCLUDE_PREFIXES = (
     "EMBED_",
     "KB_",
     "NEON_",
+    "SMTP_",      # Report delivery SMTP configuration
+    "NOTIFY_FROM",# Email sender address for report notifications
 )
 
 

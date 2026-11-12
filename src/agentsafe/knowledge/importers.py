@@ -47,6 +47,7 @@ class ImportSummary:
     duplicates: int = 0
     embeddings: int = 0
     embeddings_reused: int = 0
+    known_skipped: int = 0  # records skipped by (source_id, external_record_id)
     errors: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
@@ -55,6 +56,7 @@ class ImportSummary:
             "skipped": self.skipped, "failed": self.failed,
             "duplicates": self.duplicates, "embeddings": self.embeddings,
             "embeddings_reused": self.embeddings_reused,
+            "known_skipped": self.known_skipped,
             "errors": self.errors[:20],
         }
 
@@ -79,6 +81,65 @@ def normalize_record(raw: dict[str, Any], *, source_name: str) -> dict[str, Any]
         "impact": raw.get("impact"),
         "remediation": raw.get("remediation"),
         "url": raw.get("url"),
+        # Category A organization fields (absent -> null; never guessed)
+        "kb_group": raw.get("kb_group"),
+        "verification_status": raw.get("verification_status"),
+        "license_status": raw.get("license_status") or raw.get("license"),
+        "commercial_use": raw.get("commercial_use"),
+        # Category B (attack-path knowledge) fields
+        "attack_entry": raw.get("attack_entry"),
+        "call_sequence": raw.get("call_sequence") or [],
+        "internal_calls": raw.get("internal_calls") or [],
+        "external_calls": raw.get("external_calls") or [],
+        "state_vars": raw.get("state_vars") or [],
+        "state_deps": raw.get("state_deps") or [],
+        "attacker_permissions": raw.get("attacker_permissions") or [],
+        "tx_conditions": raw.get("tx_conditions") or [],
+        "cross_function_deps": raw.get("cross_function_deps") or [],
+        "cross_contract_deps": raw.get("cross_contract_deps") or [],
+        "poc_reference": raw.get("poc_reference"),
+        # Category C (accounting-vulnerability) fields
+        "invariant": raw.get("invariant"),
+        "incorrect_behavior": raw.get("incorrect_behavior"),
+        "verification_evidence": raw.get("verification_evidence"),
+        # Category D (oracle-vulnerability) fields
+        "oracle_type": raw.get("oracle_type"),
+        "price_source": raw.get("price_source"),
+        "freshness_requirements": raw.get("freshness_requirements"),
+        "price_validation": raw.get("price_validation"),
+        # Category E (secure-code / false-positive) fields
+        "security_pattern": raw.get("security_pattern"),
+        "safe_code": raw.get("safe_code"),
+        "required_assumptions": raw.get("required_assumptions"),
+        "why_safe": raw.get("why_safe"),
+        "known_limitations": raw.get("known_limitations"),
+        "related_vuln_classes": raw.get("related_vuln_classes"),
+        "fp_patterns": raw.get("fp_patterns"),
+        "evidence_required": raw.get("evidence_required"),
+        # Category F (vulnerability-verification / testing) fields
+        "verification_method": raw.get("verification_method"),
+        "poc_code": raw.get("poc_code"),
+        "expected_result": raw.get("expected_result"),
+        "confirmation_signals": raw.get("confirmation_signals"),
+        "refutation_signals": raw.get("refutation_signals"),
+        "test_tooling": raw.get("test_tooling"),
+        # Category F (Foundry PoC / exploit-validation) fields
+        "attacker_contract": raw.get("attacker_contract"),
+        "test_setup": raw.get("test_setup"),
+        "required_initial_state": raw.get("required_initial_state"),
+        "expected_vulnerable_behavior": raw.get("expected_vulnerable_behavior"),
+        "expected_safe_behavior": raw.get("expected_safe_behavior"),
+        "test_result": raw.get("test_result"),
+        "solc_version": raw.get("solc_version"),
+        "foundry_version": raw.get("foundry_version"),
+        # Standardized KB data-model fields
+        "subcategory": raw.get("subcategory"),
+        "vulnerability_id": raw.get("vulnerability_id"),
+        "swc_id": raw.get("swc_id"),
+        "exploit_sequence": raw.get("exploit_sequence")
+                              or raw.get("attack_scenario"),
+        "confidence": raw.get("confidence"),
+        "tags": raw.get("tags") or [],
         "metadata": {
             "source_name": source_name,
             "original": raw.get("id") or raw.get("external_record_id"),
@@ -209,6 +270,27 @@ def _plan_embeddings(store: Any, texts: list[str],
     return embeddings, reused
 
 
+def _known_external_ids(store: Any, source_name: str) -> set[str]:
+    """External record ids already stored for one source (incremental-import
+    lookup). Best-effort: on failure return empty so the caller imports all
+    (content_hash dedup still protects correctness)."""
+    try:
+        with store._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT external_record_id FROM vulnerability_knowledge "
+                    "WHERE source_id = %s",
+                    (source_name,),
+                )
+                return {
+                    (r["external_record_id"] if isinstance(r, dict) else r[0])
+                    for r in cur.fetchall()
+                }
+    except Exception as exc:  # noqa: BLE001 - incremental skip is best-effort
+        logger.warning("known-id lookup failed (%s); importing all", exc)
+        return set()
+
+
 def run_import(
     store: NeonKnowledgeStore,
     *,
@@ -216,12 +298,34 @@ def run_import(
     records: list[dict[str, Any]],
     embedder: Callable[[str], list[float]] | None = None,
     batch_size: int = 20,
+    skip_known: bool = True,
 ) -> ImportSummary:
     """Run a resumable import. `records` is the fully-fetched source; callers
     with huge sources should use `run_import_resumable` for cursor checkpointing.
-    Returns a structured summary; never raises on per-record failures."""
+    Returns a structured summary; never raises on per-record failures.
+
+    Dedup is two-layered (requirement 6): content_hash (INSERT ON CONFLICT)
+    AND the source identifier pair (source_id, external_record_id). With
+    skip_known=True (incremental), records whose (source_id,
+    external_record_id) is already stored are filtered out BEFORE embedding
+    work, so re-imports cost no embedding calls. Existing records are never
+    overwritten by a re-import (requirement 9): same-id different-content
+    rows are skipped and counted as duplicates."""
     summary = ImportSummary(source=source["name"])
     normalized = [normalize_record(r, source_name=source["name"]) for r in records]
+
+    known: set[str] = set()
+    if skip_known:
+        known = _known_external_ids(store, source["name"])
+        if known:
+            fresh = [r for r in normalized
+                     if r.get("external_record_id") not in known]
+            summary.known_skipped = len(normalized) - len(fresh)
+            if summary.known_skipped:
+                logger.info("incremental import %s: %d known ids skipped",
+                            source["name"], summary.known_skipped)
+            normalized = fresh
+
     expanded = list(_split_long_records(normalized))
     summary.total = len(expanded)
 
@@ -276,6 +380,18 @@ def run_import(
                     zip(expanded, texts, embeddings)):
                 ch = content_hash_of(body)
                 try:
+                    # Second dedup layer: same (source_id, external_record_id)
+                    # already stored -> skip (never overwrite an existing
+                    # record, even when upstream content changed).
+                    if known and rec.get("external_record_id"):
+                        cur.execute(
+                            "SELECT 1 FROM vulnerability_knowledge "
+                            "WHERE source_id=%s AND external_record_id=%s",
+                            (source["name"], rec.get("external_record_id")))
+                        if cur.fetchone():
+                            summary.duplicates += 1
+                            summary.skipped += 1
+                            continue
                     cur.execute(
                         """
                         INSERT INTO vulnerability_knowledge (
@@ -283,11 +399,38 @@ def run_import(
                             category, severity, protocol_domain, affected_contract,
                             affected_function, vulnerable_code, corrected_code,
                             root_cause, preconditions, attack_scenario, impact,
-                            remediation, source_url, content_hash, metadata
+                            remediation, source_url, content_hash, metadata,
+                            kb_group, verification_status, license_status,
+                            commercial_use, attack_entry, call_sequence,
+                            internal_calls, external_calls, state_vars,
+                            state_deps, attacker_permissions, tx_conditions,
+                            cross_function_deps, cross_contract_deps,
+                            poc_reference, invariant, incorrect_behavior,
+                            verification_evidence, oracle_type, price_source,
+                            freshness_requirements, price_validation,
+                            security_pattern, safe_code, required_assumptions,
+                            why_safe, known_limitations, related_vuln_classes,
+                            fp_patterns, evidence_required, verification_method,
+                            poc_code, expected_result, confirmation_signals,
+                            refutation_signals, test_tooling, attacker_contract,
+                            test_setup, required_initial_state,
+                            expected_vulnerable_behavior, expected_safe_behavior,
+                            test_result, solc_version, foundry_version,
+                            subcategory, vulnerability_id, swc_id,
+                            exploit_sequence, confidence, tags
                         ) VALUES (%(s)s, %(eid)s, %(title)s, %(desc)s, %(cat)s,
                             %(sev)s, %(dom)s, %(ac)s, %(af)s, %(vc)s, %(cc)s,
                             %(rc)s, %(pc)s, %(as)s, %(imp)s, %(rem)s, %(url)s,
-                            %(ch)s, %(md)s)
+                            %(ch)s, %(md)s, %(grp)s, %(vs)s, %(ls)s, %(cu)s,
+                            %(ae)s, %(cs)s, %(ic)s, %(ec)s, %(sv)s, %(sd)s,
+                            %(ap)s, %(tc)s, %(cfd)s, %(ccd)s, %(poc)s,
+                            %(inv)s, %(ib)s, %(ve)s, %(ot)s, %(ps)s, %(fr)s,
+                            %(pv)s, %(sp)s, %(sc)s, %(ra)s, %(ws)s, %(kl)s,
+                            %(rvc)s, %(fpp)s, %(er)s, %(vm)s, %(pocc)s, %(exr)s,
+                            %(csg)s, %(rfs)s, %(tt)s, %(ac2)s, %(ts)s, %(ris)s,
+                            %(evb)s, %(esb)s, %(tr)s, %(solc)s, %(fv)s,
+                            %(subcat)s, %(vid)s, %(swc)s, %(es)s, %(conf)s,
+                            %(tags)s)
                         ON CONFLICT (content_hash) DO NOTHING
                         """,
                         {
@@ -303,6 +446,56 @@ def run_import(
                             "as": rec.get("attack_scenario"), "imp": rec.get("impact"),
                             "rem": rec.get("remediation"), "url": rec.get("url"),
                             "ch": ch, "md": json.dumps(rec.get("metadata", {})),
+                            "grp": rec.get("kb_group"),
+                            "vs": rec.get("verification_status"),
+                            "ls": rec.get("license_status"),
+                            "cu": rec.get("commercial_use"),
+                            "ae": rec.get("attack_entry"),
+                            "cs": json.dumps(rec.get("call_sequence", [])),
+                            "ic": json.dumps(rec.get("internal_calls", [])),
+                            "ec": json.dumps(rec.get("external_calls", [])),
+                            "sv": json.dumps(rec.get("state_vars", [])),
+                            "sd": json.dumps(rec.get("state_deps", [])),
+                            "ap": json.dumps(rec.get("attacker_permissions", [])),
+                            "tc": json.dumps(rec.get("tx_conditions", [])),
+                            "cfd": json.dumps(rec.get("cross_function_deps", [])),
+                            "ccd": json.dumps(rec.get("cross_contract_deps", [])),
+                            "poc": rec.get("poc_reference"),
+                            "inv": rec.get("invariant"),
+                            "ib": rec.get("incorrect_behavior"),
+                            "ve": rec.get("verification_evidence"),
+                            "ot": rec.get("oracle_type"),
+                            "ps": rec.get("price_source"),
+                            "fr": rec.get("freshness_requirements"),
+                            "pv": rec.get("price_validation"),
+                            "sp": rec.get("security_pattern"),
+                            "sc": rec.get("safe_code"),
+                            "ra": rec.get("required_assumptions"),
+                            "ws": rec.get("why_safe"),
+                            "kl": rec.get("known_limitations"),
+                            "rvc": rec.get("related_vuln_classes"),
+                            "fpp": rec.get("fp_patterns"),
+                            "er": rec.get("evidence_required"),
+                            "vm": rec.get("verification_method"),
+                            "pocc": rec.get("poc_code"),
+                            "exr": rec.get("expected_result"),
+                            "csg": rec.get("confirmation_signals"),
+                            "rfs": rec.get("refutation_signals"),
+                            "tt": rec.get("test_tooling"),
+                            "ac2": rec.get("attacker_contract"),
+                            "ts": rec.get("test_setup"),
+                            "ris": rec.get("required_initial_state"),
+                            "evb": rec.get("expected_vulnerable_behavior"),
+                            "esb": rec.get("expected_safe_behavior"),
+                            "tr": rec.get("test_result"),
+                            "solc": rec.get("solc_version"),
+                            "fv": rec.get("foundry_version"),
+                            "subcat": rec.get("subcategory"),
+                            "vid": rec.get("vulnerability_id"),
+                            "swc": rec.get("swc_id"),
+                            "es": rec.get("exploit_sequence"),
+                            "conf": rec.get("confidence"),
+                            "tags": json.dumps(rec.get("tags", [])),
                         },
                     )
                     if cur.rowcount == 0:
@@ -376,10 +569,12 @@ def run_import(
 def import_jsonl_dataset(store: NeonKnowledgeStore,
                          path: str | Path,
                          embedder: Callable[[str], list[float]] | None = None,
+                         source_name: str = "agentsafe-v1.jsonl",
                          ) -> ImportSummary:
-    """Adapter for the shipped, in-repo v1.jsonl dataset (our own words,
-    full provenance). This is the first verified source: we own its content
-    and licensing, so it is a safe seed before adding external adapters."""
+    """Adapter for a shipped, in-repo JSONL dataset (own words, full
+    provenance). Defaults to the v1 dataset name for backward compatibility;
+    pass `source_name` (e.g. "agentsafe-v2.jsonl") to seed another curated
+    dataset through the same pipeline."""
     import json as _json
 
     from pathlib import Path as P
@@ -393,8 +588,8 @@ def import_jsonl_dataset(store: NeonKnowledgeStore,
                 continue
             records.append(_json.loads(line))
     source = {
-        "name": "agentsafe-v1.jsonl",
-        "version": "1",
+        "name": source_name,
+        "version": "2" if source_name == "agentsafe-v2.jsonl" else "1",
         "url": "file://" + str(p),
         "license": "proprietary (agentSAFE); external provenance per record",
         "metadata": {"chunk_max_chars": CHUNK_MAX_CHARS,
@@ -411,6 +606,7 @@ def run_import_resumable(
     fetch_batch: Callable[[int, int], tuple[list[dict[str, Any]], int | None]],
     embedder: Callable[[str], list[float]] | None = None,
     batch_size: int = 20,
+    skip_known: bool = True,
 ) -> ImportSummary:
     """Fetch-and-import in pages via `fetch_batch(offset, limit) -> (rows, next)`.
     Persists a checkpoint after each page so an interrupted job resumes. This
@@ -423,13 +619,13 @@ def run_import_resumable(
         if not rows:
             break
         page = run_import(store, source=source, records=rows, embedder=embedder,
-                          batch_size=batch_size)
+                          batch_size=batch_size, skip_known=skip_known)
         summary.inserted += page.inserted
         summary.skipped += page.skipped
         summary.failed += page.failed
         summary.duplicates += page.duplicates
         summary.embeddings += page.embeddings
-        offset = next_cursor if isinstance(next_cursor, int) else offset + len(rows)
+        summary.known_skipped += page.known_skipped
         if next_cursor is None:
             break
     return summary

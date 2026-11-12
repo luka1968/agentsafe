@@ -1,0 +1,223 @@
+{
+  "k": 5,
+  "legacy_sources": [
+    "speca-code4rena",
+    "agentsafe-v1.jsonl"
+  ],
+  "retrieval_before": {
+    "precision_at_5": 0.4667,
+    "hit_rate_at_5": 1.0,
+    "mrr": 0.8667,
+    "per_query": [
+      {
+        "query": "deposit withdraw share rounding totalSupply first depositor ",
+        "relevant_categories": [
+          "rounding",
+          "accounting"
+        ],
+        "hit_categories": [
+          "rounding",
+          "donation",
+          "oracle",
+          "",
+          "reentrancy"
+        ],
+        "precision_at_5": 0.2,
+        "hit_rate_at_5": 1,
+        "mrr": 1.0
+      },
+      {
+        "query": "balance ledger desync withdraw insolvency accounting",
+        "relevant_categories": [
+          "accounting"
+        ],
+        "hit_categories": [
+          "token-transfer",
+          "donation",
+          "oracle",
+          "reentrancy",
+          "accounting"
+        ],
+        "precision_at_5": 0.2,
+        "hit_rate_at_5": 1,
+        "mrr": 0.2
+      },
+      {
+        "query": "oracle price stale chainlink manipulation spot twap",
+        "relevant_categories": [
+          "oracle"
+        ],
+        "hit_categories": [
+          "oracle",
+          "reentrancy",
+          "reentrancy",
+          "reentrancy",
+          "reentrancy"
+        ],
+        "precision_at_5": 0.2,
+        "hit_rate_at_5": 1,
+        "mrr": 1.0
+      },
+      {
+        "query": "reentrancy external call callback drain state update",
+        "relevant_categories": [
+          "reentrancy"
+        ],
+        "hit_categories": [
+          "reentrancy",
+          "reentrancy",
+          "access-control",
+          "reentrancy",
+          "reentrancy"
+        ],
+        "precision_at_5": 0.8,
+        "hit_rate_at_5": 1,
+        "mrr": 1.0
+      },
+      {
+        "query": "cross-function state flag interleave check-then-act cap bypa",
+        "relevant_categories": [
+          "reentrancy",
+          "access-control",
+          "accounting"
+        ],
+        "hit_categories": [
+          "access-control",
+          "reentrancy",
+          "reentrancy",
+          "reentrancy",
+          "reentrancy"
+        ],
+        "precision_at_5": 1.0,
+        "hit_rate_at_5": 1,
+        "mrr": 1.0
+      },
+      {
+        "query": "proxy initialization front-run takeover upgradeable",
+        "relevant_categories": [
+          "initialization",
+          "proxy",
+          "access-control"
+        ],
+        "hit_categories": [
+          "initialization",
+          "reentrancy",
+          "proxy",
+          "reentrancy",
+          "bridge"
+        ],
+        "precision_at_5": 0.4,
+        "hit_rate_at_5": 1,
+        "mrr": 1.0
+      }
+    ]
+  },
+  "retrieval_after": {
+    "precision_at_5": 0.9667,
+    "hit_rate_at_5": 1.0,
+    "mrr": 1.0,
+    "per_query": [
+      {
+        "query": "deposit withdraw share rounding totalSupply first depositor ",
+        "relevant_categories": [
+          "rounding",
+          "accounting"
+        ],
+        "hit_categories": [
+          "rounding",
+          "rounding",
+          "rounding",
+          "rounding",
+          "accounting"
+        ],
+        "precision_at_5": 1.0,
+        "hit_rate_at_5": 1,
+        "mrr": 1.0
+      },
+      {
+        "query": "balance ledger desync withdraw insolvency accounting",
+        "relevant_categories": [
+          "accounting"
+        ],
+        "hit_categories": [
+          "accounting",
+          "accounting",
+          "accounting",
+          "token-transfer",
+          "accounting"
+        ],
+        "precision_at_5": 0.8,
+        "hit_rate_at_5": 1,
+        "mrr": 1.0
+      },
+      {
+        "query": "oracle price stale chainlink manipulation spot twap",
+        "relevant_categories": [
+          "oracle"
+        ],
+        "hit_categories": [
+          "oracle",
+          "oracle",
+          "oracle",
+          "oracle",
+          "oracle"
+        ],
+        "precision_at_5": 1.0,
+        "hit_rate_at_5": 1,
+        "mrr": 1.0
+      },
+      {
+        "query": "reentrancy external call callback drain state update",
+        "relevant_categories": [
+          "reentrancy"
+        ],
+        "hit_categories": [
+          "reentrancy",
+          "reentrancy",
+          "reentrancy",
+          "reentrancy",
+          "reentrancy"
+        ],
+        "precision_at_5": 1.0,
+        "hit_rate_at_5": 1,
+        "mrr": 1.0
+      },
+      {
+        "query": "cross-function state flag interleave check-then-act cap bypa",
+        "relevant_categories": [
+          "reentrancy",
+          "access-control",
+          "accounting"
+        ],
+        "hit_categories": [
+          "reentrancy",
+          "reentrancy",
+          "access-control",
+          "access-control",
+          "accounting"
+        ],
+        "precision_at_5": 1.0,
+        "hit_rate_at_5": 1,
+        "mrr": 1.0
+      },
+      {
+        "query": "proxy initialization front-run takeover upgradeable",
+        "relevant_categories": [
+          "initialization",
+          "proxy",
+          "access-control"
+        ],
+        "hit_categories": [
+          "initialization",
+          "initialization",
+          "initialization",
+          "proxy",
+          "proxy"
+        ],
+        "precision_at_5": 1.0,
+        "hit_rate_at_5": 1,
+        "mrr": 1.0
+      }
+    ]
+  }
+}

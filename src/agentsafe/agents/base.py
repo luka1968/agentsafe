@@ -308,7 +308,8 @@ object described in your instructions."""
                 if kb is not None:
                     records = kb.search(
                         query=chunk[:4000] + " " + " ".join(self.keywords),
-                        focus=self.focus, limit=2)
+                        focus=self.focus, limit=2,
+                        profile=getattr(self, "profile", None))
                     kb_snippet = render_kb_snippets(records)
                     # Stage 5: attach retrieval provenance (record id or
                     # source url) to findings produced from this chunk.

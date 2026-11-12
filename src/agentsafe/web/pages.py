@@ -170,6 +170,13 @@ def _build_index_html() -> str:
         Pay USDC to audit
       </button>
     </div>
+    <div class="mt-3">
+      <input id="email" type="email" spellcheck="false" autocomplete="email"
+        placeholder="your@email.com (optional - we email you the report when it is ready, audits take ~20 min)"
+        class="w-full rounded-lg border border-zinc-700 bg-black px-4 py-3
+               text-sm text-white placeholder-zinc-600 focus:border-cyan-400 focus:outline-none">
+      <p class="mt-1 text-xs text-zinc-500">Optional: leave an email and we send the report link when the audit finishes, so you can close this page while you wait.</p>
+    </div>
     <div id="flow" class="mt-4 hidden rounded-lg border border-zinc-800 bg-black p-4 text-sm"></div>
     <p id="wallet-hint" class="mt-2 hidden text-xs text-zinc-500">
       Your wallet will open to approve the USDC payment on the selected chain.
@@ -180,6 +187,7 @@ def _build_index_html() -> str:
   (function () {{
     var REST = "/api/audit";
     var addr = document.getElementById("addr");
+    var email = document.getElementById("email");
     var start = document.getElementById("start");
     var flow = document.getElementById("flow");
     var hint = document.getElementById("wallet-hint");
@@ -741,7 +749,7 @@ def _build_index_html() -> str:
             "content-type": "application/json",
             "X-PAYMENT": codec.safeBase64Encode(JSON.stringify(payload))
           }},
-          body: JSON.stringify({{ "address": a }})
+          body: JSON.stringify(auditBody(a))
         }});
       }} catch (netErr) {{
         // Request never got a response: the payment may or may not have been
@@ -772,8 +780,21 @@ def _build_index_html() -> str:
       data.__submitted = true;
       return data;
     }}
+    // Optional customer email: sent with both dispatch calls so the server
+    // can email the report link when the audit completes. Empty -> omitted.
+    function auditBody(a) {{
+      var body = {{ "address": a }};
+      var em = (email && email.value || "").trim();
+      if (em) body.email = em;
+      return body;
+    }}
     start.addEventListener("click", async function () {{
       var a = (addr.value || "").trim();
+      var em = (email && email.value || "").trim();
+      if (em && !/^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$/.test(em)) {{
+        show("<p class='text-red-400'>Enter a valid email address (or leave it empty).</p>");
+        return;
+      }}
       if (!/^0x[0-9a-fA-F]{{40}}$/.test(a)) {{ show("<p class='text-red-400'>Enter a valid 0x-prefixed contract address.</p>"); return; }}
       start.disabled = true; start.textContent = "Contacting service...";
       show("<p class='text-zinc-400'>Requesting payment terms from the service...</p>");
@@ -781,7 +802,7 @@ def _build_index_html() -> str:
         var res = await fetch(REST, {{
           method: "POST",
           headers: {{"content-type": "application/json"}},
-          body: JSON.stringify({{ "address": a }})
+          body: JSON.stringify(auditBody(a))
         }});
         if (res.status === 202) {{
           var d = await res.json().catch(function () {{ return {{}}; }});

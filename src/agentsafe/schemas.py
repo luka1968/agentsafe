@@ -312,6 +312,11 @@ class TaskStatus(BaseModel):
     # canonical fingerprint of the verified payment payload (replay ledger key).
     paid: bool = False
     payment_ref: str | None = None
+    # Optional customer email for report delivery: set at dispatch (REST
+    # /api/audit body field "email"), used once when the report is ready.
+    # notified_at marks the single report-ready email already sent.
+    email: str | None = None
+    notified_at: datetime | None = None
 
     def stage(self, name: str) -> StageStatus:
         for s in self.stages:

@@ -633,6 +633,10 @@ class AuditOrchestrator:
                                 focus=_KB_FOCUS_FOR_CATEGORY.get(
                                     f.category.value if f.category else "", ""),
                                 limit=2,
+                                # Validation profile: prioritize PoC /
+                                # exploit-validation (F) and false-positive
+                                # evidence (E) for corroboration.
+                                profile="validation",
                             )
                             for h in hits or []:
                                 cat = (h.get("category") or "").strip().lower()

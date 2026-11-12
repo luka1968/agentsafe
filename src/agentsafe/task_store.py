@@ -63,6 +63,9 @@ CREATE TABLE IF NOT EXISTS task_stages (
 _MIGRATION_COLUMNS = {
     "paid": "INTEGER NOT NULL DEFAULT 0",
     "payment_ref": "TEXT",
+    # Report-delivery email (optional, set at dispatch) + single-send guard.
+    "email": "TEXT",
+    "notified_at": "TEXT",
 }
 
 
@@ -95,7 +98,7 @@ class MemoryTaskStore:
         self._tasks: dict[str, TaskStatus] = {}
         self._lock = threading.Lock()
 
-    def create_task(self, address: str) -> TaskStatus:
+    def create_task(self, address: str, email: str | None = None) -> TaskStatus:
         with self._lock:
             task = TaskStatus(
                 task_id=new_task_id(),
@@ -103,9 +106,24 @@ class MemoryTaskStore:
                 state=TaskState.QUEUED,
                 created_at=datetime.now(UTC),
                 updated_at=datetime.now(UTC),
+                email=email,
             )
             self._tasks[task.task_id] = task
             return task.model_copy(deep=True)
+
+    def set_email(self, task_id: str, email: str) -> None:
+        with self._lock:
+            t = self._tasks.get(task_id)
+            if t:
+                t.email = email
+                t.updated_at = datetime.now(UTC)
+
+    def mark_notified(self, task_id: str) -> None:
+        with self._lock:
+            t = self._tasks.get(task_id)
+            if t:
+                t.notified_at = datetime.now(UTC)
+                t.updated_at = t.notified_at
 
     def mark_paid(self, task_id: str, payment_ref: str) -> None:
         with self._lock:
@@ -205,7 +223,7 @@ class SqliteTaskStore:
 
         return _managed()
 
-    def create_task(self, address: str) -> TaskStatus:
+    def create_task(self, address: str, email: str | None = None) -> TaskStatus:
         now = datetime.now(UTC)
         task = TaskStatus(
             task_id=new_task_id(),
@@ -213,11 +231,12 @@ class SqliteTaskStore:
             state=TaskState.QUEUED,
             created_at=now,
             updated_at=now,
+            email=email,
         )
         with self._lock, self._connect() as conn:
             conn.execute(
                 "INSERT INTO tasks (task_id, address, run_id, state, error_code,"
-                " created_at, updated_at) VALUES (?,?,?,?,?,?,?)",
+                " created_at, updated_at, email) VALUES (?,?,?,?,?,?,?,?)",
                 (
                     task.task_id,
                     task.address,
@@ -226,9 +245,26 @@ class SqliteTaskStore:
                     None,
                     now.isoformat(),
                     now.isoformat(),
+                    task.email,
                 ),
             )
         return task
+
+    def set_email(self, task_id: str, email: str) -> None:
+        with self._lock, self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE tasks SET email = ?, updated_at = ? WHERE task_id = ?",
+                (email, _now_iso(), task_id),
+            )
+            if cur.rowcount == 0:
+                raise KeyError(f"unknown task_id: {task_id}")
+
+    def mark_notified(self, task_id: str) -> None:
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                "UPDATE tasks SET notified_at = ?, updated_at = ? WHERE task_id = ?",
+                (_now_iso(), _now_iso(), task_id),
+            )
 
     def mark_paid(self, task_id: str, payment_ref: str) -> None:
         with self._lock, self._connect() as conn:
@@ -449,7 +485,7 @@ class RedisTaskStore:
             logger.error(f"Failed to deserialize task: {e}")
             return None
     
-    def create_task(self, address: str) -> TaskStatus:
+    def create_task(self, address: str, email: str | None = None) -> TaskStatus:
         self._ensure_loop()
         now = datetime.now(UTC)
         task = TaskStatus(
@@ -458,6 +494,7 @@ class RedisTaskStore:
             state=TaskState.QUEUED,
             created_at=now,
             updated_at=now,
+            email=email,
         )
         key = self._key("task", task.task_id)
         pipeline = self._client.pipeline()
@@ -468,6 +505,38 @@ class RedisTaskStore:
             logger.error(f"Failed to create task in Redis: {e}")
             raise
         return task
+
+    def set_email(self, task_id: str, email: str) -> None:
+        with self._lock:
+            self._ensure_loop()
+            key = self._key("task", task_id)
+            task = self.get(task_id)
+            if not task:
+                raise KeyError(f"unknown task_id: {task_id}")
+            task.email = email
+            task.updated_at = datetime.now(UTC)
+            try:
+                self._client.set(key, self._serialize_task(task),
+                                 ex=redis_ttl_seconds(self._retention_days))
+            except redis_client.RedisError as e:
+                logger.error(f"Failed to update task email in Redis: {e}")
+                raise
+
+    def mark_notified(self, task_id: str) -> None:
+        with self._lock:
+            self._ensure_loop()
+            key = self._key("task", task_id)
+            task = self.get(task_id)
+            if not task:
+                raise KeyError(f"unknown task_id: {task_id}")
+            task.notified_at = datetime.now(UTC)
+            task.updated_at = task.notified_at
+            try:
+                self._client.set(key, self._serialize_task(task),
+                                 ex=redis_ttl_seconds(self._retention_days))
+            except redis_client.RedisError as e:
+                logger.error(f"Failed to mark task notified in Redis: {e}")
+                raise
     
     def get(self, task_id: str) -> TaskStatus | None:
         self._ensure_loop()
@@ -616,6 +685,8 @@ def open_task_store(
 
 
 def _row_to_task(row: sqlite3.Row, stages: list[sqlite3.Row]) -> TaskStatus:
+    keys = set(row.keys())
+    notified = row["notified_at"] if "notified_at" in keys else None
     return TaskStatus(
         task_id=row["task_id"],
         address=row["address"],
@@ -626,6 +697,8 @@ def _row_to_task(row: sqlite3.Row, stages: list[sqlite3.Row]) -> TaskStatus:
         updated_at=datetime.fromisoformat(row["updated_at"]),
         paid=bool(row["paid"]),
         payment_ref=row["payment_ref"],
+        email=row["email"] if "email" in keys else None,
+        notified_at=datetime.fromisoformat(notified) if notified else None,
         stages=[
             StageStatus(
                 name=s["name"],
@@ -642,7 +715,11 @@ def _row_to_task(row: sqlite3.Row, stages: list[sqlite3.Row]) -> TaskStatus:
 class TaskStore(Protocol):
     """Structural interface every store satisfies; lets server code type-check."""
 
-    def create_task(self, address: str) -> TaskStatus: ...
+    def create_task(self, address: str, email: str | None = None) -> TaskStatus: ...
+
+    def set_email(self, task_id: str, email: str) -> None: ...
+
+    def mark_notified(self, task_id: str) -> None: ...
 
     def get(self, task_id: str) -> TaskStatus | None: ...
 
@@ -747,9 +824,14 @@ class PostgresTaskStore:
         """
         with self._connect() as conn:
             conn.execute(ddl)
+            # Report-delivery email columns (idempotent; existing deployments).
+            conn.execute(
+                "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS email text")
+            conn.execute(
+                "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS notified_at timestamptz")
 
     # -- TaskStore protocol (mirrors sqlite store) ---------------------------
-    def create_task(self, address: str) -> TaskStatus:
+    def create_task(self, address: str, email: str | None = None) -> TaskStatus:
         now = datetime.now(UTC)
         task = TaskStatus(
             task_id=new_task_id(),
@@ -757,16 +839,34 @@ class PostgresTaskStore:
             state=TaskState.QUEUED,
             created_at=now,
             updated_at=now,
+            email=email,
         )
         with self._lock, self._connect() as conn:
             conn.execute(
                 "INSERT INTO tasks (task_id, address, run_id, state, error_code,"
-                " paid, payment_ref, created_at, updated_at)"
-                " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                " paid, payment_ref, created_at, updated_at, email)"
+                " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                 (task.task_id, task.address, None, task.state.value, None,
-                 False, None, now.isoformat(), now.isoformat()),
+                 False, None, now.isoformat(), now.isoformat(), task.email),
             )
         return task
+
+    def set_email(self, task_id: str, email: str) -> None:
+        with self._lock, self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE tasks SET email = %s, updated_at = %s WHERE task_id = %s",
+                (email, _now_iso(), task_id),
+            )
+            if cur.rowcount == 0:
+                raise KeyError(f"unknown task_id: {task_id}")
+
+    def mark_notified(self, task_id: str) -> None:
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                "UPDATE tasks SET notified_at = now(), updated_at = now()"
+                " WHERE task_id = %s",
+                (task_id,),
+            )
 
     def get(self, task_id: str) -> TaskStatus | None:
         with self._lock, self._connect() as conn:

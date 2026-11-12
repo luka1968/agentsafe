@@ -105,6 +105,7 @@ class _ProviderRuntime:
     rpm_limit: int
     max_output_tokens: int | None
     json_mode: bool = False
+    preferred: bool = False
     cooldown_until: float = 0.0
     permanent_failure: str | None = None
     window: deque = field(default_factory=deque)
@@ -224,6 +225,7 @@ class LLMRouter:
                 rpm_limit=p.rpm_limit,
                 max_output_tokens=p.max_output_tokens,
                 json_mode=bool(getattr(p, "json_mode", False)),
+                preferred=bool(getattr(p, "preferred", False)),
             )
             for p in providers
         ]
@@ -313,6 +315,11 @@ class LLMRouter:
                 # was output formatting, not provider health.
                 p = repair_provider
                 repair_provider = None
+            elif attempts == 0:
+                # First attempt: honor the operator's `preferred: true` provider
+                # so the known-good model is tried before list-order rotation.
+                # The rotation below is still the fallback on later attempts.
+                p = next((x for x in providers if x.preferred), providers[0])
             else:
                 p = providers[attempts % len(providers)]
             tokens = max_output_tokens or p.max_output_tokens or self._default_tokens

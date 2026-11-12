@@ -112,9 +112,18 @@ class KnowledgeBase:
             self._index.append((rec, toks, tf))
 
     # -- retrieval -------------------------------------------------------------
-    def search(self, query: str, focus: str = "", limit: int = 3) -> list[dict[str, Any]]:
+    def search(self, query: str, focus: str = "", limit: int = 3, *,
+               profile: str | None = None, kb_groups=None, categories=None,
+               tags=None) -> list[dict[str, Any]]:
         """Lexical retrieval, reranked by focus-category affinity.
-        Query terms come from the agent focus keywords + the contract text."""
+        Query terms come from the agent focus keywords + the contract text.
+        Accepts the same retrieval-integration kwargs as NeonKnowledgeStore:
+        `profile` boosts the agent's knowledge classes; `categories` hard
+        filters; kb_groups/tags are boost-only here (JSONL records may not
+        carry them — graceful degradation, lexical fallback preserved)."""
+        from agentsafe.knowledge.profiles import MAX_SEARCH_LIMIT, resolve_profile
+
+        limit = max(1, min(int(limit), MAX_SEARCH_LIMIT))
         if not self._index:
             return []
         q_terms = _tokenize(query)
@@ -129,9 +138,15 @@ class KnowledgeBase:
         focus_cats = _FOCUS_CATEGORIES.get(
             next((k for k in _FOCUS_CATEGORIES if k.split("_")[0] in focus.lower()),
                  "access_control"), set())
+        prof = resolve_profile(profile)
+        prof_cats = set(prof["categories"]) if prof else set()
+        prof_groups = set(prof["kb_groups"]) if prof else set()
+        cat_filter = {str(c) for c in categories} if categories else None
 
         scored: list[tuple[float, dict[str, Any]]] = []
         for rec, toks, tf in self._index:
+            if cat_filter is not None and rec.get("category", "") not in cat_filter:
+                continue
             score = 0.0
             for t in set(q_terms):
                 if t in tf:
@@ -139,6 +154,9 @@ class KnowledgeBase:
                     score += idf * (1.0 + tf[t] / max(1, len(toks)))
             if rec.get("category", "") in focus_cats:
                 score *= 1.6  # focus affinity rerank
+            if prof and (rec.get("category", "") in prof_cats
+                         or rec.get("kb_group") in prof_groups):
+                score *= prof["boost"]  # agent-profile prioritization
             if score > 0:
                 scored.append((score, rec))
         scored.sort(key=lambda x: (-x[0], x[1].get("id", "")))

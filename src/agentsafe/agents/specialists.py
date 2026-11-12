@@ -29,6 +29,7 @@ class AccessControlAgent(BaseAgent):
 
     name = "access_control"
     focus = ACCESS_CONTROL_FOCUS
+    profile = "access_control"
     keywords = (
         "onlyowner", "onlyrole", "hasrole", "grantrole", "renounceownership",
         "transferownership", "initializer", "upgrade", "admin", "authorizer",
@@ -42,6 +43,7 @@ class ReentrancyAgent(BaseAgent):
 
     name = "reentrancy"
     focus = REENTRANCY_FOCUS
+    profile = "reentrancy"
     keywords = (
         ".call{value", ".call(", "delegatecall", "staticcall", ".transfer(",
         ".send(", "receive(", "fallback(", "erc777", "erc1155", "onERC1155",
@@ -55,6 +57,7 @@ class AccountingAgent(BaseAgent):
 
     name = "accounting"
     focus = ACCOUNTING_FOCUS
+    profile = "accounting"
     keywords = (
         "totalSupply", "totalAssets", "balanceOf", "shares", "assets",
         "previewRedeem", "convertToShares", "convertToAssets", "deposit(",
@@ -69,6 +72,7 @@ class CrossFunctionAgent(BaseAgent):
 
     name = "cross_function"
     focus = CROSS_FUNCTION_FOCUS
+    profile = "cross_function"
     keywords = (
         "function ", "internal", "state", "flag", "lock", "bool",
         "lastInteraction", "deadline", "nonReentrant", "modifier",
@@ -81,6 +85,7 @@ class DefiLogicAgent(BaseAgent):
 
     name = "defi_logic"
     focus = DEFI_LOGIC_FOCUS
+    profile = "oracle"
     keywords = (
         "oracle", "latestAnswer", "latestRoundData", "getPrice", "priceFeed",
         "peek", "poke", "collateral", "liquidat", "healthFactor", "debt",
@@ -94,6 +99,7 @@ class ArithmeticAgent(BaseAgent):
 
     name = "arithmetic"
     focus = ARITHMETIC_FOCUS
+    profile = "arithmetic"
     keywords = (
         "uint8", "uint16", "uint32", "int8", "int16", "int32", "unchecked",
         "pragma", "0.7", "0.6", "0.5", "0.4", "decimals", "wei", "gwei",
@@ -107,6 +113,7 @@ class ProxyUpgradeAgent(BaseAgent):
 
     name = "proxy_upgrade"
     focus = PROXY_UPGRADE_FOCUS
+    profile = "proxy_upgrade"
     keywords = (
         "upgradeTo", "upgradeToAndCall", "delegatecall", "__gap", "initialize(",
         "reinitializer", "initializer", "admin", "implementation", "proxy",
