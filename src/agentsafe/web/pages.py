@@ -62,7 +62,7 @@ _PAGE_SHELL = """<!DOCTYPE html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{title} - agentSAFE</title>
-<script src="https://cdn.tailwindcss.com"></script>
+<script src="/static/tailwind.js?v=435"></script>
 </head>
 <body class="bg-black text-white min-h-screen">
 <div class="mx-auto max-w-3xl px-6 py-12">
@@ -131,7 +131,7 @@ def _build_index_html() -> str:
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>agentSAFE - AI Smart Contract Audits on Ethereum Mainnet</title>
-<script src="https://cdn.tailwindcss.com"></script>
+<script src="/static/tailwind.js?v=435"></script>
 <script defer src="/static/x402-bridge.js"></script>
 </head>
 <body class="bg-black text-white min-h-screen">

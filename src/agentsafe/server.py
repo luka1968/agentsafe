@@ -708,6 +708,29 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
             },
         )
 
+    # Self-hosted Tailwind (v4 browser build): the public Play CDN is
+    # unreachable from some networks (TLS interference), which rendered the
+    # landing page UNSTYLED (white). Vendored at web/dist/tailwind.js and
+    # served locally so the theme never depends on an external CDN.
+    _TAILWIND_PATH = Path(__file__).resolve().parents[2] / "web" / "dist" / "tailwind.js"
+
+    @app.custom_route("/static/tailwind.js", methods=["GET"])
+    async def _tailwind_js(request: Request) -> Response:
+        try:
+            body = _TAILWIND_PATH.read_bytes()
+        except OSError as exc:
+            logger.error("tailwind.js unavailable: %s", exc)
+            return PlainTextResponse("styles unavailable", status_code=500)
+        return Response(
+            body,
+            media_type="application/javascript; charset=utf-8",
+            headers={
+                # Committed asset; cache a day (src carries a ?v= cache-buster).
+                "Cache-Control": "public, max-age=86400",
+                "Content-Length": str(len(body)),
+            },
+        )
+
     # ------------------------------------------------ x402 REST API (x402scan)
 
     @app.custom_route("/openapi.json", methods=["GET"])

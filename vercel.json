@@ -5,7 +5,7 @@
       "src": "api/index.py",
       "use": "@vercel/python@5.0.1",
       "config": {
-        "includeFiles": "src/**,openapi.json,favicon.ico,logo.png,web/dist/x402-bridge.js"
+        "includeFiles": "src/**,openapi.json,favicon.ico,logo.png,web/dist/x402-bridge.js,web/dist/tailwind.js"
       }
     }
   ],
