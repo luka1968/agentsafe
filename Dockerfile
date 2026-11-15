@@ -7,9 +7,10 @@
 # Cyfrin/aderyn tags ship only .sha256 files + source), which broke the
 # image build that used to download aderyn-x86_64-unknown-linux-gnu.tar.xz.
 # Building from the tag's committed Cargo.lock keeps version 0.6.8 and its
-# verified CLI contract stable. rust:1.85-slim ships gcc (needed by the cc
-# crates) and covers edition-2024 (rustc >= 1.85).
-FROM rust:1.85-slim AS aderyn-builder
+# verified CLI contract stable. rust:1.89-slim ships gcc (needed by the cc
+# crates) and satisfies the workspace MSRV: edition 2024 needs rustc >= 1.85,
+# and the tag's locked deps (solar-*, svm-rs) need 1.88/1.89 (CI-verified).
+FROM rust:1.89-slim AS aderyn-builder
 # The workspace profile uses fat LTO (lto=true, codegen-units=1); that
 # triples compile time for no audit-runtime benefit - override via env.
 ENV CARGO_PROFILE_RELEASE_LTO=off \

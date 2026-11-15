@@ -86,12 +86,13 @@ jobs:
         # Upstream deleted every prebuilt release tarball (as of 2026-11-14
         # all Cyfrin/aderyn tags ship only .sha256 files + source), so the
         # old tarball download 404s. Build the pinned version from the tag's
-        # committed Cargo.lock instead. Edition-2024 sources need rustc
-        # >= 1.85; fat LTO is overridden to keep the compile bounded.
+        # committed Cargo.lock instead. The tag's locked deps need rustc
+        # >= 1.89 (solar-* 1.88, svm-rs 1.89); fat LTO is overridden to keep
+        # the compile bounded.
         run: |
           set -euo pipefail
           curl -fsSL --retry 3 https://sh.rustup.rs | sh -s -- -y \
-            --default-toolchain 1.85.0 --profile minimal
+            --default-toolchain 1.89.0 --profile minimal
           export PATH="$HOME/.cargo/bin:$PATH"
           export CARGO_PROFILE_RELEASE_LTO=off
           export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16
