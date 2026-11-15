@@ -17,7 +17,7 @@ ENV CARGO_PROFILE_RELEASE_LTO=off \
     CARGO_NET_RETRY=10
 RUN cargo install --locked \
       --git https://github.com/Cyfrin/aderyn --tag aderyn-v0.6.8 \
-      --bin aderyn \
+      aderyn \
     && rm -rf "$CARGO_HOME/git" "$CARGO_HOME/registry" \
     && aderyn --version
 

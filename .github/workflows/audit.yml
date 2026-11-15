@@ -98,7 +98,7 @@ jobs:
           export CARGO_NET_RETRY=10
           cargo install --locked \
             --git https://github.com/Cyfrin/aderyn --tag aderyn-v0.6.8 \
-            --bin aderyn
+            aderyn
           sudo mv "$HOME/.cargo/bin/aderyn" /usr/local/bin/aderyn
           aderyn --version
 
