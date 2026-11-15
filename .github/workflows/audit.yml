@@ -82,20 +82,24 @@ jobs:
           solc-select install 0.4.26 0.5.17 0.6.12 0.7.6 0.8.19 0.8.20 0.8.24
           solc-select use 0.8.19
 
-      - name: Install Aderyn (pinned release, official checksum)
-        # Checksum is the OFFICIAL one published by Cyfrin next to the asset:
-        # aderyn-v0.6.8/aderyn-x86_64-unknown-linux-gnu.tar.xz.sha256
+      - name: Install Aderyn (build from pinned source tag)
+        # Upstream deleted every prebuilt release tarball (as of 2026-11-14
+        # all Cyfrin/aderyn tags ship only .sha256 files + source), so the
+        # old tarball download 404s. Build the pinned version from the tag's
+        # committed Cargo.lock instead. Edition-2024 sources need rustc
+        # >= 1.85; fat LTO is overridden to keep the compile bounded.
         run: |
           set -euo pipefail
-          ADERYN_VERSION="0.6.8"
-          URL="https://github.com/Cyfrin/aderyn/releases/download/aderyn-v${ADERYN_VERSION}/aderyn-x86_64-unknown-linux-gnu.tar.xz"
-          EXPECTED_SHA256="ffd6ca658962e211a3ac821c646f69c8e14bf1b1001cbfe091bcd4535a691e46"
-          curl -fsSL --retry 3 -o /tmp/aderyn.tar.xz "${URL}"
-          echo "${EXPECTED_SHA256}  /tmp/aderyn.tar.xz" | sha256sum -c -
-          # Release tarball nests the binary one directory deep.
-          mkdir -p /tmp/aderyn-x
-          tar -xJf /tmp/aderyn.tar.xz -C /tmp/aderyn-x --strip-components=1
-          mv /tmp/aderyn-x/aderyn /usr/local/bin/aderyn
+          curl -fsSL --retry 3 https://sh.rustup.rs | sh -s -- -y \
+            --default-toolchain 1.85.0 --profile minimal
+          export PATH="$HOME/.cargo/bin:$PATH"
+          export CARGO_PROFILE_RELEASE_LTO=off
+          export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16
+          export CARGO_NET_RETRY=10
+          cargo install --locked \
+            --git https://github.com/Cyfrin/aderyn --tag aderyn-v0.6.8 \
+            --bin aderyn
+          sudo mv "$HOME/.cargo/bin/aderyn" /usr/local/bin/aderyn
           aderyn --version
 
       - name: Install Heimdall (pinned release, computed checksum)

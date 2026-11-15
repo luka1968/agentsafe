@@ -100,18 +100,28 @@ def _clean_email(raw: Any) -> str | None:
 
 
 def _maybe_notify_report_ready(task_store, task_id: str, base_url: str,
-                               report_markdown: str | None = None) -> None:
-    """Send the single report-ready email when the customer supplied an
-    address at dispatch. Idempotent by construction: the send happens only
-    when the task has an email AND notified_at is unset; a successful send
-    marks notified_at. Mail failures are logged, never raised, and leave
-    notified_at unset so the next status/report probe retries."""
+                               report_markdown: str | None = None,
+                               failure_detail: str | None = None) -> None:
+    """Send the single terminal-state email when the customer supplied an
+    address at dispatch: report-ready by default, or audit-failed (no report
+    exists) when failure_detail is given. Idempotent by construction: the
+    send happens only when the task has an email AND notified_at is unset;
+    a successful send marks notified_at - the first terminal state observed
+    wins and no second email is sent for the same task. Mail failures are
+    logged, never raised, and leave notified_at unset so the next
+    status/report probe retries."""
     try:
         task = task_store.get(task_id)
         if task is None or not task.email or task.notified_at is not None:
             return
-        ok = notify.send_report_ready_email(
-            task.email, task_id, base_url, report_markdown=report_markdown)
+        if failure_detail:
+            ok = notify.send_audit_failed_email(
+                task.email, task_id, base_url,
+                failure_detail=failure_detail)
+        else:
+            ok = notify.send_report_ready_email(
+                task.email, task_id, base_url,
+                report_markdown=report_markdown)
         if ok:
             task_store.mark_notified(task_id)
     except Exception:  # noqa: BLE001 - notification must never break the route
@@ -1158,6 +1168,14 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
             # customer supplied an address at dispatch (idempotent).
             _maybe_notify_report_ready(task_store, task_id,
                                        _base_url_from_request(request))
+        elif mapped == "failed":
+            # The run is terminal-failed: no report will ever exist. Email
+            # the customer once (idempotent) instead of leaving a paid order
+            # silent - this is what happened when the upstream aderyn assets
+            # vanished on 2026-11-14 and nobody heard anything.
+            _maybe_notify_report_ready(
+                task_store, task_id, _base_url_from_request(request),
+                failure_detail=str(run.get("conclusion") or "failed"))
         return JSONResponse(
             {"ok": True, "task_id": task_id, "state": mapped},
             status_code=200,
@@ -1240,6 +1258,11 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
             # (no report will ever exist; payment is preserved and the
             # credit/refund policy in REFUND_POLICY.md applies).
             if mapped == "failed":
+                # Single terminal-state email (idempotent): the customer
+                # must not be left silent on a paid, failed audit.
+                _maybe_notify_report_ready(
+                    task_store, task_id, _base_url_from_request(request),
+                    failure_detail=str(run.get("conclusion") or "failed"))
                 return JSONResponse(
                     {
                         "ok": False,
@@ -1808,6 +1831,11 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
             task_store.set_state(
                 task_id, TaskState.FAILED, error_code=f"run_conclusion:{run.get('conclusion')}"
             )
+            # Terminal-failed: single audit-failed email (idempotent) for
+            # tasks that opted into report delivery at dispatch.
+            _maybe_notify_report_ready(
+                task_store, task_id, "",
+                failure_detail=str(run.get("conclusion") or "failed"))
         return {
             "ok": True,
             "task_id": task_id,

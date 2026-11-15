@@ -2,6 +2,25 @@
 # Secrets are NEVER baked in: all credentials arrive via environment
 # variables at container start (GitHub Actions secrets -> docker run -e).
 
+# --- Stage 1: build aderyn from the pinned source tag -----------------------
+# Upstream deleted every prebuilt release tarball (as of 2026-11-14 all
+# Cyfrin/aderyn tags ship only .sha256 files + source), which broke the
+# image build that used to download aderyn-x86_64-unknown-linux-gnu.tar.xz.
+# Building from the tag's committed Cargo.lock keeps version 0.6.8 and its
+# verified CLI contract stable. rust:1.85-slim ships gcc (needed by the cc
+# crates) and covers edition-2024 (rustc >= 1.85).
+FROM rust:1.85-slim AS aderyn-builder
+# The workspace profile uses fat LTO (lto=true, codegen-units=1); that
+# triples compile time for no audit-runtime benefit - override via env.
+ENV CARGO_PROFILE_RELEASE_LTO=off \
+    CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 \
+    CARGO_NET_RETRY=10
+RUN cargo install --locked \
+      --git https://github.com/Cyfrin/aderyn --tag aderyn-v0.6.8 \
+      --bin aderyn \
+    && rm -rf "$CARGO_HOME/git" "$CARGO_HOME/registry" \
+    && aderyn --version
+
 FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -33,16 +52,8 @@ RUN pip install --no-cache-dir . \
     && solc-select install 0.4.26 0.5.17 0.6.12 0.7.6 0.8.19 0.8.20 0.8.24 \
     && solc-select use 0.8.19
 
-# Aderyn (pinned release, official checksum). The release tarball nests the
-# binary one directory deep; --strip-components=1 puts it on PATH.
-RUN set -eu \
-    && curl -fsSL --retry 3 -o /tmp/aderyn.tar.xz \
-        "https://github.com/Cyfrin/aderyn/releases/download/aderyn-v0.6.8/aderyn-x86_64-unknown-linux-gnu.tar.xz" \
-    && echo "ffd6ca658962e211a3ac821c646f69c8e14bf1b1001cbfe091bcd4535a691e46  /tmp/aderyn.tar.xz" | sha256sum -c - \
-    && mkdir -p /tmp/aderyn-x \
-    && tar -xJf /tmp/aderyn.tar.xz -C /tmp/aderyn-x --strip-components=1 \
-    && mv /tmp/aderyn-x/aderyn /usr/local/bin/aderyn \
-    && rm -rf /tmp/aderyn.tar.xz /tmp/aderyn-x
+# Aderyn binary from the source-build stage (see stage 1 rationale above).
+COPY --from=aderyn-builder /usr/local/cargo/bin/aderyn /usr/local/bin/aderyn
 
 # Heimdall (pinned release, computed checksum; re-verify when bumping).
 RUN set -eu \

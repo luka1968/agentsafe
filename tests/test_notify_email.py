@@ -4,9 +4,11 @@ Covers:
   * email validation (pragmatic, bounded)
   * notifier disabled when SMTP_HOST unset (no-op, False)
   * successful send via mocked SMTP (subject/to/attachment)
+  * audit-failed email (subject/body/refund pointer, no attachments)
   * SMTP failure never raises (False + logged)
   * task stores persist email + notified_at (Memory + SQLite)
-  * single-send semantics: mark_notified once, notified_at set
+  * single-send semantics: mark_notified once, notified_at set; the first
+    terminal state (ready or failed) emails the customer, never both
 """
 
 import os
@@ -17,7 +19,11 @@ from unittest import mock
 import pytest
 
 from agentsafe import notify
-from agentsafe.notify import is_valid_email, send_report_ready_email
+from agentsafe.notify import (
+    is_valid_email,
+    send_audit_failed_email,
+    send_report_ready_email,
+)
 from agentsafe.task_store import MemoryTaskStore, SqliteTaskStore
 
 BASE = "https://x402.workfern.com"
@@ -111,6 +117,74 @@ class TestSendSuccess:
             assert send_report_ready_email("a@b.co", TASK, BASE) is False
 
 
+class TestSendAuditFailed:
+    """Audit-failed email: paid order failed -> customer is told, once."""
+
+    def _run(self, failure_detail: str | None) -> dict:
+        sent = {}
+
+        class FakeSMTP:
+            def __init__(self, host, port, timeout=None):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def ehlo(self):
+                pass
+
+            def starttls(self, context=None):
+                pass
+
+            def login(self, u, p):
+                pass
+
+            def send_message(self, msg):
+                sent["msg"] = msg
+
+        env = {"SMTP_HOST": "smtp.test", "SMTP_PORT": "587",
+               "SMTP_USER": "bot@test", "SMTP_PASS": "pw",
+               "NOTIFY_FROM": "AgentSafe <reports@test>"}
+        with mock.patch.dict(os.environ, env, clear=False), \
+             mock.patch.object(notify.smtplib, "SMTP", FakeSMTP):
+            ok = send_audit_failed_email("cust@example.com", TASK, BASE,
+                                         failure_detail=failure_detail)
+            assert ok is True
+        return sent
+
+    def test_subject_body_and_refund_pointer(self):
+        sent = self._run("failure")
+        msg = sent["msg"]
+        assert msg["To"] == "cust@example.com"
+        assert TASK[:8] in msg["Subject"]
+        body = msg.get_content()
+        assert TASK in body                          # full id for support
+        assert "did not complete" in body
+        assert f"{BASE}/refund" in body              # refund policy pointer
+        assert "(run failure)" in body               # upstream conclusion
+        attachments = list(msg.iter_attachments())
+        assert attachments == []                     # no report exists
+
+    def test_without_detail_omits_run_clause(self):
+        sent = self._run(None)
+        body = sent["msg"].get_content()
+        assert "(run " not in body
+        assert "did not complete" in body
+
+    def test_disabled_without_smtp_host(self, monkeypatch):
+        monkeypatch.delenv("SMTP_HOST", raising=False)
+        assert send_audit_failed_email("a@b.co", TASK, BASE) is False
+
+    def test_invalid_recipient_never_sends(self, monkeypatch):
+        monkeypatch.setenv("SMTP_HOST", "smtp.test")
+        with mock.patch.object(notify.smtplib, "SMTP") as smtp:
+            assert send_audit_failed_email("not-an-email", TASK, BASE) is False
+            smtp.assert_not_called()
+
+
 class TestTaskStoreEmail:
     def test_memory_store_email_roundtrip(self):
         store = MemoryTaskStore()
@@ -177,3 +251,34 @@ class TestSingleSendGuard:
                             lambda *a, **k: sent.__setitem__("n", sent["n"] + 1) or True)
         _maybe_notify_report_ready(store, t.task_id, BASE)
         assert sent["n"] == 0
+
+    def test_failure_path_sends_failure_email_once(self, monkeypatch):
+        """A terminal-failed task gets the audit-failed email (idempotent)."""
+        from agentsafe.server import _maybe_notify_report_ready
+
+        store = MemoryTaskStore()
+        t = store.create_task("0x" + "f" * 40, email="fail@e.co")
+        ready_sent, failed_sent = {"n": 0}, {"n": 0}
+
+        def fake_ready(*a, **k):
+            ready_sent["n"] += 1
+            return True
+
+        def fake_failed(*a, **k):
+            failed_sent["n"] += 1
+            return True
+
+        monkeypatch.setattr(notify, "send_report_ready_email", fake_ready)
+        monkeypatch.setattr(notify, "send_audit_failed_email", fake_failed)
+        _maybe_notify_report_ready(store, t.task_id, BASE,
+                                   failure_detail="failure")
+        assert failed_sent["n"] == 1
+        assert ready_sent["n"] == 0
+        assert store.get(t.task_id).notified_at is not None
+        # A later probe (report link clicked, status refreshed) never
+        # re-sends: the first terminal state already emailed the customer.
+        _maybe_notify_report_ready(store, t.task_id, BASE,
+                                   failure_detail="failure")
+        _maybe_notify_report_ready(store, t.task_id, BASE)
+        assert failed_sent["n"] == 1
+        assert ready_sent["n"] == 0
