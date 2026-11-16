@@ -82,26 +82,11 @@ jobs:
           solc-select install 0.4.26 0.5.17 0.6.12 0.7.6 0.8.19 0.8.20 0.8.24
           solc-select use 0.8.19
 
-      - name: Install Aderyn (build from pinned source tag)
-        # Upstream deleted every prebuilt release tarball (as of 2026-11-14
-        # all Cyfrin/aderyn tags ship only .sha256 files + source), so the
-        # old tarball download 404s. Build the pinned version from the tag's
-        # committed Cargo.lock instead. The tag's locked deps need rustc
-        # >= 1.89 (solar-* 1.88, svm-rs 1.89); fat LTO is overridden to keep
-        # the compile bounded.
-        run: |
-          set -euo pipefail
-          curl -fsSL --retry 3 https://sh.rustup.rs | sh -s -- -y \
-            --default-toolchain 1.89.0 --profile minimal
-          export PATH="$HOME/.cargo/bin:$PATH"
-          export CARGO_PROFILE_RELEASE_LTO=off
-          export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16
-          export CARGO_NET_RETRY=10
-          cargo install --locked \
-            --git https://github.com/Cyfrin/aderyn --tag aderyn-v0.6.8 \
-            aderyn
-          sudo mv "$HOME/.cargo/bin/aderyn" /usr/local/bin/aderyn
-          aderyn --version
+      # NOTE: aderyn is intentionally NOT installed (upstream deleted every
+      # prebuilt release tarball; source builds are slow and fragile). The
+      # runtime disables it by default (AGENTSAFE_ENABLE_ADERYN), so audits
+      # run slither + mythril + heimdall. Re-add an install step + smoke
+      # check here when a stable provisioning path returns.
 
       - name: Install Heimdall (pinned release, computed checksum)
         # Heimdall publishes no .sha256 for these assets; this checksum was
@@ -128,7 +113,6 @@ jobs:
           # 1) binaries exist and report versions
           slither --version
           myth version
-          aderyn --version
           heimdall --version
 
           # 2) mythril: flags used by agentsafe must exist (verified against
@@ -159,15 +143,6 @@ jobs:
           dets = (d.get("results") or {}).get("detectors") or []
           print("slither detectors:", len(dets))
           assert dets, "fixture must produce at least one slither detector"
-          EOF
-
-          # 6) aderyn: real run on the fixture -> parseable report.json
-          aderyn /tmp/smoke --output /tmp/smoke/report.json
-          python3 - <<'EOF'
-          import json
-          d = json.load(open("/tmp/smoke/report.json"))
-          print("aderyn report keys:", sorted(d.keys()))
-          assert "issues" in d, f"expected 'issues' key, got {sorted(d.keys())}"
           EOF
 
       - name: Run audit

@@ -2,25 +2,13 @@
 # Secrets are NEVER baked in: all credentials arrive via environment
 # variables at container start (GitHub Actions secrets -> docker run -e).
 
-# --- Stage 1: build aderyn from the pinned source tag -----------------------
-# Upstream deleted every prebuilt release tarball (as of 2026-11-14 all
-# Cyfrin/aderyn tags ship only .sha256 files + source), which broke the
-# image build that used to download aderyn-x86_64-unknown-linux-gnu.tar.xz.
-# Building from the tag's committed Cargo.lock keeps version 0.6.8 and its
-# verified CLI contract stable. rust:1.89-slim ships gcc (needed by the cc
-# crates) and satisfies the workspace MSRV: edition 2024 needs rustc >= 1.85,
-# and the tag's locked deps (solar-*, svm-rs) need 1.88/1.89 (CI-verified).
-FROM rust:1.89-slim AS aderyn-builder
-# The workspace profile uses fat LTO (lto=true, codegen-units=1); that
-# triples compile time for no audit-runtime benefit - override via env.
-ENV CARGO_PROFILE_RELEASE_LTO=off \
-    CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 \
-    CARGO_NET_RETRY=10
-RUN cargo install --locked \
-      --git https://github.com/Cyfrin/aderyn --tag aderyn-v0.6.8 \
-      aderyn \
-    && rm -rf "$CARGO_HOME/git" "$CARGO_HOME/registry" \
-    && aderyn --version
+# NOTE: aderyn is intentionally NOT installed. Upstream (Cyfrin/aderyn)
+# deleted every prebuilt release tarball (as of 2026-11-14 all tags ship
+# only .sha256 files + source) and building it from source here is slow and
+# fragile, so the analyzer is disabled at runtime (source.py defaults
+# AGENTSAFE_ENABLE_ADERYN off). Audits run slither + mythril + heimdall.
+# To re-enable: provision a working `aderyn` binary, set
+# AGENTSAFE_ENABLE_ADERYN=1 at container start, and re-add its smoke check.
 
 FROM python:3.12-slim
 
@@ -53,9 +41,6 @@ RUN pip install --no-cache-dir . \
     && solc-select install 0.4.26 0.5.17 0.6.12 0.7.6 0.8.19 0.8.20 0.8.24 \
     && solc-select use 0.8.19
 
-# Aderyn binary from the source-build stage (see stage 1 rationale above).
-COPY --from=aderyn-builder /usr/local/cargo/bin/aderyn /usr/local/bin/aderyn
-
 # Heimdall (pinned release, computed checksum; re-verify when bumping).
 RUN set -eu \
     && curl -fsSL --retry 3 -o /usr/local/bin/heimdall \
@@ -68,6 +53,6 @@ ENV TASK_STORE=memory \
     TASK_DB_PATH=/tmp/tasks.db
 
 # Smoke-gate the toolchain at build time; a broken image must fail HERE.
-RUN slither --version && myth version && aderyn --version && heimdall --version
+RUN slither --version && myth version && heimdall --version
 
 ENTRYPOINT ["python", "scripts/run_audit.py"]

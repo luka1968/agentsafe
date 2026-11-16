@@ -15,8 +15,11 @@ MCP client ──x402 payment──▶ AgentSafe MCP service  ──workflow_dis
 - **MCP service**: FastMCP server (`src/agentsafe/server.py`). Payment-gated
   via the official x402 SDK (verify-before-execution, settle-after-success).
 - **Audit worker**: `docker-audit.yml` runs the pinned toolchain (slither,
-  aderyn, mythril, heimdall) inside the image built from `Dockerfile`, then
-  uploads `report.json` as an artifact (2-day retention).
+  mythril, heimdall) inside the image built from `Dockerfile`, then
+  uploads `report.json` as an artifact (2-day retention). Aderyn is
+  currently disabled (upstream deleted its prebuilt release assets; the
+  image no longer builds it). To re-enable, provision the binary and set
+  `AGENTSAFE_ENABLE_ADERYN=1` in the container environment.
 - The service and the worker communicate only through GitHub's API; no
   inbound access to the worker is needed.
 

@@ -1,4 +1,11 @@
-"""Verified-source static analysis: Slither + Aderyn.
+"""Verified-source static analysis: Slither (+ optional Aderyn).
+
+Aderyn is DISABLED by default (2026-11-15): upstream (Cyfrin/aderyn) deleted
+every prebuilt release tarball, which broke image builds, so the fleet no
+longer provisions the binary. Set AGENTSAFE_ENABLE_ADERYN=1 (or pass
+aderyn_enabled=True) to run it again when a working `aderyn` is on PATH.
+A disabled tool is simply absent from ToolRun results - it is never reported
+as failed, because it was never attempted.
 
 CLI contract note (aderyn invocation verified against the pinned release
 aderyn-v0.6.8 `aderyn/src/main.rs`; slither flag verified against slither
@@ -30,6 +37,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import time
 from dataclasses import dataclass, field
@@ -50,6 +58,14 @@ from .proc import (
 logger = logging.getLogger("agentSAFE.source")
 
 MAX_SOURCE_TOTAL_BYTES = 5_000_000
+
+# Opt-in switch for aderyn (see module docstring). Truthy values: 1/true/yes/on.
+ADERYN_ENABLE_ENV = "AGENTSAFE_ENABLE_ADERYN"
+_TRUTHY = {"1", "true", "yes", "on"}
+
+
+def _aderyn_enabled_default() -> bool:
+    return os.environ.get(ADERYN_ENABLE_ENV, "").strip().lower() in _TRUTHY
 
 # Documented failure taxonomy (mirrored in schemas.ToolExecution docs).
 CAT_NOT_INSTALLED = "not_installed"
@@ -126,13 +142,16 @@ class SourceAnalysis:
 
 
 class SourceAnalyzer:
-    """Runs Slither and Aderyn over a preserved multi-file source project."""
+    """Runs Slither (and, when enabled, Aderyn) over a preserved multi-file
+    source project. Aderyn is opt-in: disabled by default since upstream
+    removed its prebuilt releases (see module docstring)."""
 
     def __init__(
         self,
         *,
         slither_bin: str = "slither",
         aderyn_bin: str = "aderyn",
+        aderyn_enabled: bool | None = None,
         runner: SubprocessRunner | None = None,
         tool_timeout_seconds: float = 300.0,
         max_output_bytes: int = 2_000_000,
@@ -140,6 +159,14 @@ class SourceAnalyzer:
     ) -> None:
         self._slither = slither_bin
         self._aderyn = aderyn_bin
+        self.aderyn_enabled = (
+            _aderyn_enabled_default() if aderyn_enabled is None else aderyn_enabled
+        )
+        # Tool names this analyzer will actually attempt; reports must never
+        # blame a disabled tool for a failure it did not participate in.
+        self.tools_attempted: tuple[str, ...] = (
+            ("slither", "aderyn") if self.aderyn_enabled else ("slither",)
+        )
         self._runner: SubprocessRunner = runner or DefaultSubprocessRunner()
         self._timeout = tool_timeout_seconds
         self._max_output = max_output_bytes
@@ -189,7 +216,13 @@ class SourceAnalyzer:
             self._materialize(bundle, workspace)
             root = workspace.root
             runs.append(await self._run_slither(root, solc_version))
-            runs.append(await self._run_aderyn(root))
+            if self.aderyn_enabled:
+                runs.append(await self._run_aderyn(root))
+            else:
+                logger.info(
+                    "aderyn disabled (%s unset/false); source analysis runs slither only",
+                    ADERYN_ENABLE_ENV,
+                )
         finally:
             workspace.cleanup()
 

@@ -13,6 +13,7 @@ from agentsafe.analyzers.proc import (
     safe_relpath_str,
 )
 from agentsafe.analyzers.source import (
+    ADERYN_ENABLE_ENV,
     SourceAnalyzer,
     _parse_aderyn,
     _parse_slither,
@@ -21,6 +22,14 @@ from agentsafe.explorer import SourceBundle, SourceFile
 from agentsafe.schemas import Severity
 
 ADDR = "0x" + "ab" * 20
+
+
+@pytest.fixture(autouse=True)
+def _aderyn_opt_in(monkeypatch):
+    """These tests exercise both source tools; production defaults aderyn
+    OFF (upstream deleted its release assets), so opt in for the suite."""
+    monkeypatch.setenv(ADERYN_ENABLE_ENV, "1")
+
 
 SLITHER_OK = {
     "success": True,
@@ -194,6 +203,29 @@ class TestSourceAnalyzer:
         central = next(f for f in result.findings if "centralized" in f.detector_id)
         assert central.severity is Severity.HIGH
         assert central.line_start == 10
+
+    async def test_aderyn_disabled_by_default_runs_slither_only(self, monkeypatch):
+        """Production default: aderyn OFF. A disabled tool is absent from
+        runs (never recorded as failed - it was never attempted)."""
+        monkeypatch.delenv(ADERYN_ENABLE_ENV, raising=False)
+        runner = FakeRunner(_handler(slither=(0, SLITHER_OK), aderyn=(0, ADERYN_OK)))
+        result = await SourceAnalyzer(runner=runner).analyze(_bundle())
+        assert [r.tool for r in result.runs] == ["slither"]
+        assert not result.partial_failure
+        assert not [s for s in runner.specs if s.executable == "aderyn"]
+        assert SourceAnalyzer().tools_attempted == ("slither",)
+
+    async def test_aderyn_explicit_toggle(self):
+        assert SourceAnalyzer(aderyn_enabled=True).tools_attempted == (
+            "slither",
+            "aderyn",
+        )
+        runner = FakeRunner(_handler(slither=(0, SLITHER_OK), aderyn=(0, ADERYN_OK)))
+        result = await SourceAnalyzer(aderyn_enabled=False, runner=runner).analyze(
+            _bundle()
+        )
+        assert [r.tool for r in result.runs] == ["slither"]
+        assert not [s for s in runner.specs if s.executable == "aderyn"]
 
     async def test_files_materialized_with_paths_and_settings(self):
         runner = FakeRunner(_handler(slither=(0, SLITHER_OK), aderyn=(0, ADERYN_OK)))

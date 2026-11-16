@@ -278,7 +278,13 @@ class AuditOrchestrator:
                             )
                     except Exception as exc:
                         errors.append(f"source analysis: {exc}")
-                        tools_failed.extend(["slither", "aderyn"])
+                        # Only blame tools that were actually attempted:
+                        # aderyn is opt-in (disabled by default, see
+                        # analyzers/source.py) and must never be listed as
+                        # failed when it never ran.
+                        tools_failed.extend(
+                            getattr(self._source, "tools_attempted", ("slither", "aderyn"))
+                        )
                         static_status = "unavailable"
                         done("static_analysis", error_code="source_analysis_error", detail=str(exc))
                     else:

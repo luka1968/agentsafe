@@ -33,10 +33,10 @@ jobs:
     # drift under `ubuntu-latest` (a drift is a common cause of flaky
     # container-image builds for a heavy Dockerfile like ours).
     runs-on: ubuntu-24.04
-    # 45 min: the first (uncached) build compiles aderyn from source
-    # (upstream deleted the prebuilt release tarballs; see Dockerfile
-    # stage 1). Later runs hit the gha layer cache and finish fast.
-    timeout-minutes: 45
+    # 30 min: the image no longer compiles aderyn from source (it was pulled
+    # after upstream deleted the prebuilt release tarballs; see Dockerfile).
+    # Later runs hit the gha layer cache and finish fast.
+    timeout-minutes: 30
     env:
       AUDIT_ADDRESS: ${{ inputs.address }}
       AUDIT_TASK_ID: ${{ inputs.task_id }}
@@ -60,7 +60,7 @@ jobs:
           persist-credentials: false
 
       # Free disk before a heavy build: the base image + 8 solc versions +
-      # slither/mythril/aderyn/heimdall can OOM or exhaust the runner disk.
+      # slither/mythril/heimdall can OOM or exhaust the runner disk.
       - name: Free disk space
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc 2>/dev/null || true
