@@ -276,7 +276,22 @@ class Settings(BaseSettings):
     # X402_ASSET + X402_PAY_TO remain the primary (first) entry.
     # Default: Base Sepolia testnet enabled for end-to-end testing with
     # free USDC; mainnet payments require explicit opt-in via ALLOW_MAINNET.
-    X402_NETWORKS_JSON: str = '{"eip155:84532": {"asset": "0x036CbD53842c5426634e7929541eC2318f3dCF7e", "pay_to": "0x03ee35B45382d19b7BDcE1A2B1eD72Aae01c48cc", "price": "$0.01"}}'
+    X402_NETWORKS_JSON: str = (
+        '{"eip155:84532": {"asset": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",'
+        ' "pay_to": "0x03ee35B45382d19b7BDcE1A2B1eD72Aae01c48cc", "price": "$0.01"}}'
+    )
+
+    # --- Creem (hosted card checkout, Merchant of Record) ---
+    # OPTIONAL second payment channel next to x402 (crypto). When enabled,
+    # the web UI advertises a "Pay by card" option that opens Creem's hosted
+    # checkout; the signed webhook (HMAC-SHA256 with CREEM_WEBHOOK_SECRET)
+    # is the only trusted payment confirmation. Nothing here affects the
+    # x402 flow - the two gates are fully independent.
+    CREEM_ENABLED: bool = False
+    CREEM_API_KEY: str = ""
+    CREEM_WEBHOOK_SECRET: str = ""
+    CREEM_PRODUCT_ID: str = ""  # e.g. prod_2xZ2Scxz7R40EMZDe1xFh3
+    CREEM_API_BASE: str = "https://api.creem.io"  # test: https://test-api.creem.io
 
     # Known x402 networks: testnet first; mainnet is opt-in only.
     X402_NETWORK_TESTNET: ClassVar[str] = "eip155:84532"  # Base Sepolia
@@ -629,6 +644,22 @@ def validate_runtime_settings(
             settings.payment_network_configs()
         except SettingsError as exc:
             errors.append(f"payment network configuration: {exc}")
+
+    # Creem hosted checkout - independent of the x402 gate; optional unless
+    # enabled. When enabled, all three credentials are required (fail-closed)
+    # so a half-configured deployment can never advertise a payment button
+    # that silently swallows a customer's money.
+    if settings.CREEM_ENABLED:
+        for label, value in (
+            ("CREEM_API_KEY", settings.CREEM_API_KEY),
+            ("CREEM_WEBHOOK_SECRET", settings.CREEM_WEBHOOK_SECRET),
+            ("CREEM_PRODUCT_ID", settings.CREEM_PRODUCT_ID),
+        ):
+            if not value.strip():
+                errors.append(f"CREEM_ENABLED=true requires {label}")
+        base = settings.CREEM_API_BASE.strip()
+        if base and not base.startswith(("https://", "http://")):
+            errors.append("CREEM_API_BASE must be an http(s) URL")
 
     if errors:
         raise SettingsError("Invalid configuration:\n- " + "\n- ".join(errors))

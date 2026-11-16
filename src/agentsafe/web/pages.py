@@ -501,6 +501,15 @@ def _build_index_html() -> str:
           + "<br><span class='text-xs text-zinc-500'>pay to: <code class='break-all'>" + esc(payTo) + "</code></span>"
           + "</button>");
       }});
+      // Card checkout (Creem, Merchant of Record): rendered only when the
+      // backend advertises the channel (GET /api/pay/creem/config).
+      if (window.__creemEnabled) {{
+        lines.push("<button id='creem-pay' class='creem-opt mt-2 w-full rounded-lg border border-zinc-700 bg-zinc-900 px-4 py-3 text-left text-sm hover:border-cyan-400'>"
+          + "<span class='font-semibold text-cyan-300'>Pay by card</span>"
+          + " <span class='text-zinc-300'>&mdash; card / Apple Pay / Google Pay</span>"
+          + "<br><span class='text-xs text-zinc-500'>Hosted checkout by Creem (Merchant of Record). No crypto wallet needed.</span>"
+          + "</button>");
+      }}
       lines.push("<p class='mt-3 text-xs text-zinc-500'>Your wallet will open and switch to that network, then ask you to approve the payment. "
         + "Prefer the terminal? Run the curl command below with an x402-enabled client:</p>");
       var curlCmd = "curl -X POST " + window.location.origin + REST
@@ -511,6 +520,8 @@ def _build_index_html() -> str:
       flow.querySelectorAll("button.chain-opt").forEach(function (b) {{
         b.addEventListener("click", function () {{ clickFn(b, accs, a); }});
       }});
+      var creemBtn = document.getElementById("creem-pay");
+      if (creemBtn) creemBtn.addEventListener("click", function () {{ creemPay(a); }});
     }}
     // Click handler for one network choice: explicit payment summary first
     // (amount / token / recipient / network), then the wallet dance, then the
@@ -788,6 +799,61 @@ def _build_index_html() -> str:
       if (em) body.email = em;
       return body;
     }}
+    // Card checkout via Creem (Merchant of Record): creates an UNPAID task
+    // plus a hosted checkout session, then redirects the browser there.
+    // The signed webhook is the only thing that marks the task paid; the
+    // return flow polls /api/pay/creem/dispatch until the audit is released.
+    async function creemPay(a) {{
+      if (paying) return;
+      paying = true;
+      showState(PS.SUBMITTED, "<p class='text-zinc-300'>Opening the card checkout...</p>");
+      try {{
+        var res = await fetch("/api/pay/creem/checkout", {{
+          method: "POST",
+          headers: {{"content-type": "application/json"}},
+          body: JSON.stringify(auditBody(a))
+        }});
+        var d = await res.json().catch(function () {{ return {{}}; }});
+        if (res.ok && d.task_id && d.checkout_url) {{
+          persistTask(d.task_id, a, "creem");
+          window.location.href = d.checkout_url;
+          return;
+        }}
+        var msg = (d && (d.error_description || d.error)) || ("HTTP " + res.status);
+        show("<p class='text-red-400'>Card checkout unavailable: " + esc(msg) + "</p>");
+      }} catch (err) {{
+        show("<p class='text-red-400'>Request failed: " + esc((err && err.message) || String(err)) + "</p>");
+      }} finally {{
+        paying = false;
+      }}
+    }}
+    // Creem return flow: the hosted checkout redirects back to
+    // /?creem=<task_id>. The webhook may still be in flight, so the
+    // dispatch call is polled (402 payment_pending -> retry) until the
+    // audit is released; from there the normal report probe takes over.
+    async function creemDispatchLoop(tid) {{
+      var attempts = 0, maxAttempts = 45;
+      showState(PS.SUBMITTED, "<p class='text-zinc-300'>Payment received - confirming with the payment provider...</p>");
+      while (attempts++ < maxAttempts) {{
+        var res = await fetch("/api/pay/creem/dispatch", {{
+          method: "POST",
+          headers: {{"content-type": "application/json"}},
+          body: JSON.stringify({{ task_id: tid }})
+        }}).catch(function () {{ return null; }});
+        if (res && res.ok) {{
+          persistTask(tid, "", "creem");
+          show(fmtTask(tid) + "<p class='text-zinc-300'>Audit dispatched. The report will appear here when ready.</p>");
+          startReportProbe(tid);
+          return;
+        }}
+        if (res && res.status === 404) {{
+          show("<p class='text-red-400'>Unknown task id in the return URL. Start a new audit from the form above.</p>");
+          return;
+        }}
+        await new Promise(function (r) {{ setTimeout(r, 4000); }});
+      }}
+      show("<p class='text-yellow-300'>Still waiting for payment confirmation. Keep this tab open - it retries automatically, or re-open the link from your Creem receipt email.</p>");
+    }}
     start.addEventListener("click", async function () {{
       var a = (addr.value || "").trim();
       var em = (email && email.value || "").trim();
@@ -836,6 +902,25 @@ def _build_index_html() -> str:
         start.disabled = false; start.textContent = "Pay USDC to audit";
       }}
     }});
+    // Page-load hooks (order matters: the card button flag first, then the
+    // Creem return flow - both are one-shot, never re-entered).
+    (function () {{
+      window.__creemEnabled = false;
+      try {{
+        fetch("/api/pay/creem/config").then(function (r) {{ return r.json(); }}).then(function (d) {{
+          window.__creemEnabled = !!(d && d.enabled);
+        }}).catch(function () {{ window.__creemEnabled = false; }});
+      }} catch (e) {{ window.__creemEnabled = false; }}
+    }})();
+    (function () {{
+      try {{
+        var creemTid = new URLSearchParams(window.location.search).get("creem") || "";
+        if (creemTid) {{
+          history.replaceState(null, "", window.location.pathname);
+          creemDispatchLoop(creemTid);
+        }}
+      }} catch (e) {{ /* malformed URL; ignore */ }}
+    }})();
   }})();
   </script>
 

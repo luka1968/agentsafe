@@ -34,6 +34,7 @@ See `.env.example` for the full annotated list. Groups:
 | LLM | `LLM_PROVIDERS_JSON`, `LLM_GLOBAL_RPM`, … | JSON list of providers |
 | GitHub | `GITHUB_TOKEN`, `GITHUB_REPO`, `GITHUB_WORKFLOW_FILE`, `GITHUB_REF` | token needs `workflow` scope to dispatch |
 | Payments | `PAYMENTS_ENABLED`, `X402_NETWORK`, `X402_PAY_TO`, `X402_SDK_VERSION`, `X402_FACILITATOR_URL`, `X402_PRICE`, `X402_ASSET`, `X402_MAX_TIMEOUT_SECONDS`, `X402_ALLOW_MAINNET` | see `.env.example` warnings; mainnet is opt-in only |
+| Card payments (optional, Creem) | `CREEM_ENABLED`, `CREEM_API_KEY`, `CREEM_WEBHOOK_SECRET`, `CREEM_PRODUCT_ID`, `CREEM_API_BASE` | independent of x402; when `CREEM_ENABLED=true` all three credentials are required. Register the webhook URL `<base>/api/pay/creem/webhook` in the Creem dashboard (Developers → Webhooks); only the signed webhook confirms a payment |
 | Store | `TASK_STORE` (`sqlite`/`memory`), `TASK_DB_PATH` | use `sqlite` in production; `memory` loses task state on restart |
 
 **Never commit credentials.** Locally they live in `.env` (gitignored). On a

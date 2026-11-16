@@ -165,6 +165,7 @@ class TestStartupValidation:
             X402_SDK_VERSION="2.25.0",
             X402_PAY_TO="0x" + "ab" * 20,
             X402_NETWORK="eip155:84532",  # Base Sepolia testnet
+            X402_NETWORKS_JSON="",  # blank: no EXTRA networks beyond the primary
         )
         validate_runtime_settings(ok)
 

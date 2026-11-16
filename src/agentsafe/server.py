@@ -48,6 +48,18 @@ from agentsafe.github_client import (
 )
 from agentsafe.metrics import get_metrics
 from agentsafe import notify
+from agentsafe.payment.creem import (
+    CreemClient,
+    CreemError,
+    checkout_amount as creem_checkout_amount,
+    checkout_customer_email as creem_checkout_customer_email,
+    checkout_is_completed as creem_checkout_is_completed,
+    checkout_order_id as creem_checkout_order_id,
+    checkout_product_id as creem_checkout_product_id,
+    checkout_request_id as creem_checkout_request_id,
+    parse_event as creem_parse_event,
+    verify_signature as creem_verify_signature,
+)
 from agentsafe.payment.x402_adapter import (
     StarletteRequestAdapter,
     VerifiedPayment,
@@ -661,6 +673,301 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
                 "/api/audit": "x402 REST audit dispatch (paid, see /openapi.json)",
             },
         }
+
+    # ---------------------------------------------------- Creem (card payments)
+    # OPTIONAL second payment channel (hosted card checkout via creem.io).
+    # Independent of the x402 gate: PAYMENTS_ENABLED toggles crypto,
+    # CREEM_ENABLED toggles card. The signed webhook is the ONLY trusted
+    # payment confirmation; the browser return redirect never grants
+    # anything (the dispatch route re-checks the store-bound paid flag).
+    creem_client = None
+    if settings.CREEM_ENABLED:
+        creem_client = CreemClient(
+            settings.CREEM_API_KEY, api_base=settings.CREEM_API_BASE
+        )
+
+    @app.custom_route("/api/pay/creem/config", methods=["GET"])
+    async def _api_creem_config(request: Request) -> Response:
+        """Whether the card channel is available (drives the web UI button;
+        returns no secrets)."""
+        return JSONResponse(
+            {"ok": True, "enabled": bool(creem_client)}, status_code=200
+        )
+
+    @app.custom_route("/api/pay/creem/checkout", methods=["POST"])
+    async def _api_creem_checkout(request: Request) -> Response:
+        """Create a Creem hosted-checkout session bound to a fresh task.
+
+        Body: {"address": "0x...", "email": "optional@example.com"}. The
+        task is created UNPAID; only the signed webhook marks it paid. The
+        Creem session carries request_id = task_id so the webhook can
+        correlate the order without any server-side checkout state.
+        """
+        met = get_metrics()
+        met.incr("http_requests")
+        if creem_client is None:
+            return JSONResponse(
+                {"ok": False, "error_code": "creem_disabled",
+                 "error": "card payments are not enabled on this deployment"},
+                status_code=503,
+            )
+        client_key = request.client.host if request.client else "unknown"
+        if not limiter.allow(client_key):
+            met.incr("http_rate_limited")
+            return JSONResponse(
+                {"ok": False, "error_code": "rate_limited",
+                 "error": "too many requests; retry shortly"},
+                status_code=429,
+            )
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            met.incr("http_bad_json")
+            return JSONResponse(
+                {"ok": False, "error_code": "bad_json",
+                 "error": "request body must be JSON"},
+                status_code=400,
+            )
+        if not isinstance(body, dict):
+            return JSONResponse(
+                {"ok": False, "error_code": "bad_json",
+                 "error": "request body must be a JSON object"},
+                status_code=400,
+            )
+        try:
+            addr = normalize_address(str(body.get("address", "")))
+            email = _clean_email(body.get("email"))
+        except ValueError as exc:
+            return JSONResponse(
+                {"ok": False, "error_code": "invalid_address_or_email",
+                 "error": str(exc)},
+                status_code=400,
+            )
+        task = task_store.create_task(addr, email=email)
+        base = _base_url_from_request(request)
+        try:
+            session = await creem_client.create_checkout(
+                product_id=settings.CREEM_PRODUCT_ID.strip(),
+                request_id=task.task_id,
+                success_url=f"{base}/?creem={task.task_id}",
+                metadata={"address": addr, **({"email": email} if email else {})},
+            )
+        except CreemError:
+            task_store.set_state(task.task_id, TaskState.FAILED,
+                                 error_code="creem_checkout_failed")
+            met.incr("creem_checkout_failed")
+            logger.exception("creem checkout creation failed task=%s", task.task_id)
+            return JSONResponse(
+                {"ok": False, "error_code": "creem_upstream",
+                 "error": "checkout could not be created; try again shortly"},
+                status_code=502,
+            )
+        met.incr("creem_checkout_created")
+        return JSONResponse(
+            {"ok": True, "task_id": task.task_id,
+             "checkout_url": session["checkout_url"]},
+            status_code=201,
+        )
+
+    @app.custom_route("/api/pay/creem/webhook", methods=["POST"])
+    async def _api_creem_webhook(request: Request) -> Response:
+        """Creem webhook receiver (fail-closed on signature).
+
+        checkout.completed binds the order to its task (request_id) and
+        marks it paid; refund.created is logged for manual entitlement
+        review (see REFUND_POLICY.md). Unknown event types are acked 200 -
+        Creem treats any 2xx as delivered and retries otherwise.
+        """
+        met = get_metrics()
+        met.incr("http_requests")
+        if not settings.CREEM_ENABLED:
+            return JSONResponse(
+                {"ok": False, "error_code": "creem_disabled",
+                 "error": "card payments are not enabled"},
+                status_code=503,
+            )
+        raw = await request.body()
+        sig = request.headers.get("creem-signature") or ""
+        if not creem_verify_signature(raw, sig, settings.CREEM_WEBHOOK_SECRET):
+            met.incr("creem_webhook_bad_signature")
+            logger.warning("creem webhook rejected: signature mismatch")
+            return JSONResponse(
+                {"ok": False, "error_code": "bad_signature",
+                 "error": "signature verification failed"},
+                status_code=400,
+            )
+        try:
+            event = creem_parse_event(raw)
+        except ValueError as exc:
+            met.incr("creem_webhook_bad_payload")
+            return JSONResponse(
+                {"ok": False, "error_code": "bad_payload", "error": str(exc)},
+                status_code=400,
+            )
+        event_type = str(event.get("eventType", ""))
+        obj = event.get("object") or {}
+        if event_type == "checkout.completed":
+            await _creem_bind_checkout(obj, met)
+        elif event_type == "refund.created":
+            met.incr("creem_refund_seen")
+            logger.info(
+                "creem refund received (order=%s); entitlement review per REFUND_POLICY.md",
+                creem_checkout_order_id(obj) or "?",
+            )
+        else:
+            logger.info("creem webhook ignored event=%s", event_type)
+        return JSONResponse({"ok": True}, status_code=200)
+
+    async def _creem_bind_checkout(obj: dict[str, Any], met: Any) -> None:
+        """Bind a completed Creem order to its task (idempotent).
+
+        Idempotency key: the ORDER id (creem:<order_id> payment ref) - the
+        same event may be delivered twice and a manual dashboard resend
+        carries a NEW event id with the SAME order.
+        """
+        task_id = creem_checkout_request_id(obj) or ""
+        order_id = creem_checkout_order_id(obj) or ""
+        product_id = creem_checkout_product_id(obj) or ""
+        if not task_id or not order_id:
+            met.incr("creem_webhook_unbindable")
+            logger.warning("creem checkout.completed missing request_id/order")
+            return
+        if product_id.strip() != settings.CREEM_PRODUCT_ID.strip():
+            met.incr("creem_webhook_product_mismatch")
+            logger.warning("creem webhook product mismatch: %s", product_id)
+            return
+        task = task_store.get(task_id)
+        if task is None:
+            met.incr("creem_webhook_unknown_task")
+            logger.warning("creem webhook for unknown task %s", task_id)
+            return
+        if task.paid:
+            met.incr("creem_webhook_duplicate")
+            return
+        if not creem_checkout_is_completed(obj):
+            met.incr("creem_webhook_not_completed")
+            logger.warning("creem checkout not completed for task %s", task_id)
+            return
+        ref = f"creem:{order_id}"
+        # Postgres store: the payments table is authoritative for the task's
+        # `paid` derivation, so the order must land there AND be linked to
+        # the task - otherwise the report gate would 402 a paying customer.
+        if hasattr(task_store, "reserve_payment"):
+            row = task_store.get_payment_by_ref(ref)
+            if row is None:
+                try:
+                    row = task_store.reserve_payment(
+                        ref,
+                        payer=creem_checkout_customer_email(obj)
+                        or "creem-customer",
+                        service_type="audit",
+                        resource_id=task_id,
+                        network="creem",
+                        chain_id=None,
+                        token_contract="0x" + "0" * 40,
+                        token_decimals=2,
+                        amount=creem_checkout_amount(obj),
+                        recipient=settings.X402_PAY_TO or "",
+                        scheme="creem",
+                        protocol_version=2,
+                    )
+                except Exception:  # noqa: BLE001
+                    met.incr("creem_webhook_bind_failed")
+                    logger.exception("creem reserve_payment failed task=%s", task_id)
+                    return
+            if row is not None and hasattr(task_store, "link_payment_task"):
+                task_store.link_payment_task(row["payment_id"], task_id)
+        task_store.mark_paid(task_id, ref)
+        cust_email = creem_checkout_customer_email(obj)
+        if cust_email and not task.email:
+            try:
+                task_store.set_email(task_id, cust_email)
+            except Exception:  # noqa: BLE001
+                logger.exception("creem webhook set_email failed task=%s", task_id)
+        met.incr("creem_webhook_paid")
+        logger.info("creem checkout bound: task=%s order=%s", task_id, order_id)
+
+    @app.custom_route("/api/pay/creem/dispatch", methods=["POST"])
+    async def _api_creem_dispatch(request: Request) -> Response:
+        """Dispatch a Creem-paid audit. Called by the browser on return from
+        the hosted checkout - and safe to retry while the webhook is still
+        in flight (402 payment_pending until it lands). Dispatching twice is
+        impossible: once run_id is linked the route is a no-op."""
+        met = get_metrics()
+        met.incr("http_requests")
+        if creem_client is None:
+            return JSONResponse(
+                {"ok": False, "error_code": "creem_disabled",
+                 "error": "card payments are not enabled on this deployment"},
+                status_code=503,
+            )
+        client_key = request.client.host if request.client else "unknown"
+        if not limiter.allow(client_key):
+            met.incr("http_rate_limited")
+            return JSONResponse(
+                {"ok": False, "error_code": "rate_limited",
+                 "error": "too many requests; retry shortly"},
+                status_code=429,
+            )
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            met.incr("http_bad_json")
+            return JSONResponse(
+                {"ok": False, "error_code": "bad_json",
+                 "error": "request body must be JSON"},
+                status_code=400,
+            )
+        task_id = str((body or {}).get("task_id", "")).strip()
+        if not task_id or len(task_id) > 64:
+            return JSONResponse(
+                {"ok": False, "error_code": "invalid_task_id",
+                 "error": "task_id must be 1..64 chars"},
+                status_code=400,
+            )
+        task = task_store.get(task_id)
+        if task is None:
+            return JSONResponse(
+                {"ok": False, "error_code": "unknown_task",
+                 "error": "no such task (it may have expired or never existed)"},
+                status_code=404,
+            )
+        if not task.paid:
+            # Webhook not processed yet (or payment really missing). The
+            # browser polls this; it must stay a soft, retryable answer.
+            met.incr("creem_dispatch_pending")
+            return JSONResponse(
+                {"ok": False, "error_code": "payment_pending",
+                 "error": "payment not confirmed yet; retry in a few seconds"},
+                status_code=402,
+            )
+        if task.run_id:
+            return JSONResponse(
+                {"ok": True, "task_id": task_id, "run_id": task.run_id,
+                 "state": task.state.value},
+                status_code=200,
+            )
+        task_store.set_state(task_id, TaskState.QUEUED)
+        try:
+            run_id = await gh.trigger_workflow(task.address or "", task_id)
+        except GitHubClientError:
+            task_store.set_state(task_id, TaskState.FAILED,
+                                 error_code="dispatch_failed")
+            met.incr("creem_dispatch_failed")
+            logger.exception("creem dispatch failed task=%s", task_id)
+            return JSONResponse(
+                {"ok": False, "error_code": "dispatch_failed",
+                 "error": "audit dispatch failed; contact support with the task id"},
+                status_code=502,
+            )
+        task_store.link_run(task_id, run_id)
+        task_store.set_state(task_id, TaskState.RUNNING)
+        met.incr("creem_audit_dispatched")
+        return JSONResponse(
+            {"ok": True, "task_id": task_id, "run_id": run_id,
+             "state": TaskState.RUNNING.value},
+            status_code=202,
+        )
 
     # ------------------------------------------------------- public web pages
     # Served by the HTTP transport (http_app): the legal Markdown files are
