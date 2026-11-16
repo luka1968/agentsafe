@@ -223,9 +223,12 @@ class TestStartupValidation:
             validate_runtime_settings(s)
 
     def test_multichain_networks_json_blank_is_empty(self):
+        # Explicitly pass empty string to override the code default; this
+        # test documents that blank NETWORKS_JSON → {} (empty dict).
         s = _settings(PAYMENTS_ENABLED=True, X402_SDK_VERSION="2.25.0",
                       X402_PAY_TO="0x" + "ab" * 20,
-                      X402_NETWORK="eip155:84532")
+                      X402_NETWORK="eip155:84532",
+                      X402_NETWORKS_JSON="")
         assert s.multichain_networks == {}
 
     def test_multichain_invalid_json_rejected(self):

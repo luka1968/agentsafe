@@ -181,6 +181,8 @@ class TestStartupCapabilityCheck:
 
 class TestSettingsNetworkConfigs:
     def _base(self, **kw) -> Settings:
+        # Explicitly set blank NETWORKS_JSON to override the code default;
+        # these tests use testnet as primary with no extra networks.
         base = {
             "INFURA_ETH_ENDPOINT": "https://rpc.test",
             "ETHERSCAN_API_KEY": "k",
@@ -193,6 +195,7 @@ class TestSettingsNetworkConfigs:
             "X402_PAY_TO": PAY_TO,
             "X402_FACILITATOR_URL": FACILITATOR,
             "X402_SDK_VERSION": "2.25.0",
+            "X402_NETWORKS_JSON": "",
         }
         base.update(kw)
         return Settings(_env_file=None, **base)
@@ -257,6 +260,8 @@ class TestProductionControls:
     """PROMPT 8: production kill-switch / environment-separation controls."""
 
     def _base(self, **kw) -> Settings:
+        # Explicitly set blank NETWORKS_JSON to override the code default;
+        # these tests use testnet as primary with no extra networks.
         base = {
             "INFURA_ETH_ENDPOINT": "https://rpc.test",
             "ETHERSCAN_API_KEY": "k",
@@ -269,6 +274,7 @@ class TestProductionControls:
             "X402_PAY_TO": PAY_TO,
             "X402_FACILITATOR_URL": FACILITATOR,
             "X402_SDK_VERSION": "2.25.0",
+            "X402_NETWORKS_JSON": "",
         }
         base.update(kw)
         return Settings(_env_file=None, **base)

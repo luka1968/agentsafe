@@ -274,7 +274,9 @@ class Settings(BaseSettings):
     # When set, the server advertises an accepts list with one entry per
     # chain so x402 clients can pay on any listed network. X402_NETWORK +
     # X402_ASSET + X402_PAY_TO remain the primary (first) entry.
-    X402_NETWORKS_JSON: str = ""
+    # Default: Base Sepolia testnet enabled for end-to-end testing with
+    # free USDC; mainnet payments require explicit opt-in via ALLOW_MAINNET.
+    X402_NETWORKS_JSON: str = '{"eip155:84532": {"asset": "0x036CbD53842c5426634e7929541eC2318f3dCF7e", "pay_to": "0x03ee35B45382d19b7BDcE1A2B1eD72Aae01c48cc", "price": "$0.01"}}'
 
     # Known x402 networks: testnet first; mainnet is opt-in only.
     X402_NETWORK_TESTNET: ClassVar[str] = "eip155:84532"  # Base Sepolia

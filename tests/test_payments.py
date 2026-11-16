@@ -66,6 +66,8 @@ def _mock_source(lines: int = SOURCE_LINES) -> None:
 
 
 def _settings(**kw) -> Settings:
+    # Explicitly set blank NETWORKS_JSON to override the code default;
+    # these tests use testnet as primary with no extra networks.
     base = {
         "INFURA_ETH_ENDPOINT": RPC,
         "ETHERSCAN_API_KEY": "k",
@@ -90,6 +92,7 @@ def _settings(**kw) -> Settings:
         "X402_SDK_VERSION": "2.25.0",
         "X402_FACILITATOR_URL": FAC,
         "X402_PRICE": "$0.01",
+        "X402_NETWORKS_JSON": "",
     }
     base.update(kw)
     return Settings(_env_file=None, **base)
