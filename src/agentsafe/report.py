@@ -266,6 +266,7 @@ def build_report(
     execution_time_seconds: float,
     tool_executions: Sequence[ToolExecution] = (),
     static_analysis_status: Literal["full", "partial", "unavailable", "skipped"] = "skipped",
+    audit_state: Literal["complete", "partial", "failed"] = "complete",
     compiler_version: str = "",
     analyzed_files: Sequence[str] = (),
     invariant_checks: Sequence[dict[str, Any]] = (),
@@ -297,4 +298,14 @@ def build_report(
         targeted_test_results=list(targeted_test_results),
     )
     report.summary.static_analysis_status = static_analysis_status
+    # Never label a degraded audit complete: even if a caller forgets to pass
+    # the explicit state, any failed engine, failed stage or unavailable
+    # static analysis demotes the report to partial.
+    if audit_state == "complete" and (
+        static_analysis_status in ("partial", "unavailable")
+        or tools_failed
+        or errors
+    ):
+        audit_state = "partial"
+    report.summary.audit_state = audit_state
     return report

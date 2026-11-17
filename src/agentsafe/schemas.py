@@ -352,6 +352,14 @@ class ReportSummary(BaseModel):
     #   unavailable - the static-analysis stage itself errored out
     #   skipped     - no verified source (closed-source path)
     static_analysis_status: Literal["full", "partial", "unavailable", "skipped"] = "skipped"
+    # Explicit AUDIT COMPLETION state. Never inferred from the mere existence
+    # of a report - a produced report can still be partial:
+    #   complete - every requested engine ran and every stage finished;
+    #   partial  - a report was produced but some engines/agents/stages
+    #              failed or were unavailable; missing analysis is NOT
+    #              evidence of safety;
+    #   failed   - no usable report was produced (the audit aborted).
+    audit_state: Literal["complete", "partial", "failed"] = "complete"
 
 
 class ToolExecution(BaseModel):

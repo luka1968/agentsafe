@@ -532,9 +532,25 @@ class AuditOrchestrator:
                         material.invariants = stage7.get("invariants", [])
                     # Stage 6: dynamic specialist scheduling — classify,
                     # select, bounded-concurrency run, focus, validate.
+                    sres = None
                     if self._scheduler is not None:
-                        sres = await self._scheduler.run(
-                            budget, material, validation=self._validation)
+                        # Fault isolation: the scheduler already isolates each
+                        # agent, but a scheduler-LEVEL failure must not abort
+                        # the audit - specialist depth is optional.
+                        try:
+                            sres = await self._scheduler.run(
+                                budget, material, validation=self._validation)
+                        except Exception as exc:  # noqa: BLE001 - never block the report
+                            errors.append(f"specialist scheduler: {exc}")
+                            logger.exception(
+                                "specialist scheduler failed; continuing without "
+                                "agent findings")
+                            limitations.append(
+                                "incomplete detection: the specialist scheduler "
+                                "failed as a whole and produced no agent findings; "
+                                "the result is NOT a clean bill of health for "
+                                "agent-covered dimensions")
+                    if sres is not None:
                         findings.extend(sres.candidates)
                         validated_findings = sres.validated
                         errors.extend(sres.errors)
@@ -572,7 +588,7 @@ class AuditOrchestrator:
                             # validated findings replace their candidate seeds
                             # (deduped by id downstream); expose contribution
                             pass
-                    else:
+                    elif self._scheduler is None:
                         # legacy path (no scheduler wired)
                         for agent in self._agents:
                             try:
@@ -651,27 +667,42 @@ class AuditOrchestrator:
                                     kb_evidence.append(h)
                     except Exception:
                         pass  # KB is advisory; validation proceeds without it
-                if llm_findings or tool_findings:
-                    llm_out = self._validation.validate(
-                        llm_findings,
-                        tool_findings,
-                        validation_segments,
-                        pseudo,
-                        kb_evidence,
-                    )
-                    tool_out = self._validation.validate_tools(
-                        tool_findings, llm_out.findings, validation_segments, pseudo
-                    )
-                    validated = {
-                        id(f): nf
-                        for f, nf in zip(llm_findings, llm_out.findings, strict=True)
-                    }
-                    findings = [validated.get(id(f), f) for f in findings]
-                    tool_final = list(tool_out.findings)
-                    done("cross_validation", detail=llm_out.detail())
-                else:
+                try:
+                    if llm_findings or tool_findings:
+                        llm_out = self._validation.validate(
+                            llm_findings,
+                            tool_findings,
+                            validation_segments,
+                            pseudo,
+                            kb_evidence,
+                        )
+                        tool_out = self._validation.validate_tools(
+                            tool_findings, llm_out.findings, validation_segments, pseudo
+                        )
+                        validated = {
+                            id(f): nf
+                            for f, nf in zip(llm_findings, llm_out.findings, strict=True)
+                        }
+                        findings = [validated.get(id(f), f) for f in findings]
+                        tool_final = list(tool_out.findings)
+                        done("cross_validation", detail=llm_out.detail())
+                    else:
+                        tool_final = list(tool_findings)
+                        skip("cross_validation", "no findings to validate")
+                except Exception as exc:  # noqa: BLE001 - a validator crash must not destroy the report
+                    # Keep every finding with its PRE-validation status and say
+                    # so plainly: an unvalidated hypothesis must never be
+                    # presented as evidence-checked.
+                    errors.append(f"cross validation: {exc}")
+                    logger.exception(
+                        "validation layer failed; keeping unvalidated findings")
+                    limitations.append(
+                        "validation layer failed: findings are reported with "
+                        "their pre-validation status and have NOT been "
+                        "evidence-checked - treat them as hypotheses")
                     tool_final = list(tool_findings)
-                    skip("cross_validation", "no findings to validate")
+                    done("cross_validation", error_code="validation_error",
+                         detail=str(exc))
 
                 # -- 8. severity assessment (documented rubric) -----------------
                 start("severity_assessment")
@@ -706,27 +737,76 @@ class AuditOrchestrator:
                         f"{agg.get('validated')} validated; "
                         f"{agg.get('total_llm_calls')} LLM calls"
                     )
-                final = report_mod.build_report(
-                    address=addr,
-                    task_id=task_id,
-                    is_verified_source=is_verified,
-                    tool_findings=tool_final,
-                    llm_findings=findings,
-                    tools_executed=tools_executed,
-                    tools_failed=tools_failed,
-                    tool_versions=tool_versions,
-                    tool_executions=tool_executions,
-                    static_analysis_status=static_status,
-                    compiler_version=(bundle.compiler_version if bundle is not None else ""),
-                    analyzed_files=([sf.path for sf in bundle.files] if bundle is not None else ()),
-                    llm_usage=llm_usage,
-                    limitations=limitations,
-                    errors=errors,
-                    execution_time_seconds=self._clock() - started,
-                    invariant_checks=stage7.get("invariants", []),
-                    attack_paths=stage7.get("paths", []),
-                    targeted_test_results=stage7.get("targeted_tests", []),
-                )
+                # Explicit audit state: a report is "complete" only when every
+                # engine and agent that was expected to run actually produced
+                # results. Anything less is "partial" and is labeled as such
+                # in the report body - never silently presented as clean.
+                agents_failed_n = 0
+                if scheduler_meta:
+                    agents_failed_n = int(
+                        scheduler_meta.get("aggregate", {}).get("agents_failed", 0) or 0
+                    )
+                audit_state = "complete"
+                if (
+                    static_status in ("partial", "unavailable")
+                    or tools_failed
+                    or errors
+                    or agents_failed_n
+                ):
+                    audit_state = "partial"
+                    limitations.append(
+                        "audit state: PARTIAL - one or more analysis engines, "
+                        "specialists or stages failed or were unavailable; this "
+                        "report covers only the analysis that actually ran and "
+                        "missing checks are NOT evidence of safety"
+                    )
+                # Report assembly is a pure, deterministic fold over results
+                # already in memory: retry it a couple of times so a transient
+                # modelling/validation hiccup never throws the whole audit
+                # away. Rendering to HTML/MD/PDF happens later, per request,
+                # from the persisted report.json - so a render bug is also
+                # retryable without re-running any analysis stage.
+                final = None
+                build_error: Exception | None = None
+                for attempt in range(1, 3):
+                    try:
+                        final = report_mod.build_report(
+                            address=addr,
+                            task_id=task_id,
+                            is_verified_source=is_verified,
+                            tool_findings=tool_final,
+                            llm_findings=findings,
+                            tools_executed=tools_executed,
+                            tools_failed=tools_failed,
+                            tool_versions=tool_versions,
+                            tool_executions=tool_executions,
+                            static_analysis_status=static_status,
+                            audit_state=audit_state,
+                            compiler_version=(
+                                bundle.compiler_version if bundle is not None else ""),
+                            analyzed_files=(
+                                [sf.path for sf in bundle.files]
+                                if bundle is not None else ()),
+                            llm_usage=llm_usage,
+                            limitations=limitations,
+                            errors=errors,
+                            execution_time_seconds=self._clock() - started,
+                            invariant_checks=stage7.get("invariants", []),
+                            attack_paths=stage7.get("paths", []),
+                            targeted_test_results=stage7.get("targeted_tests", []),
+                        )
+                        break
+                    except Exception as exc:  # noqa: BLE001 - retried, then surfaced
+                        build_error = exc
+                        logger.exception(
+                            "report generation failed (attempt %d/2)", attempt)
+                if final is None:
+                    done("merge_report", error_code="report_generation_failed",
+                         detail=str(build_error))
+                    raise OrchestratorError(
+                        f"report_generation_failed: {build_error}",
+                        error_code="report_generation_failed",
+                    )
                 done("merge_report")
                 return final
 

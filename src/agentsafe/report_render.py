@@ -191,8 +191,38 @@ def render_html(report: AuditReport) -> str:
         f"<tr><td class='k'>Report ID</td><td class='mono'>{_esc(report.report_id or report.task_id or 'n/a')}</td></tr>"  # noqa: E501
         "<tr><td class='k'>Assessment status</td><td>"
         f"<span class='badge tone-{_esc(status['tone'])}'>{_esc(status['label'])}</span>"
-        "</td></tr></table></header>"
+        "</td></tr>"
+        "<tr><td class='k'>Analysis coverage</td><td>"
+        f"<span class='badge tone-{'warning' if s.audit_state != 'complete' else 'clear'}'>"
+        f"{_esc(s.audit_state)}</span></td></tr>"
+        "</table></header>"
     )
+
+    # ---- explicit completion state -------------------------------------
+    # A produced report is not automatically a complete one. When the audit
+    # ran degraded (engine/agent/stage failures) this banner names exactly
+    # what is missing - absence of findings must never read as safety.
+    if s.audit_state != "complete":
+        missing: list[str] = []
+        if s.tools_failed:
+            missing.append("engines unavailable: " + ", ".join(s.tools_failed))
+        if s.static_analysis_status in ("partial", "unavailable"):
+            missing.append(f"static analysis: {s.static_analysis_status}")
+        missing.extend(
+            lim for lim in report.limitations if lim.startswith("incomplete detection")
+        )
+        if not missing:
+            missing.append("see the limitations section for the missing analysis")
+        parts.append(
+            '<div class="card" style="border:1px solid #f59e0b;background:#451a03">'
+            '<b style="color:#fbbf24">PARTIAL ASSESSMENT &mdash; analysis incomplete</b>'
+            '<p style="margin:6px 0 0">This report covers only the analysis that '
+            "actually ran. Missing engines, agents or stages mean that the "
+            "absence of a finding for those areas is <b>not</b> evidence of "
+            "safety.</p><ul>"
+            + "".join(f"<li>{_esc(m)}</li>" for m in missing)
+            + "</ul></div>"
+        )
 
     # ---- executive summary ----
     parts.append("<h2>1. Executive summary</h2>")
@@ -486,8 +516,28 @@ def render_markdown(report: AuditReport) -> str:
     parts.append(f"- Task ID: `{_esc(report.task_id or 'n/a')}`")
     parts.append(f"- Assessment date: {_esc(_fmt_ts(report.timestamp))}")
     parts.append(f"- Verified source: {'yes' if report.is_verified_source else 'no'}")
+    parts.append(f"- Audit state: {report.summary.audit_state}")
     parts.append(f"- Execution time: {_esc(report.execution_time_seconds if report.execution_time_seconds is not None else 'n/a')}s")
     parts.append("")
+    if report.summary.audit_state != "complete":
+        missing_bits: list[str] = []
+        if report.summary.tools_failed:
+            missing_bits.append("engines unavailable: " + ", ".join(report.summary.tools_failed))
+        if report.summary.static_analysis_status in ("partial", "unavailable"):
+            missing_bits.append(f"static analysis: {report.summary.static_analysis_status}")
+        missing_bits.extend(
+            lim for lim in report.limitations if lim.startswith("incomplete detection")
+        )
+        parts.append(
+            "> **PARTIAL ASSESSMENT - analysis incomplete.** This report covers "
+            "only the analysis that actually ran; the absence of a finding for "
+            "missing engines or failed agents is NOT evidence of safety."
+        )
+        if missing_bits:
+            parts.append(">")
+            for bit in missing_bits:
+                parts.append(f"> - {bit}")
+        parts.append("")
 
     # summary
     parts.append("## Summary")
