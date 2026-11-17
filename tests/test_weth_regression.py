@@ -26,6 +26,11 @@ def _llm(**kw) -> Finding:
         source=["fund_flow"],
         description="hypothesis",
         evidence="msg.sender.transfer(wad);",
+        preconditions="Attacker controls a contract that calls withdraw() and "
+                      "can re-enter during the Ether transfer",
+        attack_scenario="1) deposit; 2) call withdraw(); 3) re-enter from the "
+                        "receive hook before the balance update",
+        impact="Attacker drains balances above their own deposit",
         file_path="WETH.sol",
         line_start=30,
         confidence=0.8,

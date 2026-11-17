@@ -51,6 +51,10 @@ class TestKbAloneNeverConfirms:
             evidence=('(bool ok,) = msg.sender.call{value: a}("");\n'
                       'balances[msg.sender] -= a;')
             if with_evidence else "",
+            preconditions="Attacker contract with a receive hook holds a balance",
+            attack_scenario="1) call withdraw(); 2) re-enter from the receive "
+                            "hook before balances is decremented",
+            impact="Repeated withdrawals drain the contract balance",
             file_path="T.sol", line_start=10, confidence=0.8)
 
     def _validate(self, f):

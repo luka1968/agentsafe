@@ -256,6 +256,11 @@ class TestValidationAgent:
             source=["access_control"],
             description="Anyone can call drain()",
             evidence="function drain() external { }",
+            preconditions="No authorization check; any externally owned account "
+                          "can call drain() directly",
+            attack_scenario="1) attacker calls drain(); 2) the function moves "
+                            "the full balance to the caller",
+            impact="All contract funds are withdrawn by an unprivileged caller",
             file_path="Vault.sol",
             line_start=42,
             confidence=0.8,

@@ -126,7 +126,14 @@ CASES: list[Case] = [
     Case(_mk("Claim with no evidence", Severity.HIGH, "", "Vault.sol", 5),
          {"Vault.sol": CEI_SRC}, [], "rejected"),
     Case(_mk("Missing zero-address validation in setAdmin", Severity.MEDIUM,
-             "admin = a;", "Registry.sol", 2),
+             "admin = a;", "Registry.sol", 2,
+             preconditions="Any caller of setAdmin, or a legitimate operator "
+                           "passing the zero address by mistake",
+             attack_scenario="1) setAdmin(0x0) is called; 2) the admin slot "
+                             "becomes the zero address and privileged calls "
+                             "can no longer succeed",
+             impact="Administrative control is irrecoverably lost until the "
+                    "contract is redeployed"),
          {"Registry.sol": LOGIC_SRC}, [], "potential"),
 ]
 

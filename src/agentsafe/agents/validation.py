@@ -15,8 +15,13 @@ Decision chain for LLM findings (in order, first rule wins):
                                                    -> informational
          standard ERC-20 allowance race w/o deviation
                                                    -> informational
+         "permanent loss/lock from a failed call" where EVM semantics
+         force a revert (transfer throws; checked send/call; require)
+                                                   -> informational (rollback)
     5. independent tool support at same location   -> confirmed
-    6. otherwise                                    -> potential
+    6. incomplete evidence package (no location / preconditions / attack
+       sequence / impact)                          -> informational
+    7. otherwise                                    -> potential
 
 Tool findings run the same category rules (conservatively) plus LLM
 corroboration; the entry states tool_detected / llm_suggested never appear
@@ -46,9 +51,9 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
+from agentsafe.agents.base import _infer_category
 from agentsafe.schemas import Finding, FindingCategory, FindingStatus, Severity
 from agentsafe.severity import assess, enrich_swc
-from agentsafe.agents.base import _infer_category
 
 logger = logging.getLogger("agentSAFE.validation")
 
@@ -89,6 +94,36 @@ _BALANCE_CHECK = re.compile(
     r"SafeERC20|safeTransferFrom",
     re.IGNORECASE,
 )
+# --- EVM transaction semantics (failure => revert => rollback) ----------------
+# Claims that a FAILED external call permanently loses/locks funds or persists
+# state. EVM semantics decide whether that is even possible in the flagged
+# function: transfer() throws on failure, and a checked send()/call() result is
+# guarded by require/assert - both revert the ENCLOSING transaction, rolling
+# back every state change made in it. Only an UNCHECKED send()/call() (or a
+# failure inside try/catch, which does not revert the outer tx) can persist a
+# debit. Claims contradicted by that ordering are downgraded, never confirmed.
+_RE_LOSS_CLAIM = re.compile(
+    r"permanent(?:ly)?\s+(?:\w+\s+){0,2}(?:loss|lost|lock|locked|freeze|frozen|stuck)|"
+    r"funds?\s+(?:are\s+)?(?:permanently\s+)?(?:lost|locked|stuck|frozen)|"
+    r"lose\s+(?:the\s+)?funds?|steal|stolen|theft|drain(?:ed)?|"
+    r"irrecoverable|unrecoverable|state\s+(?:change\s+)?persists?",
+    re.IGNORECASE,
+)
+_RE_FAILURE_CAUSE = re.compile(
+    r"(?:transfer|send|call)\b[^.;\n]{0,40}?(?:fail|revert|reject)|"
+    r"(?:fail(?:s|ed|ure)?|revert(?:s|ed)?|reject(?:s|ed)?)\b"
+    r"[^.;\n]{0,40}?(?:transfer|send|call)\b|"
+    r"require\s+fails?",
+    re.IGNORECASE,
+)
+_RE_TRY = re.compile(r"\btry\b")
+_RE_SEND_CALL_RESULT = re.compile(r"\b(ok|sent|success)\b")
+_RE_REQUIRE_RESULT = re.compile(
+    r"(?:require|assert)\s*\(\s*(?:ok|sent|success)\b|"
+    r"if\s*\(\s*!\s*(?:ok|sent|success)\b[^)]*\)\s*(?:\{[^}]*)?revert",
+    re.IGNORECASE,
+)
+_RE_REQUIRE_ANY = re.compile(r"\brequire\s*\(|\bassert\s*\(|\brevert\b")
 
 
 def _norm(text: str) -> str:
@@ -214,6 +249,97 @@ def _cei_verdict(block: _FuncBlock) -> str | None:
         return "rejected"
     if min(ext) < max(eff):
         return "plausible"
+    return None
+
+
+@dataclass
+class _ExtCall:
+    idx: int
+    kind: str        # "transfer" | "send" | "call"
+    line: str
+    checked: bool    # failure provably reverts the enclosing transaction
+    in_try: bool     # inside try { } - failure does not revert the outer tx
+
+
+def _try_spans(lines: list[str]) -> list[tuple[int, int]]:
+    """Approximate ``try { ... } catch { ... }`` spans (brace-matched)."""
+    spans: list[tuple[int, int]] = []
+    for i, raw in enumerate(lines):
+        if not _RE_TRY.search(_strip_noise(raw)):
+            continue
+        depth = 0
+        opened = False
+        end = i
+        for j in range(i, len(lines)):
+            for ch in _strip_noise(lines[j]):
+                if ch == "{":
+                    depth += 1
+                    opened = True
+                elif ch == "}":
+                    depth -= 1
+            if opened and depth <= 0:
+                end = j
+                break
+        spans.append((i, end))
+    return spans
+
+
+def _result_checked(body: list[str], idx: int) -> bool:
+    """Whether a send()/call() boolean result is guarded so failure reverts.
+    Conservative: only require/assert on the result (named or inline) or an
+    explicit ``if (!...) ... revert`` counts."""
+    window = [_strip_noise(x) for x in body[idx : idx + 4]]
+    joined = " ".join(window)
+    if _RE_REQUIRE_RESULT.search(joined):
+        return True
+    first = window[0] if window else ""
+    if re.search(r"(?:require|assert)\s*\(", first) and re.search(
+        r"\.send\s*\(|\.call\s*[{(]", first
+    ):
+        return True
+    if (
+        re.search(r"if\s*\(\s*!", first)
+        and "revert" in joined
+        and re.search(r"\.send\s*\(|\.call\s*[{(]", first)
+    ):
+        return True
+    return False
+
+
+def _value_external_calls(block: _FuncBlock) -> list[_ExtCall]:
+    """Value-moving external calls in a function body with their failure
+    semantics: transfer() throws; send()/call() only revert when checked."""
+    body = block.body_text.splitlines()
+    spans = _try_spans(body)
+    calls: list[_ExtCall] = []
+    for i, raw in enumerate(body):
+        line = _strip_noise(raw)
+        kind = None
+        if re.search(r"\.transfer\s*\(", line):
+            kind = "transfer"
+        elif re.search(r"\.send\s*\(", line):
+            kind = "send"
+        elif re.search(r"\.call\s*\{", line) or re.search(r"\.call\s*\(", line):
+            kind = "call"
+        if kind is None:
+            continue
+        calls.append(
+            _ExtCall(
+                idx=i,
+                kind=kind,
+                line=raw.strip(),
+                checked=True if kind == "transfer" else _result_checked(body, i),
+                in_try=any(a <= i <= b for a, b in spans),
+            )
+        )
+    return calls
+
+
+def _first_line_matching(block: _FuncBlock, pattern: re.Pattern[str]) -> str | None:
+    for idx, raw in enumerate(block.body_text.splitlines()):
+        if pattern.search(_strip_noise(raw)):
+            line_no = block.body_first + idx
+            return f"{raw.strip()} [line {line_no}]"
     return None
 
 
@@ -409,12 +535,42 @@ class ValidationAgent:
                 f"@{support.file_path}:{support.line_start}"
             ]
             return merged
-        # 6. credible, complete, unverified -> potential
+        # 6. completeness gate: an actionable POTENTIAL claim must ship the
+        #    full evidence package (location, preconditions incl. attacker
+        #    inputs, attack sequence, impact). Incomplete hypotheses are
+        #    informational - certainty is never invented to fill the gaps.
+        gap = self._completeness_gap(f)
+        if gap:
+            return self._finalize(
+                f, FindingStatus.INFORMATIONAL, "pc0_incomplete_claim",
+                "the claim is missing required evidence ("
+                + ", ".join(gap)
+                + "); an incomplete hypothesis is informational, not an "
+                "actionable potential vulnerability",
+            )
+        # 7. credible, complete, unverified -> potential
         return self._finalize(
             f, FindingStatus.POTENTIAL, "pt0_default",
             "complete evidence, neither independently corroborated nor "
             "refuted by deterministic rules; treat as a credible hypothesis",
         )
+
+    @staticmethod
+    def _completeness_gap(f: Finding) -> list[str]:
+        """Required evidence package for an actionable claim: exact source
+        location, preconditions (must state attacker-controlled inputs), the
+        attack execution sequence, and the actual impact. Line-level precision
+        on real source is already enforced earlier (l0 rule)."""
+        missing: list[str] = []
+        if not f.file_path:
+            missing.append("exact source location")
+        if not (f.preconditions or "").strip():
+            missing.append("preconditions / attacker-controlled inputs")
+        if not (f.attack_scenario or "").strip():
+            missing.append("attack execution sequence")
+        if not (f.impact or "").strip():
+            missing.append("actual impact")
+        return missing
 
     # ------------------------------------------------- deterministic category rules
 
@@ -518,7 +674,63 @@ class ValidationAgent:
                     "evidence, so this is informational guidance for integrators",
                 )
 
+        # -- EVM failure semantics: failed transfer / checked call reverts ----
+        claim_blob = f"{f.title} {f.description} {f.evidence} {f.impact}"
+        if _RE_LOSS_CLAIM.search(claim_blob) and _RE_FAILURE_CAUSE.search(claim_blob):
+            if blocks:
+                r_block = _locate_function(
+                    blocks, src_text or "", f.evidence, f.line_start
+                )
+                if r_block is not None:
+                    ruled = self._rollback_rule(f, r_block)
+                    if ruled is not None:
+                        return ruled
+
         return None
+
+    def _rollback_rule(self, f: Finding, block: _FuncBlock) -> Finding | None:
+        """Downgrade a "permanent loss / locked funds / state persists" claim
+        when EVM semantics make it impossible in THIS function: transfer()
+        throws on failure, and a checked send()/call() result reverts the
+        enclosing transaction - either way the caller-state debit is rolled
+        back with it. An UNCHECKED send()/call() is a genuine loss risk and is
+        never downgraded; try/catch swallows the failure without reverting, so
+        that path is left open too."""
+        debit = _first_line_matching(block, _CALLER_STATE_EFFECT)
+        if debit is None:
+            # No in-function caller-state change means no rollback story to
+            # prove here: stay conservative.
+            return None
+        calls = _value_external_calls(block)
+        if any(c.in_try for c in calls):
+            return None  # failure does not revert the outer transaction
+        if calls:
+            blamed = [c for c in calls if c.checked]
+            if not blamed:
+                return None  # unchecked send()/call(): real loss risk
+            c = blamed[0]
+            mechanism = (
+                "transfer() throws on failure"
+                if c.kind == "transfer"
+                else f"the {c.kind}() result is checked, so failure reverts"
+            )
+            interaction = f"{c.line} [line {block.body_first + c.idx}]"
+        else:
+            req = _first_line_matching(block, _RE_REQUIRE_ANY)
+            if req is None:
+                return None
+            mechanism = "the failing require/assert reverts the whole transaction"
+            interaction = req
+        nf = self._finalize(
+            f, FindingStatus.INFORMATIONAL, "xf0_revert_rollback",
+            f"{mechanism}, which reverts the enclosing transaction; the "
+            f"caller-state update ({debit}) is rolled back with it, so no "
+            "permanent fund loss, theft or locked balance arises from this "
+            "execution path. A gas-stipend / recipient-compatibility concern "
+            "is informational at most and does not imply lost funds",
+        )
+        nf.contradicting_evidence = [debit, interaction]
+        return nf
 
     def _cei_evidence_lines(self, block: _FuncBlock, file_path: str | None) -> dict[str, str]:
         body_lines = block.body_text.splitlines()
@@ -735,9 +947,10 @@ def _method_for_rule(rule: str) -> str:
         return "independent_tool_corroboration"
     if rule in ("re0_cei_satisfied", "tr0_canonical_delegation",
                 "al0_standard_behavior", "ov0_theoretical_only",
-                "if0_info_grade"):
+                "if0_info_grade", "xf0_revert_rollback"):
         return "deterministic_source_rules"
     if rule in ("e0_missing_evidence", "e0_untraceable_location",
-                "e0_evidence_not_in_code", "l0_missing_line_number"):
+                "e0_evidence_not_in_code", "l0_missing_line_number",
+                "pc0_incomplete_claim"):
         return "evidence_traceability"
     return "evidence_state_machine"

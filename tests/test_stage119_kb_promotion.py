@@ -21,6 +21,11 @@ def _reentrancy() -> Finding:
         source=["reentrancy"],
         description="external call before state update allows re-entry",
         evidence='(bool sent, ) = msg.sender.call{value: bal}("");',
+        preconditions="Attacker deploys a contract with a receive hook and a "
+                      "balance in EtherStore",
+        attack_scenario="1) deposit 1 ETH; 2) call withdraw(); 3) the receive "
+                        "hook re-enters withdraw() before balances is updated",
+        impact="Attacker withdraws more Ether than deposited",
         file_path="EtherStore.sol",
         line_start=14,
         confidence=0.75,
