@@ -19,6 +19,7 @@ never be presented as the original Solidity or as proof of a vulnerability.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -120,6 +121,23 @@ class BytecodeToolRun:
     pseudo_sources: dict[str, str] = field(default_factory=dict)  # label -> content
     failure_category: str | None = None
     duration_seconds: float | None = None
+    # Raw engine payload, preserved for auditability (bounded text + digest of
+    # the full payload). Parsed findings remain authoritative.
+    raw_output: str | None = None
+    raw_output_sha256: str | None = None
+    raw_output_bytes: int | None = None
+
+
+_RAW_OUTPUT_CAP = 100_000
+
+
+def _capture_raw(payload: bytes) -> tuple[str, str, int]:
+    data = payload or b""
+    return (
+        data.decode("utf-8", "replace")[:_RAW_OUTPUT_CAP],
+        hashlib.sha256(data).hexdigest(),
+        len(data),
+    )
 
 
 @dataclass
@@ -244,6 +262,9 @@ class BytecodeAnalyzer:
             return run
         run.findings = findings
         run.executed = True
+        run.raw_output, run.raw_output_sha256, run.raw_output_bytes = _capture_raw(
+            res.stdout
+        )
         if tool_err:
             run.failure_category = CAT_TOOL_ERROR
             run.error = tool_err
@@ -352,10 +373,17 @@ def _parse_mythril(res: ProcResult) -> tuple[list[Finding], str | None]:
                     "reachability."
                 ),
                 line_start=None,
+                affected_functions=[fn] if (fn := str(issue.get("function") or "")) else [],
                 metadata={
                     "swc_id": swc,
                     "bytecode_offset": addr,
                     "analyzed_from": "runtime_bytecode",
+                    # Engine's own record + raw severity, kept verbatim: reports
+                    # must not depend on an LLM's reading of static output.
+                    "tool_severity_raw": str(issue.get("severity") or ""),
+                    "contract": str(issue.get("contract") or "") or None,
+                    "function": fn or None,
+                    "tool_raw": json.dumps(issue, ensure_ascii=False)[:4000],
                 },
             )
         )

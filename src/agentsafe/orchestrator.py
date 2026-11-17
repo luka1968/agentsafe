@@ -255,6 +255,9 @@ class AuditOrchestrator:
                                     error=(r.error or None) if r.error else None,
                                     stderr_tail=r.stderr_tail,
                                     stdout_tail=r.stdout_tail,
+                                    raw_output=r.raw_output,
+                                    raw_output_sha256=r.raw_output_sha256,
+                                    raw_output_bytes=r.raw_output_bytes,
                                     findings_count=len(r.findings),
                                 )
                             )
@@ -331,6 +334,9 @@ class AuditOrchestrator:
                                 failure_category=br.failure_category,
                                 duration_seconds=br.duration_seconds,
                                 error=(br.error or None) if br.error else None,
+                                raw_output=br.raw_output,
+                                raw_output_sha256=br.raw_output_sha256,
+                                raw_output_bytes=br.raw_output_bytes,
                                 findings_count=len(br.findings),
                             )
                         )

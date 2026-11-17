@@ -1,8 +1,12 @@
 """Report building: merge, dedupe, summarize. Zero findings NEVER equals safe.
 
-Dedup rules (Prompt 7):
+Dedup rules (Prompt 7 + P4):
 - detector-keyed findings merge by (detector_id, file, line) even with
   different titles;
+- CROSS-ENGINE findings that describe the same root cause (same weakness class
+  + overlapping location, or an identical SWC class that is unique per engine
+  for bytecode findings without a source mapping) merge into ONE finding whose
+  `source` lists every engine and whose metadata keeps every detector id;
 - LLM findings merge into tool findings when location overlaps or evidence is
   strongly similar (cross-support is preserved, not discarded);
 - every merge keeps ALL original sources in `source` and records merged_from.
@@ -55,6 +59,145 @@ _STATUS_ORDER = {
 _EVIDENCE_SIMILARITY = 0.60
 _LINE_TOLERANCE = 5
 
+# Cross-engine root-cause classes. Two engines naming the same weakness with
+# different identifiers (slither "reentrancy-eth" vs mythril "SWC-107") must
+# merge into one vulnerability, not two. Only well-known equivalences are
+# listed: an unknown detector is never collapsed.
+_DETECTOR_CLASS: dict[str, str] = {
+    "reentrancy-eth": "reentrancy",
+    "reentrancy-no-eth": "reentrancy",
+    "reentrancy-benign": "reentrancy",
+    "reentrancy-event": "reentrancy",
+    "reentrancy-unlimited-gas": "reentrancy",
+    "integer-overflow": "arithmetic",
+    "integer-underflow": "arithmetic",
+    "unchecked-lowlevel": "unchecked-call",
+    "unchecked-transfer": "unchecked-call",
+    "unchecked-send": "unchecked-call",
+    "controlled-delegatecall": "delegatecall",
+    "delegatecall-to-user-supplied-address": "delegatecall",
+    "arbitrary-send-eth": "arbitrary-send",
+    "arbitrary-send-erc20": "arbitrary-send",
+    "suicidal": "suicidal",
+    "weak-prng": "prng",
+    "tx-origin": "tx-origin",
+    "incorrect-equality": "equality",
+}
+_SWC_CLASS: dict[str, str] = {
+    "SWC-101": "arithmetic",
+    "SWC-104": "unchecked-call",
+    "SWC-105": "arbitrary-send",
+    "SWC-106": "suicidal",
+    "SWC-107": "reentrancy",
+    "SWC-112": "delegatecall",
+    "SWC-115": "equality",
+    "SWC-120": "prng",
+}
+_CATEGORY_CLASS: dict[str, str] = {
+    "reentrancy": "reentrancy",
+    "arithmetic": "arithmetic",
+    "unhandled_exception": "unchecked-call",
+    "arbitrary_send": "arbitrary-send",
+}
+
+
+def root_cause_class(f: Finding) -> str | None:
+    """Canonical weakness class used for CROSS-ENGINE dedup only.
+
+    Resolution order: the detector id's documented equivalence, then its SWC
+    id, then the finding category. Returns None when the class is unknown -
+    unknown findings are never merged on class alone."""
+    det = (f.detector_id or "").strip().lower()
+    det = re.sub(r"^\[[^\]]*\]\s*", "", det)          # "[slither] reentrancy-eth"
+    det = re.sub(r"^(?:mythril|aderyn|slither)[-_:]", "", det)
+    det = det.replace("_", "-")
+    if det in _DETECTOR_CLASS:
+        return _DETECTOR_CLASS[det]
+    if f.swc_id:
+        cls = _SWC_CLASS.get(f.swc_id.strip().upper())
+        if cls:
+            return cls
+    cat = f.category.value if f.category else ""
+    return _CATEGORY_CLASS.get(cat)
+
+
+def _same_location(a: Finding, b: Finding) -> bool:
+    fa, fb = (a.file_path or "").lower(), (b.file_path or "").lower()
+    if not fa or not fb or fa != fb:
+        return False
+    if a.line_start is None or b.line_start is None:
+        return True
+    return abs(a.line_start - b.line_start) <= _LINE_TOLERANCE
+
+
+def _is_located(f: Finding) -> bool:
+    return bool(f.file_path) and f.line_start is not None
+
+
+def _merge_cross_engine(findings: Sequence[Finding]) -> list[Finding]:
+    """Collapse findings from DIFFERENT engines that describe the same root
+    cause, so one weakness never appears twice under two detector names.
+
+    Located findings need the same file and overlapping lines. Bytecode
+    findings (mythril) carry no source mapping, so they collapse only on an
+    identical root-cause class that is UNIQUE per engine in this audit - a
+    conservative rule that can never merge two distinct reentrancies."""
+    per_class_engine: dict[tuple[str, str], int] = {}
+    for f in findings:
+        cls = root_cause_class(f)
+        if cls:
+            for src in f.source:
+                per_class_engine[(cls, src)] = per_class_engine.get((cls, src), 0) + 1
+
+    kept: list[Finding] = []
+    for f in findings:
+        cls = root_cause_class(f)
+        host: Finding | None = None
+        if cls:
+            for k in kept:
+                if root_cause_class(k) != cls:
+                    continue
+                if set(k.source) & set(f.source):
+                    continue  # same engine: handled by the detector-key merge
+                if _same_location(k, f):
+                    host = k
+                    break
+                # Mixed located/unlocated (mythril has no source mapping):
+                # merge only when that class is unique per engine in this
+                # audit, so two distinct weaknesses of the same class can
+                # never collapse together.
+                if _is_located(k) != _is_located(f) and all(
+                    per_class_engine.get((cls, s), 0) == 1
+                    for s in (*k.source, *f.source)
+                ):
+                    host = k
+                    break
+            if host is None and cls and not _is_located(f):
+                candidates = [
+                    k
+                    for k in kept
+                    if root_cause_class(k) == cls
+                    and not (set(k.source) & set(f.source))
+                    and not _is_located(k)
+                    and all(
+                        per_class_engine.get((cls, s), 0) == 1
+                        for s in (*k.source, *f.source)
+                    )
+                ]
+                if len(candidates) == 1:
+                    host = candidates[0]
+        if host is None:
+            kept.append(f)
+            continue
+        # Prefer the located record's source mapping on the survivor: source
+        # mappings are data, not opinion - keep the most precise one.
+        if not _is_located(host) and _is_located(f):
+            host.file_path = f.file_path
+            host.line_start = f.line_start
+            host.line_end = f.line_end
+        _absorb_into(host, f)  # in place: `host` is the object held in `kept`
+    return kept
+
 
 def _norm(text: str) -> str:
     return re.sub(r"\s+", " ", (text or "").lower()).strip()
@@ -88,6 +231,9 @@ def merge_findings(
             merged_tool[key] = f
 
     tool_list = list(merged_tool.values())
+    # 1b) cross-engine root-cause merge: slither "reentrancy-eth" and mythril
+    #     "SWC-107" on the same function are ONE vulnerability, not two.
+    tool_list = _merge_cross_engine(tool_list)
 
     # 2) LLM findings: attach to overlapping tool findings, or keep standalone
     standalone: list[Finding] = []

@@ -251,10 +251,22 @@ class Finding(BaseModel):
         basis for claiming two findings are identical.
         """
         if self.detector_id:
+            loc_file = (self.file_path or "").lower()
+            if not loc_file and self.line_start is None:
+                # Two UNLOCATED detector findings are the same issue only when
+                # they share their engine-side discriminator (bytecode offset)
+                # or carry identical evidence - otherwise they are distinct
+                # weaknesses reported by the same detector.
+                disc = str(self.metadata.get("bytecode_offset") or "")
+                if not disc:
+                    disc = hashlib.sha256(
+                        (self.evidence or "").encode("utf-8", "replace")
+                    ).hexdigest()[:12]
+                return ("detector", self.detector_id.strip().lower(), "", None, disc)
             return (
                 "detector",
                 self.detector_id.strip().lower(),
-                (self.file_path or "").lower(),
+                loc_file,
                 self.line_start,
                 "",  # title intentionally excluded for detector findings
             )
@@ -390,6 +402,12 @@ class ToolExecution(BaseModel):
     error: str | None = None
     stderr_tail: str | None = None
     stdout_tail: str | None = None
+    # Raw engine output (bounded text) + sha256 of the FULL payload + its size.
+    # Parsed findings stay authoritative, but the report keeps the engine's own
+    # words so nothing depends on an LLM interpretation of static output.
+    raw_output: str | None = None
+    raw_output_sha256: str | None = None
+    raw_output_bytes: int | None = None
     findings_count: int = Field(default=0, ge=0)
 
 

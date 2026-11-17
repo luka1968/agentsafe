@@ -35,6 +35,7 @@ NOTHING. A tool that fails must never be reported as "no issues found".
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -124,6 +125,22 @@ class ToolRun:
     failure_category: str | None = None
     stderr_tail: str | None = None
     stdout_tail: str | None = None
+    # Raw engine output, preserved for auditability (bounded): the parsed
+    # findings stay authoritative, but a reviewer never has to trust an LLM's
+    # summary of what the engine said. The digest covers the FULL payload.
+    raw_output: str | None = None
+    raw_output_sha256: str | None = None
+    raw_output_bytes: int | None = None
+
+
+_RAW_OUTPUT_CAP = 100_000
+
+
+def _capture_raw(payload: bytes) -> tuple[str, str, int]:
+    """Bounded raw output text + full-payload sha256 + full byte length."""
+    data = payload or b""
+    text = data.decode("utf-8", "replace")
+    return text[:_RAW_OUTPUT_CAP], hashlib.sha256(data).hexdigest(), len(data)
 
 
 @dataclass
@@ -355,6 +372,9 @@ class SourceAnalyzer:
             return run
         run.findings = findings
         run.executed = True
+        run.raw_output, run.raw_output_sha256, run.raw_output_bytes = _capture_raw(
+            res.stdout
+        )
         if tool_err:
             run.failure_category = CAT_TOOL_ERROR
             run.error = tool_err  # parsed but tool reported its own error
@@ -426,6 +446,9 @@ class SourceAnalyzer:
             return run
         run.findings = findings
         run.executed = True
+        run.raw_output, run.raw_output_sha256, run.raw_output_bytes = _capture_raw(
+            data
+        )
         if tool_err:
             run.failure_category = CAT_TOOL_ERROR
             run.error = tool_err
@@ -478,6 +501,7 @@ def _parse_slither(res: ProcResult) -> tuple[list[Finding], str | None]:
         severity = _SLITHER_IMPACT.get(impact, Severity.INFO)
         description = str(det.get("description") or check)
         file_path, line_start, line_end = _first_source_mapping(det)
+        function, contract = _slither_function_contract(det)
         findings.append(
             Finding(
                 title=f"[slither] {check}",
@@ -491,14 +515,40 @@ def _parse_slither(res: ProcResult) -> tuple[list[Finding], str | None]:
                 file_path=file_path,
                 line_start=line_start,
                 line_end=line_end,
+                affected_functions=[function] if function else [],
                 metadata={
                     "tool_impact": impact,
                     "tool_confidence": str(det.get("confidence") or ""),
+                    # Engine's own words, kept verbatim alongside the mapped
+                    # severity so nothing depends on an LLM's reading.
+                    "tool_severity_raw": impact,
+                    "contract": contract,
+                    "function": function,
+                    "tool_raw": json.dumps(det, ensure_ascii=False)[:4000],
                     "slither_version_marker": True,
                 },
             )
         )
     return findings, tool_err
+
+
+def _slither_function_contract(det: dict[str, Any]) -> tuple[str | None, str | None]:
+    """Nearest enclosing function/contract names from slither's elements
+    (its own AST-derived source mapping - never guessed from the message)."""
+    function: str | None = None
+    contract: str | None = None
+    for el in det.get("elements") or []:
+        if not isinstance(el, dict):
+            continue
+        etype = str(el.get("type") or "").lower()
+        name = el.get("name")
+        if not name:
+            continue
+        if etype == "function" and function is None:
+            function = str(name)
+        elif etype == "contract" and contract is None:
+            contract = str(name)
+    return function, contract
 
 
 def _first_source_mapping(det: dict[str, Any]) -> tuple[str | None, int | None, int | None]:
