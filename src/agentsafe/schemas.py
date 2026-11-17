@@ -334,6 +334,9 @@ class LLMUsage(BaseModel):
     providers_used: list[str] = Field(default_factory=list)
     models_used: list[str] = Field(default_factory=list)
     failed_calls: int = 0
+    # Accurate per-agent call attribution (measured from the shared budget,
+    # never estimated): specialist name -> calls it spent this audit.
+    per_agent: dict[str, int] = Field(default_factory=dict)
 
 
 class ReportSummary(BaseModel):

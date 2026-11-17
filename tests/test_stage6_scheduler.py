@@ -149,6 +149,7 @@ class _FakeBudget:
     def __init__(self, max_calls=100):
         self.max_calls = max_calls
         self.calls_made = 0
+        self.calls_by_agent: dict[str, int] = {}
         self.deadline = 1e18
         self.failed_calls = 0
         self.prompt_tokens = 0
@@ -164,7 +165,11 @@ class _FakeRouter:
         self.fail_agents = fail_agents or set()
 
     async def complete_json(self, budget, messages, payload_cls):
+        from agentsafe.llm.router import CURRENT_AGENT
+
         budget.calls_made += 1
+        name = CURRENT_AGENT.get() or "unattributed"
+        budget.calls_by_agent[name] = budget.calls_by_agent.get(name, 0) + 1
         payload = payload_cls.model_validate({"findings": [{
             "title": "candidate finding",
             "severity": "medium",

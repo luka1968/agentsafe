@@ -561,6 +561,7 @@ class AuditOrchestrator:
                             "routing": sres.routing_summary,
                             "per_agent": [s.to_dict() for s in sres.per_agent],
                             "aggregate": sres.aggregate(),
+                            "notes": list(sres.notes),
                         }
                         # Honesty gate: agent/LLM failures must be surfaced as
                         # incomplete detection, never masked as a clean result.
@@ -608,6 +609,12 @@ class AuditOrchestrator:
                         providers_used=u["providers_used"],
                         models_used=u["models_used"],
                         failed_calls=u["failed_calls"],
+                        per_agent=dict(
+                            (scheduler_meta.get("aggregate") or {}).get(
+                                "per_agent_calls", {}
+                            )
+                            or {}
+                        ),
                     )
                     done("llm_agents",
                          detail=(f"{llm_usage.total_calls} calls; "
@@ -735,8 +742,15 @@ class AuditOrchestrator:
                         f"{agg.get('agents_failed')} failed (isolated), "
                         f"{agg.get('candidates')} candidates, "
                         f"{agg.get('validated')} validated; "
-                        f"{agg.get('total_llm_calls')} LLM calls"
+                        f"{agg.get('total_llm_calls')} LLM calls "
+                        f"(duplicates collapsed: {agg.get('duplicates_removed', 0)}, "
+                        f"follow-up calls: {agg.get('followup_calls', 0)}, "
+                        f"early stops: {agg.get('early_stopped', 0)})"
                     )
+                    # Honest scope bounds (relevance-ranked segment caps):
+                    # what an agent did NOT read is stated, never implied.
+                    for note in scheduler_meta.get("notes", [])[:6]:
+                        limitations.append(f"analysis scope: {note}")
                 # Explicit audit state: a report is "complete" only when every
                 # engine and agent that was expected to run actually produced
                 # results. Anything less is "partial" and is labeled as such

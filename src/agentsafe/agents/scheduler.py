@@ -20,8 +20,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from dataclasses import dataclass, field
+from difflib import SequenceMatcher
 from typing import Any, Callable, Sequence
 
 from agentsafe.agents.base import AgentResult, AnalysisMaterial, BaseAgent
@@ -53,6 +55,8 @@ class AgentRunStats:
     llm_tokens: int = 0
     models_used: set[str] = field(default_factory=set)
     skipped: str | None = None
+    # Honest scope bookkeeping surfaced into report limitations.
+    notes: list[str] = field(default_factory=list)
     # after validation pass
     findings_validated: int = 0
     contribution: int = 0  # validated findings attributed to this agent
@@ -70,6 +74,7 @@ class AgentRunStats:
             "llm_tokens": self.llm_tokens,
             "models_used": sorted(self.models_used),
             "skipped": self.skipped,
+            "notes": self.notes,
         }
 
 
@@ -82,6 +87,11 @@ class SchedulerResult:
     routing_summary: str = ""
     # validated (post cross-validation) findings + per-agent contribution
     validated: list[Finding] = field(default_factory=list)
+    # LLM-economics bookkeeping (accurate, measured - never estimated):
+    duplicates_removed: int = 0     # cross-agent duplicate candidates collapsed
+    followup_calls: int = 0         # extra calls spent on bounded follow-up
+    early_stopped: int = 0          # follow-ups that produced NO new evidence
+    notes: list[str] = field(default_factory=list)
 
     def aggregate(self) -> dict[str, Any]:
         return {
@@ -91,6 +101,12 @@ class SchedulerResult:
             "validated": len(self.validated),
             "total_llm_calls": sum(s.llm_calls for s in self.per_agent),
             "total_llm_tokens": sum(s.llm_tokens for s in self.per_agent),
+            "duplicates_removed": self.duplicates_removed,
+            "followup_calls": self.followup_calls,
+            "early_stopped": self.early_stopped,
+            "per_agent_calls": {
+                s.agent: s.llm_calls for s in self.per_agent if s.llm_calls
+            },
             "errors": self.errors,
         }
 
@@ -165,12 +181,12 @@ class MultiAgentScheduler:
         sem = asyncio.Semaphore(self._max_concurrent)
         started_at = time.monotonic()
         per_agent_findings: dict[str, list[Finding]] = {}
+        labels_by_agent: dict[str, list[str]] = {}
 
         async def _bounded(agent: BaseAgent, depth: str) -> AgentRunStats:
             stats = AgentRunStats(agent=agent.name, depth=depth,
                                   started=time.monotonic())
             async with sem:
-                budget_left = budget.calls_made  # snapshot for attribution
                 try:
                     ares = await asyncio.wait_for(
                         agent.analyze(budget, mat),
@@ -179,19 +195,25 @@ class MultiAgentScheduler:
                 except asyncio.TimeoutError:
                     stats.errors.append("agent timeout (bounded)")
                     logger.warning("agent %s timed out", agent.name)
+                    stats.llm_calls = self._calls_spent(budget, agent.name)
                     return stats
                 except Exception as exc:  # error isolation: never cascades
                     stats.errors.append(f"{type(exc).__name__}: {exc}")
                     logger.warning("agent %s failed (isolated): %s",
                                    agent.name, exc)
+                    stats.llm_calls = self._calls_spent(budget, agent.name)
                     return stats
                 finally:
                     stats.elapsed = time.monotonic() - stats.started
             stats.findings_produced = len(ares.findings)
             stats.skipped = ares.skipped_reason
             stats.errors.extend(ares.errors)
-            stats.llm_calls = max(0, budget.calls_made - budget_left)
+            stats.notes = list(ares.notes)
+            # Measured attribution (task-local context var, concurrency-safe):
+            # a calls_made delta around an await would count other agents.
+            stats.llm_calls = self._calls_spent(budget, agent.name)
             per_agent_findings[agent.name] = list(ares.findings)
+            labels_by_agent[agent.name] = list(ares.analyzed_labels)
             return stats
 
         # Instantiate selected agents (shared router + budget).
@@ -214,9 +236,24 @@ class MultiAgentScheduler:
         # -- collect schema-validated candidates ------------------------------
         for stats in stats_list:
             result.candidates.extend(per_agent_findings.get(stats.agent, []))
+        for stats in stats_list:
+            result.notes.extend(stats.notes)
 
-        # Focused follow-up on promising hypotheses (additional allocation).
-        await self._focused_followup(result, budget, mat)
+        # Deduplicate BEFORE any further work: the same root cause reported by
+        # several specialists is one candidate (sources merged, strongest
+        # evidence kept) - never N LLM-validated duplicates.
+        result.candidates, removed = self._dedupe_candidates(result.candidates)
+        result.duplicates_removed += removed
+
+        # Focused follow-up on promising hypotheses: bounded to ONE extra call
+        # per productive agent, only on code the agent has NOT read yet.
+        await self._focused_followup(
+            result, budget, mat, per_agent_findings, labels_by_agent)
+
+        # Follow-up can introduce cross-agent duplicates too: collapse again.
+        if result.candidates:
+            result.candidates, removed2 = self._dedupe_candidates(result.candidates)
+            result.duplicates_removed += removed2
 
         # Independent validation hand-off.
         if validation is not None and result.candidates:
@@ -233,12 +270,97 @@ class MultiAgentScheduler:
         )
         return result
 
+    # ---------------------------------------------------------------- dedup
+    _SEV_RANK = {"critical": 5, "high": 4, "medium": 3, "low": 2, "info": 1}
+
+    @staticmethod
+    def _norm_title(title: str) -> str:
+        return re.sub(r"[^a-z0-9]+", " ", (title or "").lower()).strip()
+
+    @classmethod
+    def _same_root_cause(cls, a: Finding, b: Finding) -> bool:
+        """Deterministic cross-agent duplicate test (same root cause, not just
+        a shared category): same file + nearby line + same category, or a
+        near-identical title inside the same category."""
+        cat_a = a.category.value if a.category else ""
+        cat_b = b.category.value if b.category else ""
+        if cat_a != cat_b:
+            return False
+        file_a = (a.file_path or "").lower()
+        file_b = (b.file_path or "").lower()
+        both_located = bool(file_a and file_b)
+        if both_located:
+            if file_a != file_b:
+                return False
+            if a.line_start and b.line_start:
+                if abs(a.line_start - b.line_start) <= 5:
+                    return True
+        ta, tb = cls._norm_title(a.title), cls._norm_title(b.title)
+        if not ta or not tb:
+            return False
+        return SequenceMatcher(None, ta, tb).ratio() >= 0.85
+
+    @classmethod
+    def _dedupe_candidates(
+        cls, candidates: Sequence[Finding]
+    ) -> tuple[list[Finding], int]:
+        """Collapse candidates describing the same root cause.
+
+        Survivor keeps the strongest severity and the richest evidence, and
+        accumulates every contributing agent in ``source`` so per-agent
+        attribution stays complete.
+        """
+        kept: list[Finding] = []
+        removed = 0
+        for f in candidates:
+            host = next((k for k in kept if cls._same_root_cause(k, f)), None)
+            if host is None:
+                kept.append(f)
+                continue
+            removed += 1
+            host.source = list(dict.fromkeys([*(host.source or []), *(f.source or [])]))
+            if cls._SEV_RANK.get(f.severity.value, 0) > cls._SEV_RANK.get(
+                host.severity.value, 0
+            ):
+                host.severity = f.severity
+            for attr in ("evidence", "preconditions", "attack_scenario", "impact",
+                         "recommendation"):
+                cur = getattr(host, attr) or ""
+                incoming = getattr(f, attr) or ""
+                if len(incoming) > len(cur):
+                    setattr(host, attr, incoming)
+            if host.confidence is not None or f.confidence is not None:
+                host.confidence = max(
+                    x for x in (host.confidence, f.confidence) if x is not None
+                )
+            host.knowledge_references = list(
+                dict.fromkeys(
+                    [*(host.knowledge_references or []), *(f.knowledge_references or [])]
+                )
+            )
+        return kept, removed
+
+    @staticmethod
+    def _calls_spent(budget: AuditBudget, agent: str) -> int:
+        """Calls charged to this agent so far (measured at record time)."""
+        return int(getattr(budget, "calls_by_agent", {}).get(agent, 0))
+
     async def _focused_followup(self, result: SchedulerResult, budget: AuditBudget,
-                                material: AnalysisMaterial) -> None:
-        """Allocate additional analysis to promising hypotheses: specialists
-        that produced candidates get a second, focused pass at their own
-        findings (deep re-read) when budget allows."""
-        if self._router is None or budget.calls_made >= budget.max_calls:
+                                material: AnalysisMaterial,
+                                first_pass: dict[str, list[Finding]],
+                                analyzed: dict[str, list[str]]) -> None:
+        """Bounded follow-up: at most ONE extra call per productive agent, on
+        the highest-evidence segment that agent has NOT read yet.
+
+        - No unanalyzed relevant segment -> no call at all (identical code is
+          never analyzed twice);
+        - the agent's existing findings are listed in the prompt so only NEW,
+          distinct issues are requested;
+        - if the follow-up yields no new evidence, analysis stops there
+          (early stopping) instead of looping;
+        - calls are attributed from the budget delta (measured, not guessed).
+        """
+        if self._router is None:
             return
         for stats in result.per_agent:
             if stats.findings_produced == 0 or stats.errors:
@@ -252,15 +374,43 @@ class MultiAgentScheduler:
                 agent = cls(router=self._router)  # type: ignore[call-arg]
             except TypeError:
                 continue
+            prior = first_pass.get(stats.agent, [])
+            before = self._calls_spent(budget, stats.agent)
             try:
                 ares = await asyncio.wait_for(
-                    agent.analyze(budget, material),
+                    agent.followup(
+                        budget, material, prior, analyzed.get(stats.agent, [])
+                    ),
                     timeout=self._cfg.LLM_REQUEST_TIMEOUT_SECONDS * 3,
                 )
-                stats.findings_produced += len(ares.findings)
-                stats.llm_calls += len(ares.findings) or 1
             except Exception as exc:  # follow-up never blocks audit
+                stats.llm_calls = self._calls_spent(budget, stats.agent)
+                result.followup_calls += max(0, stats.llm_calls - before)
                 stats.errors.append(f"follow-up failed: {exc}")
+                continue
+            spent = max(0, self._calls_spent(budget, stats.agent) - before)
+            stats.llm_calls = self._calls_spent(budget, stats.agent)
+            result.followup_calls += spent
+            if ares.skipped_reason:
+                continue  # nothing left to read: zero calls spent
+            if ares.errors:
+                stats.errors.extend(ares.errors[:1])
+                continue
+            known = [*result.candidates, *prior]
+            new = [
+                f for f in ares.findings
+                if not any(self._same_root_cause(k, f) for k in known)
+            ]
+            if not new:
+                result.early_stopped += 1
+                logger.info(
+                    "follow-up for %s produced no new evidence (early stop)",
+                    stats.agent,
+                )
+                continue
+            stats.findings_produced += len(new)
+            first_pass.setdefault(stats.agent, []).extend(new)
+            result.candidates.extend(new)
 
     async def _validate(self, validation: Any, candidates: list[Finding],
                         material: AnalysisMaterial) -> list[Finding]:
@@ -282,11 +432,15 @@ class MultiAgentScheduler:
     @staticmethod
     def _attribute_contributions(result: SchedulerResult,
                                  validated: list[Finding]) -> None:
-        """Attribute validated findings back to the specialist that produced
-        the seed candidate (source list contains agent names)."""
+        """Attribute validated findings to the specialist that FIRST produced
+        the seed candidate (``source[0]``). Corroborating agents stay listed in
+        ``source`` but are not double-counted as contributors."""
         for v in validated:
+            primary = v.source[0] if v.source else None
+            if not primary:
+                continue
             for stats in result.per_agent:
-                if stats.agent in v.source:
+                if stats.agent == primary:
                     stats.findings_validated += 1
                     stats.contribution += 1
                     break

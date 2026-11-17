@@ -16,6 +16,7 @@ lenient regex fallback.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import logging
 import re
@@ -142,6 +143,14 @@ class _SlidingWindowLimiter:
             await sleeper(wait)
 
 
+# Task-local agent attribution: set by BaseAgent.analyze/followup so every LLM
+# call is charged to the specialist that made it - correct under concurrency
+# (each agent runs in its own task, so the context var is task-local).
+CURRENT_AGENT: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "agentsafe_current_agent", default=""
+)
+
+
 @dataclass
 class AuditBudget:
     """Per-audit hard budget: max calls + total deadline + token accounting."""
@@ -155,6 +164,11 @@ class AuditBudget:
     completion_tokens: int = 0
     providers_used: set = field(default_factory=set)
     models_used: set = field(default_factory=set)
+    # Accurate per-agent attribution: specialists run CONCURRENTLY, so a
+    # calls_made delta measured around one agent's await would absorb other
+    # agents' calls. Each call is instead attributed at the moment it is
+    # charged, using the task-local CURRENT_AGENT context var.
+    calls_by_agent: dict[str, int] = field(default_factory=dict)
 
     def check(self) -> None:
         if self.calls_made >= self.max_calls:
@@ -166,6 +180,8 @@ class AuditBudget:
 
     def record_call(self) -> None:
         self.calls_made += 1
+        agent = CURRENT_AGENT.get() or "unattributed"
+        self.calls_by_agent[agent] = self.calls_by_agent.get(agent, 0) + 1
 
     def record_tokens(self, result: LLMCallResult) -> None:
         """Token accounting for any HTTP-200 attempt, successful or not:
@@ -190,6 +206,7 @@ class AuditBudget:
             "completion_tokens": self.completion_tokens or None,
             "providers_used": sorted(self.providers_used),
             "models_used": sorted(self.models_used),
+            "calls_by_agent": dict(self.calls_by_agent),
         }
 
 

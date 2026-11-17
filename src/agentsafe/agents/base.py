@@ -22,7 +22,7 @@ from agentsafe.llm.prompts import (
     DEEP_DIVE_SUFFIX,
     system_prompt,
 )
-from agentsafe.llm.router import AuditBudget, LLMRouter
+from agentsafe.llm.router import AuditBudget, CURRENT_AGENT, LLMRouter
 from agentsafe.schemas import (
     Finding, FindingStatus, FindingCategory,
 )
@@ -31,6 +31,12 @@ logger = logging.getLogger("agentSAFE.agents")
 
 MAX_SEGMENT_CHARS = 8_000  # per LLM call, ~2k tokens of code (AgentLISA-style: smallest relevant sample)
 MAX_TOTAL_ANALYZED_CHARS = 45_000  # per agent across whole audit (focused batches, not whole repo)
+# Per-agent relevance cap: an agent analyzes at most this many segments (the
+# highest-evidence ones). Multi-file projects otherwise make every agent read
+# every file - the dominant LLM-call multiplier on audits like WETH9. The cap
+# is a scope bound, never a silent omission: a note is recorded and surfaced
+# in the report limitations when segments are left for other specialists.
+MAX_SEGMENTS_PER_AGENT = 3
 
 
 _RE_CAT_REENTRANCY = re.compile(r"re[- ]?entran", re.IGNORECASE)
@@ -170,6 +176,10 @@ class AgentResult:
     errors: list[str] = field(default_factory=list)
     segments_analyzed: int = 0
     skipped_reason: str | None = None
+    # Honest scope bookkeeping (never an error): which labels were analyzed and
+    # whether relevance ranking left segments to other specialists.
+    analyzed_labels: list[str] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
 
 
 class BaseAgent:
@@ -182,6 +192,7 @@ class BaseAgent:
 
     max_segment_chars: int = MAX_SEGMENT_CHARS
     max_total_chars: int = MAX_TOTAL_ANALYZED_CHARS
+    max_segments: int = MAX_SEGMENTS_PER_AGENT
 
     def __init__(self, router: LLMRouter) -> None:
         self._router = router
@@ -207,10 +218,65 @@ class BaseAgent:
             chunks.append((f"{path}#part{part}", "".join(current)))
         return chunks
 
+    def _relevance(self, text: str) -> int:
+        """Deterministic evidence score for ONE segment: how strongly this
+        segment matches the agent's own keywords. Used only for ranking -
+        absence never proves anything, it just lowers priority."""
+        low = text.lower()
+        score = 0
+        for kw in self.keywords:
+            k = kw.lower()
+            if k:
+                score += low.count(k)
+        return score
+
+    def _ranked_work(
+        self, material: AnalysisMaterial, *, limit: int | None = None
+    ) -> tuple[list[tuple[str, str]], list[str]]:
+        """Chunk all segments, then keep the most relevant ones up to
+        ``max_segments`` (or ``limit``) and ``max_total_chars``.
+
+        Returns ``(work, notes)``. Ordering is deterministic: relevance desc,
+        size desc, label asc. Notes document every bound that was applied so
+        the report can say exactly what was (and was not) read.
+        """
+        notes: list[str] = []
+        raw: list[tuple[str, str]] = []
+        for path, content in material.segments.items():
+            for label, chunk in self._chunk(path, content):
+                raw.append((label, chunk))
+        if not raw:
+            return [], notes
+        cap = self.max_segments if limit is None else limit
+        ranked = sorted(
+            raw, key=lambda lc: (-self._relevance(lc[1]), -len(lc[1]), lc[0])
+        )
+        work: list[tuple[str, str]] = []
+        total = 0
+        truncated_by_chars = False
+        for label, chunk in ranked:
+            if len(work) >= cap:
+                break
+            if total + len(chunk) > self.max_total_chars:
+                truncated_by_chars = True
+                break
+            work.append((label, chunk))
+            total += len(chunk)
+        if len(work) < len(raw):
+            reason = (
+                f"{len(work)}/{len(raw)} segments analyzed "
+                f"(relevance-ranked, cap {cap}"
+                + (", char budget reached" if truncated_by_chars else "")
+                + ")"
+            )
+            notes.append(f"{self.name}: analysis scope bounded - {reason}")
+        return work, notes
+
     def _user_prompt(self, label: str, text: str, deep: bool,
                      intel_brief: str = "",
                      kb_snippet: str = "",
-                     stage7_section: str = "") -> str:
+                     stage7_section: str = "",
+                     prior_section: str = "") -> str:
         notice = (
             "NOTE: the following is decompiled PSEUDO-SOURCE recovered from "
             "bytecode, NOT the original Solidity. It is an approximate "
@@ -238,7 +304,7 @@ class BaseAgent:
             f"{stage7_section}\n=== END CROSS-FUNCTION HYPOTHESES ===\n"
             if stage7_section else ""
         )
-        return f"""{notice}{intel_section}{kb_section}{stage7_section}
+        return f"""{notice}{intel_section}{kb_section}{stage7_section}{prior_section}
 
 {suffix}
 
@@ -260,18 +326,8 @@ object described in your instructions."""
         text = material.text()
         deep = any(kw.lower() in text.lower() for kw in self.keywords)
 
-        work: list[tuple[str, str]] = []
-        total = 0
-        for path, content in material.segments.items():
-            for label, chunk in self._chunk(path, content):
-                if total + len(chunk) > self.max_total_chars:
-                    result.errors.append(
-                        f"analysis truncated: exceeded {self.max_total_chars} chars; "
-                        f"unanalyzed remainder of {path}"
-                    )
-                    break
-                work.append((label, chunk))
-                total += len(chunk)
+        work, scope_notes = self._ranked_work(material)
+        result.notes.extend(scope_notes)
 
         intel = getattr(material, "intel", None)
         intel_brief = ""
@@ -328,18 +384,82 @@ object described in your instructions."""
                     kb_snippet=kb_snippet, stage7_section=stage7_section)},
             ]
             try:
-                payload, call = await self._router.complete_json(
-                    budget, messages, LLMFindingsPayload
-                )
+                agent_token = CURRENT_AGENT.set(self.name)
+                try:
+                    payload, call = await self._router.complete_json(
+                        budget, messages, LLMFindingsPayload
+                    )
+                finally:
+                    CURRENT_AGENT.reset(agent_token)
             except Exception as exc:  # budget/provider/schema errors are per-segment
                 result.errors.append(f"{label}: {type(exc).__name__}: {exc}")
                 continue
             result.segments_analyzed += 1
+            result.analyzed_labels.append(label)
             for f in payload.findings:
                 result.findings.append(self._to_finding(f, label, call, kb_refs))
 
         if result.errors and not result.findings and result.segments_analyzed == 0:
             result.skipped_reason = "; ".join(result.errors[:3])
+        return result
+
+    async def followup(
+        self,
+        budget: AuditBudget,
+        material: AnalysisMaterial,
+        prior_findings: Sequence[Finding],
+        analyzed_labels: Sequence[str],
+    ) -> AgentResult:
+        """Bounded second pass: ONE LLM call over the highest-evidence segment
+        this agent has NOT analyzed yet, with the already-reported findings
+        listed so the model reports only NEW, distinct issues.
+
+        Returns an empty result without any call when every relevant segment
+        was already analyzed - identical code is never re-analyzed (the old
+        follow-up re-ran the whole segment set, doubling the audit's calls).
+        """
+        result = AgentResult(agent=self.name)
+        self.material_is_pseudo = material.is_pseudo_source
+        work, _ = self._ranked_work(material, limit=1_000_000)
+        done = set(analyzed_labels)
+        remaining = [(label, chunk) for label, chunk in work if label not in done]
+        if not remaining:
+            result.skipped_reason = "no unanalyzed relevant segment"
+            return result
+        label, chunk = remaining[0]
+        prior_lines = [
+            f"- {f.title} ({f.file_path or 'n/a'}:{f.line_start or '?'})"
+            for f in list(prior_findings)[:10]
+        ]
+        prior_section = ""
+        if prior_lines:
+            prior_section = (
+                "\n=== ALREADY REPORTED IN THIS AUDIT (do NOT repeat these; "
+                "report only NEW, distinct issues with different code evidence) ===\n"
+                + "\n".join(prior_lines)
+                + "\n=== END ALREADY REPORTED ===\n"
+            )
+        deep = any(kw.lower() in material.text().lower() for kw in self.keywords)
+        messages = [
+            {"role": "system", "content": system_prompt(self.focus)},
+            {"role": "user", "content": self._user_prompt(
+                label, chunk, deep, prior_section=prior_section)},
+        ]
+        try:
+            agent_token = CURRENT_AGENT.set(self.name)
+            try:
+                payload, call = await self._router.complete_json(
+                    budget, messages, LLMFindingsPayload
+                )
+            finally:
+                CURRENT_AGENT.reset(agent_token)
+        except Exception as exc:  # follow-up is optional depth
+            result.errors.append(f"{label}: {type(exc).__name__}: {exc}")
+            return result
+        result.segments_analyzed = 1
+        result.analyzed_labels.append(label)
+        for f in payload.findings:
+            result.findings.append(self._to_finding(f, label, call, []))
         return result
 
     def _category_of(self, p: LLMFindingPayload) -> "FindingCategory | None":
