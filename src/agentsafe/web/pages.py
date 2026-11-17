@@ -73,7 +73,7 @@ _PAGE_SHELL = """<!DOCTYPE html>
  [&_td]:px-2 [&_td]:py-1 [&_code]:text-cyan-300">
 {body}
 </article>
-<footer class="mt-12 border-t border-zinc-800 pt-6 text-xs text-zinc-400">
+<footer class="mt-12 border-t border-zinc-800 pt-6 text-xs text-zinc-200">
 <a href="/terms" class="hover:underline">Terms</a> &middot;
 <a href="/privacy" class="hover:underline">Privacy</a> &middot;
 <a href="/refund" class="hover:underline">Refund</a>
@@ -139,10 +139,10 @@ def _build_index_html() -> str:
 
   <header class="mb-12">
     <h1 class="text-4xl font-bold tracking-tight">agent<span class="text-cyan-400">SAFE</span></h1>
-    <p class="mt-3 text-zinc-400">AI-assisted smart-contract risk screening for
+    <p class="mt-3 text-zinc-200">AI-assisted smart-contract risk screening for
     Ethereum Mainnet. Paid per audit in USDC on Base via x402 &mdash; no account,
     no subscription.</p>
-    <p class="mt-1 text-xs text-zinc-500">AI-assisted screening, not a formal
+    <p class="mt-1 text-xs text-zinc-300">AI-assisted screening, not a formal
     security audit. Findings require human verification.</p>
   </header>
 
@@ -154,31 +154,31 @@ def _build_index_html() -> str:
 
   <section class="mb-12 rounded-xl border border-zinc-800 bg-zinc-900/50 p-6">
     <h2 class="mb-1 text-xl font-semibold">Start an audit</h2>
-    <p class="mb-4 text-sm text-zinc-400">Enter a verified Ethereum Mainnet
+    <p class="mb-4 text-sm text-zinc-200">Enter a verified Ethereum Mainnet
     contract address and pay in USDC via x402 on Base, Arbitrum,
-    Polygon or another supported chain. <span class="text-zinc-500">From $0.50
+    Polygon or another supported chain. <span class="text-zinc-300">From $0.50
     &mdash; the exact price is quoted by the service before payment is
     requested.</span></p>
     <div class="flex flex-col gap-3 sm:flex-row">
       <input id="addr" type="text" spellcheck="false" autocomplete="off"
         placeholder="0x..."
         class="flex-1 rounded-lg border border-zinc-700 bg-black px-4 py-3
-               font-mono text-sm text-white placeholder-zinc-600 focus:border-cyan-400 focus:outline-none">
+               font-mono text-sm text-white placeholder-zinc-400 focus:border-cyan-400 focus:outline-none">
       <button id="start"
         class="rounded-lg bg-cyan-400 px-6 py-3 font-semibold text-black
                hover:bg-cyan-300 disabled:cursor-not-allowed disabled:opacity-50">
-        Pay USDC to audit
+        Pay to audit
       </button>
     </div>
     <div class="mt-3">
-      <input id="email" type="email" spellcheck="false" autocomplete="email"
-        placeholder="your@email.com (optional - we email you the report when it is ready, audits take ~20 min)"
+      <input id="email" type="email" required spellcheck="false" autocomplete="email"
+        placeholder="your@email.com"
         class="w-full rounded-lg border border-zinc-700 bg-black px-4 py-3
-               text-sm text-white placeholder-zinc-600 focus:border-cyan-400 focus:outline-none">
-      <p class="mt-1 text-xs text-zinc-500">Optional: leave an email and we send the report link when the audit finishes, so you can close this page while you wait.</p>
+               text-sm text-white placeholder-zinc-400 focus:border-cyan-400 focus:outline-none">
+      <p class="mt-1 text-xs text-zinc-300">Required: we email you the report link when the audit finishes, so you can close this page while you wait.</p>
     </div>
     <div id="flow" class="mt-4 hidden rounded-lg border border-zinc-800 bg-black p-4 text-sm"></div>
-    <p id="wallet-hint" class="mt-2 hidden text-xs text-zinc-500">
+    <p id="wallet-hint" class="mt-2 hidden text-xs text-zinc-300">
       Your wallet will open to approve the USDC payment on the selected chain.
     </p>
   </section>
@@ -348,16 +348,16 @@ def _build_index_html() -> str:
         ? "<span class='rounded bg-amber-900/60 px-1.5 py-0.5 text-[10px] text-amber-300'>TESTNET (Base Sepolia)</span>"
         : "<span class='rounded bg-emerald-900/60 px-1.5 py-0.5 text-[10px] text-emerald-300'>MAINNET (Base)</span>";
       var envNote = meta && meta.testnet
-        ? "<p class='mt-1 text-[11px] text-zinc-400'>This is the <b>testnet</b> chain. No real money moves, but the wallet still signs a real EIP-3009 authorization.</p>"
-        : "<p class='mt-1 text-[11px] text-zinc-400'>This is the <b>mainnet</b> chain. USDC will be transferred on Base mainnet.</p>";
+        ? "<p class='mt-1 text-[11px] text-zinc-200'>This is the <b>testnet</b> chain. No real money moves, but the wallet still signs a real EIP-3009 authorization.</p>"
+        : "<p class='mt-1 text-[11px] text-zinc-200'>This is the <b>mainnet</b> chain. USDC will be transferred on Base mainnet.</p>";
       var s = "s" + Math.random().toString(36).slice(2);
       return "<div class='mt-3 rounded-lg border border-zinc-700 bg-zinc-900 p-4'>"
         + "<p class='flex items-center gap-2 text-sm'><span class='font-semibold text-cyan-300'>Confirm payment</span>" + env + "</p>"
         + "<dl class='mt-3 space-y-1 text-sm'>"
-        + "<div class='flex justify-between'><dt class='text-zinc-500'>Network</dt><dd class='font-mono text-zinc-200'>" + esc(netName) + " (" + esc(acc.network) + ")</dd></div>"
-        + "<div class='flex justify-between'><dt class='text-zinc-500'>Amount</dt><dd class='font-mono text-zinc-200'>" + esc(price) + " USDC</dd></div>"
-        + "<div class='flex justify-between'><dt class='text-zinc-500'>Token</dt><dd class='font-mono text-zinc-200'>USDC</dd></div>"
-        + "<div class='flex justify-between'><dt class='text-zinc-500'>Recipient</dt><dd class='font-mono text-zinc-200 break-all'>" + esc(payTo) + "</dd></div>"
+        + "<div class='flex justify-between'><dt class='text-zinc-300'>Network</dt><dd class='font-mono text-zinc-200'>" + esc(netName) + " (" + esc(acc.network) + ")</dd></div>"
+        + "<div class='flex justify-between'><dt class='text-zinc-300'>Amount</dt><dd class='font-mono text-zinc-200'>" + esc(price) + " USDC</dd></div>"
+        + "<div class='flex justify-between'><dt class='text-zinc-300'>Token</dt><dd class='font-mono text-zinc-200'>USDC</dd></div>"
+        + "<div class='flex justify-between'><dt class='text-zinc-300'>Recipient</dt><dd class='font-mono text-zinc-200 break-all'>" + esc(payTo) + "</dd></div>"
         + "</dl>" + envNote
         + "<div class='mt-3 flex gap-2'>"
         + "<button id='" + s + "-ok' class='rounded bg-emerald-700 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-600'>Approve &amp; pay</button>"
@@ -384,7 +384,7 @@ def _build_index_html() -> str:
       var ago = Math.round((Date.now() - (rec.at || 0)) / 60000);
       return "<div class='mt-3 rounded-lg border border-zinc-700 bg-zinc-900/70 p-3 text-sm'>"
         + "<p class='text-zinc-300'>You have a recently submitted audit. <b>Do not pay again</b> unless the report is truly missing.</p>"
-        + "<p class='mt-1 text-xs text-zinc-500'>Task: <code class='text-cyan-300'>" + esc(rec.task_id) + "</code>"
+        + "<p class='mt-1 text-xs text-zinc-300'>Task: <code class='text-cyan-300'>" + esc(rec.task_id) + "</code>"
         + (rec.network ? " &middot; paid on " + esc(rec.network) : "")
         + (rec.address ? " &middot; " + esc(rec.address.slice(0, 10)) + "&hellip;" : "")
         + (rec.at ? " &middot; " + ago + "m ago" : "") + "</p>"
@@ -393,7 +393,7 @@ def _build_index_html() -> str:
         + "<a class='text-cyan-300 hover:underline' href='/api/audit/" + esc(rec.task_id) + "/report.json' target='_blank'>JSON</a> &middot; "
         + "<a class='text-cyan-300 hover:underline' href='/api/audit/" + esc(rec.task_id) + "/report.md' target='_blank'>Markdown</a> &middot; "
         + "<a class='text-cyan-300 hover:underline' href='/api/audit/" + esc(rec.task_id) + "/report.pdf' target='_blank'>PDF</a></p>"
-        + "<button id='resume-clear' class='mt-2 text-xs text-zinc-400 hover:text-zinc-200 underline'>Dismiss</button></div>";
+        + "<button id='resume-clear' class='mt-2 text-xs text-zinc-200 hover:text-zinc-200 underline'>Dismiss</button></div>";
     }}
     // Render a payment state: statePill + optional body.
     function showState(state, html) {{
@@ -438,11 +438,11 @@ def _build_index_html() -> str:
             }}
             if (state === "running" || state === "queued") {{
               box.innerHTML = "<p class='mt-3 text-cyan-300'>Audit in progress&hellip; "
-                + "<span class='text-xs text-zinc-500'>the report download links appear here automatically when it completes</span></p>";
+                + "<span class='text-xs text-zinc-300'>the report download links appear here automatically when it completes</span></p>";
               if (++attempt < REPORT_POLL_MAX) setTimeout(probe, REPORT_POLL_MS);
               return;
             }}
-            box.innerHTML = "<p class='mt-3 text-zinc-400'>Report not available yet. "
+            box.innerHTML = "<p class='mt-3 text-zinc-200'>Report not available yet. "
               + "<a class='text-cyan-300 hover:underline' href='/api/audit/" + esc(tid) + "/report' target='_blank'>Check manually</a></p>";
           }})
           .catch(function () {{
@@ -480,7 +480,7 @@ def _build_index_html() -> str:
     function renderChoices(accs, a, clickFn) {{
       var lines = [];
       lines.push("<p class='text-yellow-300'>Payment required to start this audit. Pick the network you want to pay on:</p>");
-      lines.push("<p class='text-xs text-zinc-500'>The flat fee covers contracts up to <b>500 source lines</b>. "
+      lines.push("<p class='text-xs text-zinc-300'>The flat fee covers contracts up to <b>500 source lines</b>. "
         + "Larger contracts are billed per size tier on the MCP endpoint (tool "
         + "<code>audit_contract</code>); requesting one here is refused <i>before</i> "
         + "settlement, so no USDC is ever taken.</p>");
@@ -498,7 +498,7 @@ def _build_index_html() -> str:
           + "<span class='font-semibold text-cyan-300'>Pay with " + esc(meta.name) + "</span>" + tag
           + " <span class='text-zinc-300'>" + esc(acc.network) + "</span>"
           + " &mdash; <b>" + price + " USDC</b>"
-          + "<br><span class='text-xs text-zinc-500'>pay to: <code class='break-all'>" + esc(payTo) + "</code></span>"
+          + "<br><span class='text-xs text-zinc-300'>pay to: <code class='break-all'>" + esc(payTo) + "</code></span>"
           + "</button>");
       }});
       // Card checkout (Creem, Merchant of Record): rendered only when the
@@ -507,10 +507,10 @@ def _build_index_html() -> str:
         lines.push("<button id='creem-pay' class='creem-opt mt-2 w-full rounded-lg border border-zinc-700 bg-zinc-900 px-4 py-3 text-left text-sm hover:border-cyan-400'>"
           + "<span class='font-semibold text-cyan-300'>Pay by card</span>"
           + " <span class='text-zinc-300'>&mdash; card / Apple Pay / Google Pay</span>"
-          + "<br><span class='text-xs text-zinc-500'>Hosted checkout by Creem (Merchant of Record). No crypto wallet needed.</span>"
+          + "<br><span class='text-xs text-zinc-300'>Hosted checkout by Creem (Merchant of Record). No crypto wallet needed.</span>"
           + "</button>");
       }}
-      lines.push("<p class='mt-3 text-xs text-zinc-500'>Your wallet will open and switch to that network, then ask you to approve the payment. "
+      lines.push("<p class='mt-3 text-xs text-zinc-300'>Your wallet will open and switch to that network, then ask you to approve the payment. "
         + "Prefer the terminal? Run the curl command below with an x402-enabled client:</p>");
       var curlCmd = "curl -X POST " + window.location.origin + REST
         + " -H 'content-type: application/json' -d '" + JSON.stringify({{"address": a}}) + "'";
@@ -602,7 +602,7 @@ def _build_index_html() -> str:
         }}
         showState(PS.FAILED,
           "<p>" + esc(shown) + "</p>"
-          + (err && err.diag ? "<p class='mt-1 text-[11px] text-zinc-500'>" + err.diag + "</p>" : "")
+          + (err && err.diag ? "<p class='mt-1 text-[11px] text-zinc-300'>" + err.diag + "</p>" : "")
           + (isLineLimit(shown) ? lineLimitNote() : ""));
       }} finally {{
         paying = false;
@@ -857,13 +857,17 @@ def _build_index_html() -> str:
     start.addEventListener("click", async function () {{
       var a = (addr.value || "").trim();
       var em = (email && email.value || "").trim();
-      if (em && !/^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$/.test(em)) {{
-        show("<p class='text-red-400'>Enter a valid email address (or leave it empty).</p>");
+      if (!em) {{
+        show("<p class='text-red-400'>Enter your email address (required - the report link is sent there).</p>");
+        return;
+      }}
+      if (!/^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$/.test(em)) {{
+        show("<p class='text-red-400'>Enter a valid email address like name@example.com.</p>");
         return;
       }}
       if (!/^0x[0-9a-fA-F]{{40}}$/.test(a)) {{ show("<p class='text-red-400'>Enter a valid 0x-prefixed contract address.</p>"); return; }}
       start.disabled = true; start.textContent = "Contacting service...";
-      show("<p class='text-zinc-400'>Requesting payment terms from the service...</p>");
+      show("<p class='text-zinc-200'>Requesting payment terms from the service...</p>");
       try {{
         var res = await fetch(REST, {{
           method: "POST",
@@ -899,7 +903,7 @@ def _build_index_html() -> str:
       }} catch (err) {{
         show("<p class='text-red-400'>Request failed: " + esc((err && err.message) || String(err)) + "</p>");
       }} finally {{
-        start.disabled = false; start.textContent = "Pay USDC to audit";
+        start.disabled = false; start.textContent = "Pay to audit";
       }}
     }});
     // Page-load hooks (order matters: the card button flag first, then the
@@ -928,7 +932,7 @@ def _build_index_html() -> str:
     <h2 class="mb-4 text-xl font-semibold">Pricing</h2>
     <div class="overflow-x-auto rounded-lg border border-zinc-800">
       <table class="w-full text-sm">
-        <thead class="bg-zinc-900 text-left text-zinc-400">
+        <thead class="bg-zinc-900 text-left text-zinc-200">
           <tr><th class="px-4 py-2">Verified source lines</th>
               <th class="px-4 py-2 text-right">Price (USDC)</th></tr>
         </thead>
@@ -939,19 +943,19 @@ def _build_index_html() -> str:
         </tbody>
       </table>
     </div>
-    <p class="mt-2 text-xs text-zinc-500">Line count is determined by the
+    <p class="mt-2 text-xs text-zinc-300">Line count is determined by the
     service from the verified source; blank lines excluded. Reports are
     retrieved with the issued task ID at no extra charge.</p>
   </section>
 
   <section class="mb-12">
     <h2 class="mb-4 text-xl font-semibold">Use with Claude</h2>
-    <p class="mb-2 text-sm text-zinc-400">Add agentSAFE to your MCP client
+    <p class="mb-2 text-sm text-zinc-200">Add agentSAFE to your MCP client
     config (replace the host with your deployment URL):</p>
     <pre class="{pre_class}"><code>{CLAUDE_CONFIG_JSON}</code></pre>
   </section>
 
-  <footer class="mt-16 border-t border-zinc-800 pt-6 text-xs text-zinc-400">
+  <footer class="mt-16 border-t border-zinc-800 pt-6 text-xs text-zinc-200">
     <div class="mb-3">
       <a href="/terms" class="hover:underline">Terms of Service</a> &middot;
       <a href="/privacy" class="hover:underline">Privacy Policy</a> &middot;

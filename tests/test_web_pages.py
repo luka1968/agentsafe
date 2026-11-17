@@ -105,7 +105,10 @@ class TestPublicPages:
         assert 'placeholder="0x..."' in r.text
         # the pay-to-audit CTA button
         assert 'id="start"' in r.text
-        assert "Pay USDC to audit" in r.text
+        assert "Pay to audit" in r.text
+        # email is a required field with a plain placeholder
+        assert 'id="email" type="email" required' in r.text
+        assert 'placeholder="your@email.com"' in r.text
         # the client posts to the x402-gated REST endpoint and parses the
         # machine-readable PAYMENT-REQUIRED header for the 402 path
         assert 'fetch(REST' in r.text
@@ -172,7 +175,7 @@ class TestPublicPages:
 
         Regression guard: the curl-command snippet originally emitted single
         backslash+quote (`\"`), which JS parses as an escaped quote inside an
-        unterminated string -> SyntaxError -> the "Pay USDC to audit" click
+        unterminated string -> SyntaxError -> the "Pay to audit" click
         handler never attached (silent no-op for visitors).
 
         An authoritative parse via Node's own JS engine is the only reliable
