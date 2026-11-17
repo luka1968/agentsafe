@@ -233,6 +233,43 @@ _X402_BRIDGE_PATH = Path(__file__).resolve().parents[2] / "web" / "dist" / "x402
 mcp: FastMCP | None = None
 
 
+class TaskStoreUnavailable(RuntimeError):
+    """Transient task-store (Neon/Postgres) failure: retryable, not fatal."""
+
+
+def _store_get(task_store: Any, task_id: str) -> Any:
+    """Read a task, translating a transient store outage into a retryable,
+    well-formed error instead of a 500 traceback. Nothing was changed, so the
+    customer-safe contract is 'try again shortly'."""
+    try:
+        return task_store.get(task_id)
+    except Exception as exc:  # noqa: BLE001 - infrastructure hiccup
+        logger.warning("task store read failed for %s: %s", task_id, exc)
+        raise TaskStoreUnavailable(str(exc)) from exc
+
+
+def _store_write(fn: Any, *args: Any, **kwargs: Any) -> bool:
+    """Best-effort state write: a transient store write failure is logged and
+    never turns a successfully resolved status/report into a 500."""
+    try:
+        fn(*args, **kwargs)
+        return True
+    except Exception as exc:  # noqa: BLE001 - infrastructure hiccup
+        logger.warning("task store write failed: %s", exc)
+        return False
+
+
+def _store_unavailable_response() -> JSONResponse:
+    return JSONResponse(
+        {
+            "ok": False,
+            "error_code": "store_unavailable",
+            "error": "temporarily unavailable; retry shortly",
+        },
+        status_code=503,
+    )
+
+
 def _setup_logging(level: str) -> None:
     logging.basicConfig(
         level=getattr(logging, level, logging.INFO),
@@ -925,7 +962,10 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
                  "error": "task_id must be 1..64 chars"},
                 status_code=400,
             )
-        task = task_store.get(task_id)
+        try:
+            task = _store_get(task_store, task_id)
+        except TaskStoreUnavailable:
+            return _store_unavailable_response()
         if task is None:
             return JSONResponse(
                 {"ok": False, "error_code": "unknown_task",
@@ -1448,7 +1488,10 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
                  "error": "task_id must be 1..64 chars"},
                 status_code=400,
             )
-        task = task_store.get(task_id)
+        try:
+            task = _store_get(task_store, task_id)
+        except TaskStoreUnavailable:
+            return _store_unavailable_response()
         if task is None:
             return JSONResponse(
                 {"ok": False, "error_code": "unknown_task",
@@ -1469,7 +1512,7 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
                 status_code=502,
             )
         mapped = gh.map_run_status(run)
-        task_store.set_state(task_id, TaskState(mapped))
+        _store_write(task_store.set_state, task_id, TaskState(mapped))
         if mapped == "completed":
             # Report is ready: deliver the single report-ready email if the
             # customer supplied an address at dispatch (idempotent).
@@ -1538,7 +1581,10 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
                 {"ok": False, "error_code": "invalid_task_id", "error": "task_id must be 1..64 chars"},  # noqa: E501
                 status_code=400,
             )
-        task = task_store.get(task_id)
+        try:
+            task = _store_get(task_store, task_id)
+        except TaskStoreUnavailable:
+            return _store_unavailable_response()
         if task is None:
             return JSONResponse(
                 {"ok": False, "error_code": "unknown_task", "error": "no such task (it may have expired or never existed)"},  # noqa: E501
@@ -1559,7 +1605,7 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
                 status_code=502,
             )
         mapped = gh.map_run_status(run)
-        task_store.set_state(task_id, TaskState(mapped))
+        _store_write(task_store.set_state, task_id, TaskState(mapped))
         if mapped != "completed":
             # Distinguish "still running" (keep waiting) from "failed"
             # (no report will ever exist; payment is preserved and the
@@ -2097,7 +2143,7 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
             }
 
         mapped = gh.map_run_status(run)
-        task_store.set_state(task_id, TaskState(mapped))
+        _store_write(task_store.set_state, task_id, TaskState(mapped))
 
         if mapped == "completed":
             if payment.enabled and not task.paid:
