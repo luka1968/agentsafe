@@ -90,7 +90,7 @@ class TestPublicPages:
         # over-limit contracts must be explained before signing (flat fee
         # covers <=500 lines) and, on refusal, the state the nothing moved.
         assert "up to <b>500 source lines</b>" in r.text
-        assert "no USDC is ever taken" in r.text
+        assert "nothing is ever charged" in r.text
         assert "Nothing was charged" in r.text
         assert "lineLimitNote" in r.text
         assert "isLineLimit" in r.text
@@ -122,6 +122,12 @@ class TestPublicPages:
         assert "payOnChain" in r.text
         assert "X-PAYMENT" in r.text
         assert "chain-opt" in r.text
+        # chain buttons are HIDDEN for now (card checkout only): the x402
+        # markup + logic stay in place behind a server-rendered flag, so the
+        # buttons can come back without a backend change.
+        assert "var CRYPTO_UI = false;" in r.text
+        assert "if (CRYPTO_UI) accs.forEach" in r.text
+        assert "Card checkout is temporarily" in r.text
         # The page must preserve the server's accept order (the backend
         # advertises the primary payable network first - mainnet Base by
         # default - then the extra chains). It must NOT re-sort a testnet

@@ -24,6 +24,15 @@ LEGAL_FILES = {
 
 LEGAL_SLUGS = tuple(LEGAL_FILES)
 
+# Crypto (x402) checkout UI on the landing page. The x402 endpoints, the
+# advertised `accepts` list, payment verification and settlement are
+# UNCHANGED by this flag - it only HIDES the "Pay with <chain>" buttons
+# (Base mainnet / Base Sepolia) so the page offers the card checkout
+# (Creem) only. Flip back to True to show the crypto buttons again; no
+# backend change or redeploy of anything else is needed.
+CRYPTO_CHECKOUT_UI_ENABLED = False
+_CRYPTO_UI_JS = "true" if CRYPTO_CHECKOUT_UI_ENABLED else "false"
+
 
 class LegalDocumentMissingError(RuntimeError):
     """The backing Markdown file could not be found in any known location."""
@@ -179,13 +188,16 @@ def _build_index_html() -> str:
     </div>
     <div id="flow" class="mt-4 hidden rounded-lg border border-zinc-800 bg-black p-4 text-sm"></div>
     <p id="wallet-hint" class="mt-2 hidden text-xs text-zinc-300">
-      Your wallet will open to approve the USDC payment on the selected chain.
+      You will be redirected to a secure checkout to complete the payment.
     </p>
   </section>
 
   <script>
   (function () {{
     var REST = "/api/audit";
+    // Chain buttons on/off (server-rendered flag; see
+    // CRYPTO_CHECKOUT_UI_ENABLED). Card checkout is independent of this.
+    var CRYPTO_UI = {_CRYPTO_UI_JS};
     var addr = document.getElementById("addr");
     var email = document.getElementById("email");
     var start = document.getElementById("start");
@@ -479,12 +491,14 @@ def _build_index_html() -> str:
     // summary can pick a different network without re-requesting terms.
     function renderChoices(accs, a, clickFn) {{
       var lines = [];
-      lines.push("<p class='text-yellow-300'>Payment required to start this audit. Pick the network you want to pay on:</p>");
+      lines.push(CRYPTO_UI
+        ? "<p class='text-yellow-300'>Payment required to start this audit. Pick the network you want to pay on:</p>"
+        : "<p class='text-yellow-300'>Payment required to start this audit.</p>");
       lines.push("<p class='text-xs text-zinc-300'>The flat fee covers contracts up to <b>500 source lines</b>. "
         + "Larger contracts are billed per size tier on the MCP endpoint (tool "
         + "<code>audit_contract</code>); requesting one here is refused <i>before</i> "
-        + "settlement, so no USDC is ever taken.</p>");
-      accs.forEach(function (acc, i) {{
+        + "settlement, so nothing is ever charged.</p>");
+      if (CRYPTO_UI) accs.forEach(function (acc, i) {{
         var meta = CHAINS[acc.network] || {{ name: acc.network }};
         // USDC is 6 decimals. Show the true amount without padding the
         // trailing zeros so a sub-cent testnet price ($0.0001) does not
@@ -509,13 +523,18 @@ def _build_index_html() -> str:
           + " <span class='text-zinc-300'>&mdash; card / Apple Pay / Google Pay</span>"
           + "<br><span class='text-xs text-zinc-300'>Hosted checkout by Creem (Merchant of Record). No crypto wallet needed.</span>"
           + "</button>");
+      }} else if (!CRYPTO_UI) {{
+        lines.push("<p class='text-yellow-300'>Card checkout is temporarily "
+          + "unavailable. Please try again shortly.</p>");
       }}
-      lines.push("<p class='mt-3 text-xs text-zinc-300'>Your wallet will open and switch to that network, then ask you to approve the payment. "
-        + "Prefer the terminal? Run the curl command below with an x402-enabled client:</p>");
-      var curlCmd = "curl -X POST " + window.location.origin + REST
-        + " -H 'content-type: application/json' -d '" + JSON.stringify({{"address": a}}) + "'";
-      lines.push("<pre class='mt-2 overflow-x-auto rounded border border-zinc-800 bg-zinc-900 p-3 text-xs text-cyan-300'><code>"
-        + esc(curlCmd) + "</code></pre>");
+      if (CRYPTO_UI) {{
+        lines.push("<p class='mt-3 text-xs text-zinc-300'>Your wallet will open and switch to that network, then ask you to approve the payment. "
+          + "Prefer the terminal? Run the curl command below with an x402-enabled client:</p>");
+        var curlCmd = "curl -X POST " + window.location.origin + REST
+          + " -H 'content-type: application/json' -d '" + JSON.stringify({{"address": a}}) + "'";
+        lines.push("<pre class='mt-2 overflow-x-auto rounded border border-zinc-800 bg-zinc-900 p-3 text-xs text-cyan-300'><code>"
+          + esc(curlCmd) + "</code></pre>");
+      }}
       showState(PS.REQUIRED, resumeView() + lines.join(""));
       flow.querySelectorAll("button.chain-opt").forEach(function (b) {{
         b.addEventListener("click", function () {{ clickFn(b, accs, a); }});
