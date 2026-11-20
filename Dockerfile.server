@@ -20,8 +20,16 @@ WORKDIR /app
 COPY pyproject.toml ./
 COPY src ./src
 
-# Install the MCP server with x402 payment support
-RUN pip install --no-cache-dir . "x402[evm]==2.25.0"
+# Editable install ON PURPOSE: server.py resolves its runtime assets
+# (openapi.json, favicon.ico, logo.png, web/dist/*.js) from
+# Path(__file__).parents[2]. With an editable install that resolves to /app
+# (the app root); with a regular install the package lands in site-packages
+# and every one of those endpoints would 404.
+RUN pip install --no-cache-dir -e . "x402[evm]==2.25.0"
+
+# Runtime assets served by the ASGI app, resolved relative to /app.
+COPY openapi.json favicon.ico logo.png ./
+COPY web/dist ./web/dist
 
 # Create data directory for SQLite persistence
 RUN mkdir -p /app/data && chown -R root:root /app/data
