@@ -34,10 +34,15 @@ COPY web/dist ./web/dist
 # Create data directory for SQLite persistence
 RUN mkdir -p /app/data && chown -R root:root /app/data
 
-# Healthcheck
+# Healthcheck: the landing page is a cheap route that always answers 200.
+# The MCP endpoint itself needs a session and answers 400 to a bare GET.
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8000/mcp/tools/health || exit 1
+    CMD curl -f http://localhost:8000/ || exit 1
 
 EXPOSE 8000
 
-CMD ["fastmcp", "run", "agentsafe.server:create_app", "--host", "0.0.0.0", "--port", "8000"]
+# NOTE: do NOT use "fastmcp run agentsafe.server:create_app". FastMCP 4.x's CLI
+# resolves that argument as a FILE PATH (a "file.py:object" spec), so it looks
+# for /app/agentsafe.server, logs "File not found" and exits 1. The package's
+# own entry point (src/agentsafe/__main__.py -> server.main()) is used instead.
+CMD ["python", "-m", "agentsafe", "--transport", "http", "--host", "0.0.0.0", "--port", "8000"]
