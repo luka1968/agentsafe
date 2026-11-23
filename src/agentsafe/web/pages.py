@@ -116,6 +116,13 @@ _INDEX_ROWS = (
 # the server-side tiers in pricing.py are unchanged either way.
 _SHOW_PRICING_TABLE = False
 
+# The wallet (x402) network picker is hidden on the landing page while the card
+# channel (Creem) is the offered payment method. The x402 flow itself is
+# untouched for MCP clients, which never use this page. The picker also comes
+# back by itself when the card channel is unavailable, so the page can never
+# end up with no way to pay.
+_SHOW_CHAIN_BUTTONS = False
+
 
 def _build_index_html() -> str:
     rows = "\n".join(
@@ -214,6 +221,9 @@ def _build_index_html() -> str:
   <script>
   (function () {{
     var REST = "/api/audit";
+    // Landing-page payment options. False hides the wallet chain picker;
+    // renderChoices() brings it back when the card channel is unavailable.
+    var SHOW_CHAIN_BUTTONS = {str(_SHOW_CHAIN_BUTTONS).lower()};
     var addr = document.getElementById("addr");
     var email = document.getElementById("email");
     var start = document.getElementById("start");
@@ -507,28 +517,37 @@ def _build_index_html() -> str:
     // summary can pick a different network without re-requesting terms.
     function renderChoices(accs, a, clickFn) {{
       var lines = [];
-      lines.push("<p class='text-yellow-300'>Payment required to start this audit. Pick the network you want to pay on:</p>");
-      lines.push("<p class='text-xs text-zinc-300'>The flat fee covers contracts up to <b>500 source lines</b>. "
-        + "Larger contracts are billed per size tier on the MCP endpoint (tool "
-        + "<code>audit_contract</code>); requesting one here is refused <i>before</i> "
-        + "settlement, so no USDC is ever taken.</p>");
-      accs.forEach(function (acc, i) {{
-        var meta = CHAINS[acc.network] || {{ name: acc.network }};
-        // USDC is 6 decimals. Show the true amount without padding the
-        // trailing zeros so a sub-cent testnet price ($0.0001) does not
-        // render as "0.00 USDC".
-        var price = (Number(acc.amount) / 1e6).toFixed(6).replace(/0+$/, "").replace(/\.$/, "");
-        var payTo = acc.payTo || "";
-        var tag = meta.testnet
-          ? " <span class='rounded bg-amber-900/60 px-1.5 py-0.5 text-[10px] text-amber-300'>TESTNET (free USDC)</span>"
-          : "";
-        lines.push("<button data-chain='" + i + "' class='chain-opt mt-2 w-full rounded-lg border border-zinc-700 bg-zinc-900 px-4 py-3 text-left text-sm hover:border-cyan-400'>"
-          + "<span class='font-semibold text-cyan-300'>Pay with " + esc(meta.name) + "</span>" + tag
-          + " <span class='text-zinc-300'>" + esc(acc.network) + "</span>"
-          + " &mdash; <b>" + price + " USDC</b>"
-          + "<br><span class='text-xs text-zinc-300'>pay to: <code class='break-all'>" + esc(payTo) + "</code></span>"
-          + "</button>");
-      }});
+      // Card-only deployments (Creem) hide the wallet chain picker; the
+      // picker comes back by itself if the card channel is not advertised.
+      var showChains = SHOW_CHAIN_BUTTONS || !window.__creemEnabled;
+      if (showChains) {{
+        lines.push("<p class='text-yellow-300'>Payment required to start this audit. Pick the network you want to pay on:</p>");
+        lines.push("<p class='text-xs text-zinc-300'>The flat fee covers contracts up to <b>500 source lines</b>. "
+          + "Larger contracts are billed per size tier on the MCP endpoint (tool "
+          + "<code>audit_contract</code>); requesting one here is refused <i>before</i> "
+          + "settlement, so no USDC is ever taken.</p>");
+      }} else {{
+        lines.push("<p class='text-yellow-300'>Payment required to start this audit. Pay by card to begin &mdash; no crypto wallet needed.</p>");
+      }}
+      if (showChains) {{
+        accs.forEach(function (acc, i) {{
+          var meta = CHAINS[acc.network] || {{ name: acc.network }};
+          // USDC is 6 decimals. Show the true amount without padding the
+          // trailing zeros so a sub-cent testnet price ($0.0001) does not
+          // render as "0.00 USDC".
+          var price = (Number(acc.amount) / 1e6).toFixed(6).replace(/0+$/, "").replace(/\.$/, "");
+          var payTo = acc.payTo || "";
+          var tag = meta.testnet
+            ? " <span class='rounded bg-amber-900/60 px-1.5 py-0.5 text-[10px] text-amber-300'>TESTNET (free USDC)</span>"
+            : "";
+          lines.push("<button data-chain='" + i + "' class='chain-opt mt-2 w-full rounded-lg border border-zinc-700 bg-zinc-900 px-4 py-3 text-left text-sm hover:border-cyan-400'>"
+            + "<span class='font-semibold text-cyan-300'>Pay with " + esc(meta.name) + "</span>" + tag
+            + " <span class='text-zinc-300'>" + esc(acc.network) + "</span>"
+            + " &mdash; <b>" + price + " USDC</b>"
+            + "<br><span class='text-xs text-zinc-300'>pay to: <code class='break-all'>" + esc(payTo) + "</code></span>"
+            + "</button>");
+        }});
+      }}
       // Card checkout (Creem, Merchant of Record): rendered only when the
       // backend advertises the channel (GET /api/pay/creem/config).
       if (window.__creemEnabled) {{
@@ -538,12 +557,14 @@ def _build_index_html() -> str:
           + "<br><span class='text-xs text-zinc-300'>Hosted checkout by Creem (Merchant of Record). No crypto wallet needed.</span>"
           + "</button>");
       }}
-      lines.push("<p class='mt-3 text-xs text-zinc-300'>Your wallet will open and switch to that network, then ask you to approve the payment. "
-        + "Prefer the terminal? Run the curl command below with an x402-enabled client:</p>");
-      var curlCmd = "curl -X POST " + window.location.origin + REST
-        + " -H 'content-type: application/json' -d '" + JSON.stringify({{"address": a}}) + "'";
-      lines.push("<pre class='mt-2 overflow-x-auto rounded border border-zinc-800 bg-zinc-900 p-3 text-xs text-cyan-300'><code>"
-        + esc(curlCmd) + "</code></pre>");
+      if (showChains) {{
+        lines.push("<p class='mt-3 text-xs text-zinc-300'>Your wallet will open and switch to that network, then ask you to approve the payment. "
+          + "Prefer the terminal? Run the curl command below with an x402-enabled client:</p>");
+        var curlCmd = "curl -X POST " + window.location.origin + REST
+          + " -H 'content-type: application/json' -d '" + JSON.stringify({{"address": a}}) + "'";
+        lines.push("<pre class='mt-2 overflow-x-auto rounded border border-zinc-800 bg-zinc-900 p-3 text-xs text-cyan-300'><code>"
+          + esc(curlCmd) + "</code></pre>");
+      }}
       showState(PS.REQUIRED, resumeView() + lines.join(""));
       flow.querySelectorAll("button.chain-opt").forEach(function (b) {{
         b.addEventListener("click", function () {{ clickFn(b, accs, a); }});
