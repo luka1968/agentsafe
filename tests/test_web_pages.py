@@ -64,9 +64,13 @@ class TestPublicPages:
         assert r.status_code == 200
         assert "text/html" in r.headers["content-type"]
         assert "agentSAFE" in r.text
-        # pricing table: every tier price
-        for price in ("$0.50", "$2.50", "$5.00", "$25.00"):
-            assert price in r.text
+        # the size-tier pricing table is hidden while the card channel
+        # (Creem) charges one fixed price; no tier price is rendered at all
+        # (see _SHOW_PRICING_TABLE in agentsafe/web/pages.py)
+        for price in ("$2.50", "$5.00", "$25.00"):
+            assert price not in r.text
+        assert "1,001" not in r.text
+        assert "Verified source lines" not in r.text
         # enterprise CTA + legal footer links
         assert "https://tally.so/r/laby7B" in r.text
         assert 'href="/terms"' in r.text

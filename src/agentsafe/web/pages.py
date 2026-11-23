@@ -111,6 +111,11 @@ _INDEX_ROWS = (
     ("1,001 &ndash; 5,000", "$25.00"),
 )
 
+# The size-tier ladder is hidden on the landing page while the card channel
+# (Creem) charges one fixed price. Flip to True to publish the table again -
+# the server-side tiers in pricing.py are unchanged either way.
+_SHOW_PRICING_TABLE = False
+
 
 def _build_index_html() -> str:
     rows = "\n".join(
@@ -121,6 +126,29 @@ def _build_index_html() -> str:
     enterprise_cell = (
         f'<a class="text-cyan-300 hover:underline" href="{_TALLY_URL}">Enterprise inquiry</a>'
     )
+    pricing_section = ""
+    if _SHOW_PRICING_TABLE:
+        pricing_section = f'''
+  <section class="mb-12">
+    <h2 class="mb-4 text-xl font-semibold">Pricing</h2>
+    <div class="overflow-x-auto rounded-lg border border-zinc-800">
+      <table class="w-full text-sm">
+        <thead class="bg-zinc-900 text-left text-zinc-200">
+          <tr><th class="px-4 py-2">Verified source lines</th>
+              <th class="px-4 py-2 text-right">Price (USDC)</th></tr>
+        </thead>
+        <tbody>
+{rows}
+          <tr class="border-t border-zinc-800"><td class="px-4 py-2">More than 5,000</td>
+              <td class="px-4 py-2 text-right">{enterprise_cell}</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="mt-2 text-xs text-zinc-300">Line count is determined by the
+    service from the verified source; blank lines excluded. Reports are
+    retrieved with the issued task ID at no extra charge.</p>
+  </section>
+'''
     pre_class = (
         "overflow-x-auto rounded-lg border border-zinc-800 bg-zinc-900 p-4 text-xs text-cyan-300"
     )
@@ -928,25 +956,7 @@ def _build_index_html() -> str:
   }})();
   </script>
 
-  <section class="mb-12">
-    <h2 class="mb-4 text-xl font-semibold">Pricing</h2>
-    <div class="overflow-x-auto rounded-lg border border-zinc-800">
-      <table class="w-full text-sm">
-        <thead class="bg-zinc-900 text-left text-zinc-200">
-          <tr><th class="px-4 py-2">Verified source lines</th>
-              <th class="px-4 py-2 text-right">Price (USDC)</th></tr>
-        </thead>
-        <tbody>
-{rows}
-          <tr class="border-t border-zinc-800"><td class="px-4 py-2">More than 5,000</td>
-              <td class="px-4 py-2 text-right">{enterprise_cell}</td></tr>
-        </tbody>
-      </table>
-    </div>
-    <p class="mt-2 text-xs text-zinc-300">Line count is determined by the
-    service from the verified source; blank lines excluded. Reports are
-    retrieved with the issued task ID at no extra charge.</p>
-  </section>
+{pricing_section}
 
   <section class="mb-12">
     <h2 class="mb-4 text-xl font-semibold">Use with Claude</h2>
