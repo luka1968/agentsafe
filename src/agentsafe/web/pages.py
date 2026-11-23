@@ -159,7 +159,11 @@ def _build_index_html() -> str:
     pre_class = (
         "overflow-x-auto rounded-lg border border-zinc-800 bg-zinc-900 p-4 text-xs text-cyan-300"
     )
-    build_tag = "v" + __version__ + "-" + os.environ.get("VERCEL_GIT_COMMIT_SHA", "dev")[:8]
+    build_tag = "v" + __version__ + "-" + (
+        os.environ.get("AGENTSAFE_GIT_SHA")
+        or os.environ.get("VERCEL_GIT_COMMIT_SHA")
+        or "dev"
+    )[:8]
     return f"""<!DOCTYPE html>
 <html lang="en" class="bg-black text-white">
 <head>

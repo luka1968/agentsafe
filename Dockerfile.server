@@ -17,6 +17,13 @@ RUN apt-get update \
 
 WORKDIR /app
 
+# Build provenance: the publishing workflow passes the commit SHA so the
+# landing-page footer can show exactly which build is live (the footer used
+# to read VERCEL_GIT_COMMIT_SHA and therefore always showed "dev" on Docker
+# hosts, which made "did the redeploy take effect?" impossible to answer).
+ARG GIT_SHA=
+ENV AGENTSAFE_GIT_SHA=${GIT_SHA}
+
 COPY pyproject.toml ./
 COPY src ./src
 
