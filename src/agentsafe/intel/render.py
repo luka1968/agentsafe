@@ -17,13 +17,22 @@ INTEL_BUDGET_CHARS = 2400
 KB_BUDGET_CHARS = 1600
 KB_SNIPPET_CHARS = 420
 
-# Which intel facets matter per agent focus (mission: cross-function
-# interactions, accounting, authorization, multi-step paths).
+# Which intel facets matter per agent focus (keyed by the agent's stable
+# `profile`/`name`; legacy focus-prose strings fall back via substring match).
 _FOCUS_FACETS = {
     "access_control": ("priv", "entry", "mods"),
+    "reentrancy": ("calls", "state", "transfers", "entry"),
+    "accounting": ("transfers", "state", "entry"),
+    "cross_function": ("state", "calls", "entry"),
+    "oracle": ("calls", "state", "entry"),
+    "cross_contract": ("calls", "entry", "mods"),
+    "arithmetic": ("arith", "state", "entry"),
+    "proxy_upgrade": ("state", "calls", "entry", "priv"),
+    "general_discovery": ("state", "calls", "arith", "entry"),
+    "validation": ("priv", "state", "transfers"),
+    # legacy aliases (matched against focus prose)
     "fund_flow": ("transfers", "state", "entry", "mods"),
     "business_logic": ("state", "calls", "arith", "entry"),
-    "validation": ("priv", "state", "transfers"),
 }
 
 
@@ -33,8 +42,13 @@ def _cap(text: str, limit: int) -> str:
     return text[: limit - 3] + "..."
 
 
-def _facet_for(focus: str, facets: tuple[str, ...]) -> tuple[str, ...]:
-    key = next((k for k in _FOCUS_FACETS if k.split("_")[0] in focus.lower()), "access_control")
+def _facet_for(focus: str, facets: tuple[str, ...] = ()) -> tuple[str, ...]:
+    key = (focus or "").strip().lower()
+    if key in _FOCUS_FACETS:
+        return _FOCUS_FACETS[key]
+    key = next(
+        (k for k in _FOCUS_FACETS if k.split("_")[0] in key), "access_control"
+    )
     return _FOCUS_FACETS.get(key, ("priv", "entry", "mods"))
 
 
@@ -171,6 +185,24 @@ def render_intel_brief(intel: "ContractIntel | None", focus: str,
               + (f"[init:{','.join(p.initializer_chain)}]" if p.initializer_chain else "")
               for p in pats[:6]]
         out.append("PROXY PATTERNS: " + "; ".join(pp))
+    # Explicit evidence-based classification (Section 10): the four-state
+    # verdict + the structural evidence, so a similar-looking name is never
+    # silently treated as a proxy.
+    try:
+        from agentsafe.intel.proxy import ProxyClass, classify_contracts
+
+        pcs = [p for p in classify_contracts(intel)
+               if p.classification != ProxyClass.REGULAR]
+        if pcs:
+            rows = [
+                f"{p.contract}={p.classification}"
+                + (f"({p.pattern})" if p.pattern not in ("none", "unknown") else "")
+                + (" ev:" + "|".join(p.evidence[:2]) if p.evidence else "")
+                for p in pcs[:6]
+            ]
+            out.append("PROXY CLASSIFICATION: " + "; ".join(rows))
+    except Exception:  # noqa: S110 - classification is a lens, never a blocker
+        pass
 
     return _cap("\n".join(out), INTEL_BUDGET_CHARS)
 
@@ -285,9 +317,36 @@ def render_kb_snippets(records: list[dict[str, Any]]) -> str:
             non_null = [p for p in parts_ if p]
             if non_null:
                 poc_meta = "\n".join(non_null) + "\n"
+        # High-signal structured fields come FIRST so they survive the per-record
+        # character budget; the raw report mechanism (often long) follows,
+        # capped, so it cannot crowd out the root cause / preconditions.
+        mech = _cap(str(r.get("mechanism") or ""), 240)
+        # Phase 5: how this record relates to the TARGET contract's context
+        # (matched functions/state/tokens/traits/solc). Explicit, evidence-based.
+        # Every record states WHY it was retrieved, so an unrelated record cannot
+        # be silently appended: unmatched records fall back to their retrieval
+        # basis (agent profile / retrieval mode / lexical relevance).
+        rinfo = r.get("_retrieval") or {}
+        ctxsig = rinfo.get("context_signals") or []
+        if ctxsig:
+            why_line = (
+                "why retrieved: target-context match: "
+                + "; ".join(str(s) for s in ctxsig) + "\n"
+            )
+        else:
+            bits: list[str] = []
+            if rinfo.get("profile"):
+                bits.append(f"agent profile '{rinfo['profile']}'")
+            if rinfo.get("mode"):
+                bits.append(f"{rinfo['mode']} retrieval")
+            if rinfo.get("reason"):
+                bits.append(str(rinfo["reason"]))
+            if not bits:
+                bits.append("lexical relevance to the chunk + focus keywords")
+            why_line = "why retrieved: " + "; ".join(bits) + "\n"
         body = (
-            f"[{r.get('id')}] {r.get('category')} / {r.get('protocol_type', 'generic')} — "
-            f"mechanism: {r.get('mechanism')}\n"
+            f"[{r.get('id')}] {r.get('category')} / {r.get('protocol_type', 'generic')}\n"
+            f"{why_line}"
             f"root cause: {r.get('root_cause')}\n"
             f"preconditions: {'; '.join(r.get('preconditions', []))}\n"
             f"{path_lines}"
@@ -296,6 +355,7 @@ def render_kb_snippets(records: list[dict[str, Any]]) -> str:
             f"{secure_lines}"
             f"{verify_lines}"
             f"{poc_meta}"
+            f"mechanism: {mech}\n"
             f"{attack_line}"
             f"{code_lines}"
             f"impact: {r.get('impact')}\n"

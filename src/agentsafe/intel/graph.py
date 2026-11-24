@@ -143,34 +143,28 @@ def state_change_evidence(intel: ContractIntel,
 
 
 def classify_proxy_pattern(intel: ContractIntel) -> list[ProxyPattern]:
-    """Classify each contract's proxy/upgrade posture from structural evidence
-    (storage slot constants, upgrade function names, init markers). Evidence
-    strings make the classification auditable; none is LLM-guessed."""
+    """Proxy/upgrade posture per contract, DERIVED from the explicit evidence
+    classifier (intel.proxy). A concrete pattern (uups/transparent/beacon) is
+    reported ONLY for a CONFIRMED/PROBABLE classification; anything else is
+    "plain". Evidence strings make the classification auditable; none is
+    guessed, and a name alone never yields a proxy pattern."""
+    from agentsafe.intel.proxy import ProxyClass, classify_contract
+
     out: list[ProxyPattern] = []
     for c in intel.contracts:
-        fn_blob = " ".join(
-            f"{f.name} {' '.join(f.modifiers)} {f.body or ''}" for f in c.functions)
-        blob = " ".join(sorted(c.state_vars)) + " " + fn_blob
-        evidence: list[str] = []
-        kind = "plain"
-        if any(s in blob for s in (
-                "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc",
-                "ERC1967_IMPLEMENTATION_SLOT", "IMPLEMENTATION_SLOT")):
-            kind, evidence = "uups" if (
-                any("upgradeToAndCall" in b or "upgradeTo" in b for b in
-                    (f"{f.name}" for f in c.functions))) else "transparent", evidence
-            evidence.append("ERC1967 implementation slot referenced")
-        if "BEACON_SLOT" in blob or "0xa3f0ad74e5423aebfd80d3ef4346578335a9a72aeaee59ff6cb3582b35133d50" in blob:
-            kind = "beacon"
-            evidence.append("beacon slot referenced")
-        if any("upgradeToAndCall" in f.name for f in c.functions) and "initializer" in blob:
-            kind = "uups"
-            evidence.append("upgradeToAndCall + initializer markers")
-        gap = bool(re.search(r"__gap|_gap|storage_gap|__[0-9]{3}", " ".join(c.state_vars)))
+        cls = classify_contract(c)
+        kind = (
+            cls.pattern
+            if cls.classification in (ProxyClass.CONFIRMED, ProxyClass.PROBABLE)
+            and cls.pattern in ("uups", "transparent", "beacon")
+            else "plain"
+        )
+        gap = bool(re.search(r"__gap|_gap|storage_gap|__[0-9]{3}",
+                             " ".join(c.state_vars)))
         inits = [f.name for f in c.functions if "initializer" in
                  " ".join(f.modifiers).lower() or f.name == "initialize"]
         out.append(ProxyPattern(
-            contract=c.name, kind=kind, evidence=evidence,
+            contract=c.name, kind=kind, evidence=list(cls.evidence),
             storage_gap_present=gap, initializer_chain=inits))
     return out
 

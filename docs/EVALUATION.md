@@ -78,7 +78,10 @@ overflow never confirmed even with a detector flag).
 
 ### 2.4 End-to-end audit performance — `--mode e2e`
 Full pipeline per contract (RAG off): mean 1.08 s/contract (n=2, probe LLM,
-no paid calls → cost USD 0.0), 10/10 stages complete, validation success 1.0.
+no paid calls → cost USD 0.0), 10/10 stages complete at the time of the run,
+validation success 1.0. (The pipeline has since gained an eleventh stage,
+`adversarial_review`; this recorded run predates it, so the count is left as
+measured rather than restated.)
 RAG-on runtime not reported here: live Neon round-trips dominated local
 latency and timed out; RAG-on *deployment* latency must be measured in the
 hosted environment, not this sandbox (see §5).
@@ -134,3 +137,12 @@ out of scope for the deterministic benchmark, but the harness supports it.
    verified; they are labeled reference-safe only.
 6. No comparison against AgentLISA is made anywhere in this document because no
    fair, reproducible cross-run on the same held-out set has been executed.
+
+## Categorized benchmark & regression suite (Section 14)
+
+`benchmarks/categorized_suite.py` drives the deterministic decision plane (validation -> independent adversarial review -> deployment context) over vulnerable AND secure/trap fixtures across all required categories (reentrancy, cross-function reentrancy, access control, initialization, accounting, arithmetic, oracle, signature replay, token integration, denial of service, cross-contract, business logic, false-positive traps, solidity-version/EVM-rollback semantics) and computes precision / recall / F1 / false-positive rate / confirmed-finding reproducibility from actual execution.
+
+## Quality gates for commercial readiness (Section 15)
+
+`benchmarks/quality_gates.py` reports the ACTUAL measurement of each release target (run it with `python benchmarks/quality_gates.py`). Measured on the current tree: Critical/High benchmark recall 1.00 (target >=0.90); precision on confirmed findings 1.00 (target >=0.85); EVM rollback false positives 0; unsupported proxy classifications 0; coverage accounting complete; failed/skipped agents recorded explicitly; no fabricated results; severity/confidence/verification kept separate. The single UNMET gate is reproducible-PoC (measured 0.00) because this environment has no EVM/Foundry backend �� PoCs are planned and reported as `environment_limitation`, so nothing is fabricated. Commercial readiness is therefore reported as NOT achieved (8/9 gates) and the shortfall is stated, not hidden.
+

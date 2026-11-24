@@ -41,8 +41,17 @@ reaches the report:
   `proposed_severity`), confirmed findings may only be downgraded (privilege
   gates, pausable/timelock/guard controls), never upgraded.
 - **Full audit trail** — every state change records the rule that fired
-  (`re0_cei_satisfied`, `ov0_theoretical_only`, `cr0_independent_support`, …),
+  (`re0_cei_satisfied`, `ov0_theoretical_only`, `cr0_independent_support`, ...),
   the reason, and supporting/contradicting code references with line numbers.
+- **Independent adversarial review** — after validation, a separate
+  deterministic pass *tries to disprove* every surviving candidate against the
+  verified source: internal-only functions that no external entry point reaches
+  (`ra0_internal_unreachable`), "missing access control" on authorization-gated
+  paths (`ac0_authz_gated_path`), mutation claims pinned on `view`/`pure`
+  functions (`ro0_readonly_contradiction`), and standard proxy-library behaviour
+  (`pxy0_proxy_admin_by_design`). It can only downgrade — never confirm a
+  finding, never clear a genuine open entry point. See
+  [`docs/ADVERSARIAL_REVIEW.md`](docs/ADVERSARIAL_REVIEW.md).
 
 > AgentSafe delivers AI-assisted security assessment with deterministic
 > falsification — informational by design, not a substitute for a formal audit.

@@ -169,7 +169,7 @@ class TestPathEnumeration:
         for p in paths:
             assert p.functions  # entry -> ... chain
             assert p.origin in ("state_var_followup", "sink_enumeration",
-                                "cross_read_write")
+                                "cross_read_write", "multi_tx_sequence")
             assert p.reproduced is False  # never claim tests we didn't run
 
     def test_suspicious_state_cross_function_only(self):

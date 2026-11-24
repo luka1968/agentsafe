@@ -12,6 +12,8 @@ from .db import (
     content_hash_of,
     get_knowledge_store,
 )
+from .enrich_llm import enrich_group_a_llm
+from .falsepositives import render_counterexamples, retrieve_counterexamples
 from .importers import (
     ImportSummary,
     import_jsonl_dataset,
@@ -19,17 +21,41 @@ from .importers import (
     run_import,
     run_import_resumable,
 )
+from .integrity import backfill_missing_embeddings, embedding_integrity
+from .interface import (
+    KnowledgeRequest,
+    KnowledgeResponse,
+)
+from .interface import (
+    describe as describe_retrieval_interface,
+)
 from .kb import DATASET_VERSION, KnowledgeBase
+from .maintenance import (
+    backfill_provenance,
+    propagate_parent_intelligence,
+    refresh_embeddings,
+)
 
 __all__ = [
     "KnowledgeBase",
     "NeonKnowledgeStore",
     "ImportSummary",
     "DATASET_VERSION",
+    "KnowledgeRequest",
+    "KnowledgeResponse",
+    "backfill_missing_embeddings",
+    "describe_retrieval_interface",
+    "backfill_provenance",
     "content_hash_of",
+    "embedding_integrity",
+    "enrich_group_a_llm",
     "get_knowledge_store",
     "import_jsonl_dataset",
     "normalize_record",
+    "propagate_parent_intelligence",
+    "render_counterexamples",
+    "retrieve_counterexamples",
+    "refresh_embeddings",
     "run_import",
     "run_import_resumable",
 ]

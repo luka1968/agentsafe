@@ -20,7 +20,7 @@ import logging
 import re
 from collections.abc import Sequence
 from datetime import UTC, datetime
-from typing import Literal
+from typing import Any, Literal
 
 from agentsafe import CHAIN_ID, REPORT_DISCLAIMER
 from agentsafe.schemas import (
@@ -51,10 +51,12 @@ _SEVERITY_ORDER = {
 }
 _STATUS_ORDER = {
     FindingStatus.CONFIRMED: 0,
-    FindingStatus.POTENTIAL: 1,
-    FindingStatus.NEEDS_MANUAL_REVIEW: 2,
-    FindingStatus.INFORMATIONAL: 3,
-    FindingStatus.REJECTED: 4,
+    FindingStatus.HIGH_CONFIDENCE: 1,
+    FindingStatus.POTENTIAL: 2,
+    FindingStatus.NEEDS_MANUAL_REVIEW: 3,
+    FindingStatus.UNVERIFIED: 4,
+    FindingStatus.INFORMATIONAL: 5,
+    FindingStatus.REJECTED: 6,
 }
 _EVIDENCE_SIMILARITY = 0.60
 _LINE_TOLERANCE = 5
@@ -418,6 +420,9 @@ def build_report(
     invariant_checks: Sequence[dict[str, Any]] = (),
     attack_paths: Sequence[dict[str, Any]] = (),
     targeted_test_results: Sequence[dict[str, Any]] = (),
+    adversarial_review: dict[str, Any] | None = None,
+    coverage: dict[str, Any] | None = None,
+    deployment: dict[str, Any] | None = None,
 ) -> AuditReport:
     findings = merge_findings(tool_findings, llm_findings)
     report = AuditReport(
@@ -442,6 +447,9 @@ def build_report(
         invariant_checks=list(invariant_checks),
         attack_paths=list(attack_paths),
         targeted_test_results=list(targeted_test_results),
+        adversarial_review=dict(adversarial_review or {}),
+        coverage=dict(coverage or {}),
+        deployment=dict(deployment or {}),
     )
     report.summary.static_analysis_status = static_analysis_status
     # Never label a degraded audit complete: even if a caller forgets to pass

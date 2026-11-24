@@ -162,6 +162,10 @@ Cross-function logic analysis:
 - Order-of-operations hazards: deposit-then-withdraw, approve-then-burn,
   flashable state transitions.
 - Invariant violations reachable only through multi-call sequences.
+- GROUND every claim in the provided graphs: CALL GRAPH, STATE ACCESS MAP /
+  STATE DEPS, and SINKS, plus the cross-function path/invariant hypotheses.
+  Name the exact functions and state variables from those graphs; do not
+  speculate about state or call relationships they do not show.
 -- When the input includes STATIC CROSS-FUNCTION HYPOTHESES (Stage 7):
   investigate each path/invariant, confirm or refute it with code evidence,
   and report ONLY the subset you can substantiate. A hypothesis is a hint,
@@ -179,6 +183,48 @@ DeFi protocol logic analysis (relevant when protocol-ish features exist):
 - Flash-loan-assisted attack paths and share-price manipulation.
 - Sanity: protocol economics must be attackable in THIS code, not in
   general DeFi lore. Report ONLY issues you can ground in quoted code."""
+
+
+ORACLE_FOCUS = """\
+Oracle and price-manipulation analysis:
+- Spot-price dependence: an AMM reserve/balanceOf used as a price within a
+  single transaction (manipulable via flash loans or swaps).
+- Manipulable liquidity pools: getReserves()/slot0()/balanceOf(pool) used as a
+  valuation without a TWAP or sanity bound.
+- Oracle update timing / staleness: latestRoundData()/latestAnswer() without
+  updatedAt/answeredInRound freshness checks, or missing round checks.
+- Decimal mismatches and price scaling: feed decimals vs token decimals,
+  hardcoded scaling factors, wrong base units.
+- TWAP assumptions: window length, observation cardinality, manipulable
+  accumulators.
+- Flash-loan-assisted manipulation and read-only reentrancy on price reads.
+- Fallback behavior: stale/zero/negative price accepted; no circuit breaker.
+REQUIRED to report: the concrete execution path (which call reads the price,
+who can move it), the economic assumptions (liquidity depth, capital
+required), and the resulting impact. A price read alone is NOT an oracle
+vulnerability. Report ONLY issues you can ground in quoted code evidence."""
+
+
+CROSS_CONTRACT_FOCUS = """\
+Cross-contract interaction and composability analysis:
+- External protocol dependencies: which external contracts are trusted and
+  what the code ASSUMES about them (reverts, return shapes, reentrancy).
+- Token behavior assumptions: missing return values (USDT-style no-return),
+  fee-on-transfer/deflationary tokens, rebasing tokens, odd decimals.
+- Callback interactions: ERC777/ERC721/ERC1155 hooks, flash-loan callbacks,
+  arbitrary external calls to attacker-controlled addresses.
+- Trust boundaries: privileged external callers, admin-controlled targets.
+- Interface mismatches: ABI/selector mismatches, wrong interface used.
+- Dependency upgrade risks: an external proxy/implementation replaced, or an
+  upgrade admin trusted by this contract.
+- Incorrect return-value handling: unchecked low-level calls, ignored bool
+  returns of transfer/approve, bad decode assumptions.
+- Composability attack paths: multi-contract sequences that break an
+  invariant this contract relies on.
+CRITICAL: clearly distinguish CONFIRMED behavior (the contract body is in the
+provided source) from ASSUMPTIONS about contracts NOT in the source (listed
+under UNRESOLVED). Never assert the behavior of an unavailable external
+contract. Report ONLY issues you can ground in quoted code evidence."""
 
 
 ARITHMETIC_FOCUS = """\

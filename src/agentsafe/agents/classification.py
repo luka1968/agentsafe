@@ -23,6 +23,8 @@ SPECIALISTS = (
     "accounting",
     "cross_function",
     "defi_logic",
+    "oracle",
+    "cross_contract",
     "arithmetic",
     "proxy_upgrade",
     "general_discovery",
@@ -58,6 +60,10 @@ _RE_BALANCE = re.compile(
 _RE_ARITH = re.compile(
     r"[+\-*/%]\s*=|unchecked\s*\{|uint(?:8|16|32)\b|int(?:8|16|32)\b", re.I)
 _RE_PAYABLE = re.compile(r"\bpayable\b|msg\.value", re.I)
+_RE_EXTERNAL_CALL = re.compile(
+    r"\.(?:call|delegatecall|staticcall|transfer|transferfrom|approve|"
+    r"safetransfer|safetransferfrom|mint|burn|balanceof)\s*[\({]",
+    re.I)
 
 _SLOT_EVIDENCE = "EIP-1967/EIP-1822 storage slot constant in source"
 _INIT_EVIDENCE = "initialize/__gap/initializer markers present"
@@ -188,6 +194,13 @@ def classify_contract(intel, source_text: str = "") -> ClassifiedProfile:
         p.triggers["defi_logic"] = "basic"
         p.coverage["defi_logic"] = _ORACLE_EVIDENCE
 
+    # --- E2. oracle / price manipulation (dedicated specialist) -------------
+    # Fires on price-surface evidence; the oracle agent's own prompt requires a
+    # concrete manipulable path + economic assumptions before reporting.
+    if _RE_ORACLE.search(blob_low):
+        p.triggers["oracle"] = "deep"
+        p.coverage["oracle"] = _ORACLE_EVIDENCE
+
     # --- F. arithmetic / boundary --------------------------------------------
     if _RE_ARITH.search(blob_low):
         p.triggers["arithmetic"] = "deep"
@@ -202,6 +215,19 @@ def classify_contract(intel, source_text: str = "") -> ClassifiedProfile:
         p.triggers["proxy_upgrade"] = "deep"
         p.coverage["proxy_upgrade"] = _SLOT_EVIDENCE if _RE_UPGRADE_SLOT.search(
             blob_low) else _UPGRADE_EVIDENCE
+
+    # --- I. cross-contract interaction ----------------------------------------
+    # External calls, interfaces, or unresolved (body-absent) external targets
+    # make cross-contract assumptions and return-value handling relevant.
+    unresolved = bool(getattr(intel, "unresolved_externals", None)) if intel else False
+    if unresolved or _RE_EXTERNAL_CALL.search(blob_low):
+        p.triggers["cross_contract"] = "deep"
+        p.coverage["cross_contract"] = (
+            "unresolved external contracts referenced (bodies not in source)"
+            if unresolved else "external call/token surface present")
+    elif "interface " in blob_low:
+        p.triggers["cross_contract"] = "basic"
+        p.coverage["cross_contract"] = "interface declarations present"
 
     # --- H. general discovery (always) ----------------------------------------
     p.triggers["general_discovery"] = "deep"

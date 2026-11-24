@@ -1,0 +1,346 @@
+{
+  "before": {
+    "retrieval_mode": "hybrid (vector+lexical RRF)",
+    "corpus_coverage_group_a": {
+      "total": 841,
+      "category": 0.8288,
+      "root_cause": 0.0,
+      "attack_scenario": 0.0,
+      "preconditions": 0.0,
+      "impact": 0.2521,
+      "remediation": 0.3424,
+      "tags": 0.0,
+      "llm_enriched": 0.0
+    },
+    "retrieval_coverage": {
+      "probes": 10,
+      "k": 5,
+      "retrieved": 50,
+      "field_coverage": {
+        "category": 1.0,
+        "root_cause": 0.78,
+        "attack_scenario": 0.54,
+        "preconditions": 0.78,
+        "impact": 0.92,
+        "remediation": 0.94,
+        "tags": 0.0
+      },
+      "mean_precision@k": 0.82,
+      "mean_mrr": 0.92,
+      "per_query": [
+        {
+          "query": "reentrancy external call callback drain state update",
+          "profile": "reentrancy",
+          "n": 5,
+          "hit_categories": [
+            "reentrancy",
+            "reentrancy",
+            "reentrancy",
+            "reentrancy",
+            "reentrancy"
+          ],
+          "precision@k": 1.0,
+          "mrr": 1.0
+        },
+        {
+          "query": "oracle price stale chainlink twap spot manipulation",
+          "profile": "oracle",
+          "n": 5,
+          "hit_categories": [
+            "oracle",
+            "oracle",
+            "oracle",
+            "oracle",
+            "oracle"
+          ],
+          "precision@k": 1.0,
+          "mrr": 1.0
+        },
+        {
+          "query": "share rounding totalSupply first depositor inflation",
+          "profile": "accounting",
+          "n": 5,
+          "hit_categories": [
+            "rounding",
+            "rounding",
+            "rounding",
+            "rounding",
+            "rounding"
+          ],
+          "precision@k": 1.0,
+          "mrr": 1.0
+        },
+        {
+          "query": "balance ledger desync withdraw insolvency accounting",
+          "profile": "accounting",
+          "n": 5,
+          "hit_categories": [
+            "accounting",
+            "accounting",
+            "accounting",
+            "token-transfer",
+            "accounting"
+          ],
+          "precision@k": 0.8,
+          "mrr": 1.0
+        },
+        {
+          "query": "access control missing modifier unprotected withdrawal",
+          "profile": "access_control",
+          "n": 5,
+          "hit_categories": [
+            "access-control",
+            "access-control",
+            "access-control",
+            "access-control",
+            "initialization"
+          ],
+          "precision@k": 0.8,
+          "mrr": 1.0
+        },
+        {
+          "query": "proxy initialization front-run takeover upgradeable",
+          "profile": "proxy_upgrade",
+          "n": 5,
+          "hit_categories": [
+            "initialization",
+            "initialization",
+            "initialization",
+            "proxy",
+            "proxy"
+          ],
+          "precision@k": 1.0,
+          "mrr": 1.0
+        },
+        {
+          "query": "unchecked external call return value silent failure",
+          "profile": "cross_function",
+          "n": 5,
+          "hit_categories": [
+            "reentrancy",
+            "oracle",
+            "oracle",
+            "reentrancy",
+            "unhandled-return"
+          ],
+          "precision@k": 0.2,
+          "mrr": 0.2
+        },
+        {
+          "query": "flash loan governance vote manipulation timelock",
+          "profile": "cross_function",
+          "n": 5,
+          "hit_categories": [
+            "governance",
+            "governance",
+            "governance",
+            "governance",
+            "accounting"
+          ],
+          "precision@k": 0.8,
+          "mrr": 1.0
+        },
+        {
+          "query": "approval race allowance double spend front-run",
+          "profile": "cross_function",
+          "n": 5,
+          "hit_categories": [
+            "approval",
+            "approval",
+            "approval",
+            "oracle",
+            "reentrancy"
+          ],
+          "precision@k": 0.6,
+          "mrr": 1.0
+        },
+        {
+          "query": "cross-contract callback read-only reentrancy state",
+          "profile": "reentrancy",
+          "n": 5,
+          "hit_categories": [
+            "reentrancy",
+            "reentrancy",
+            "reentrancy",
+            "reentrancy",
+            "reentrancy"
+          ],
+          "precision@k": 1.0,
+          "mrr": 1.0
+        }
+      ]
+    }
+  },
+  "after": {
+    "retrieval_mode": "hybrid (vector+lexical RRF)",
+    "corpus_coverage_group_a": {
+      "total": 841,
+      "category": 0.9893,
+      "root_cause": 0.9917,
+      "attack_scenario": 0.6706,
+      "preconditions": 0.9952,
+      "impact": 0.2771,
+      "remediation": 0.3508,
+      "tags": 1.0,
+      "llm_enriched": 1.0
+    },
+    "retrieval_coverage": {
+      "probes": 10,
+      "k": 5,
+      "retrieved": 50,
+      "field_coverage": {
+        "category": 1.0,
+        "root_cause": 1.0,
+        "attack_scenario": 0.68,
+        "preconditions": 1.0,
+        "impact": 0.9,
+        "remediation": 0.96,
+        "tags": 0.24
+      },
+      "mean_precision@k": 0.76,
+      "mean_mrr": 0.9,
+      "per_query": [
+        {
+          "query": "reentrancy external call callback drain state update",
+          "profile": "reentrancy",
+          "n": 5,
+          "hit_categories": [
+            "reentrancy",
+            "reentrancy",
+            "reentrancy",
+            "reentrancy",
+            "reentrancy"
+          ],
+          "precision@k": 1.0,
+          "mrr": 1.0
+        },
+        {
+          "query": "oracle price stale chainlink twap spot manipulation",
+          "profile": "oracle",
+          "n": 5,
+          "hit_categories": [
+            "oracle",
+            "oracle",
+            "oracle",
+            "oracle",
+            "oracle"
+          ],
+          "precision@k": 1.0,
+          "mrr": 1.0
+        },
+        {
+          "query": "share rounding totalSupply first depositor inflation",
+          "profile": "accounting",
+          "n": 5,
+          "hit_categories": [
+            "rounding",
+            "rounding",
+            "rounding",
+            "rounding",
+            "rounding"
+          ],
+          "precision@k": 1.0,
+          "mrr": 1.0
+        },
+        {
+          "query": "balance ledger desync withdraw insolvency accounting",
+          "profile": "accounting",
+          "n": 5,
+          "hit_categories": [
+            "accounting",
+            "accounting",
+            "accounting",
+            "token-transfer",
+            "accounting"
+          ],
+          "precision@k": 0.8,
+          "mrr": 1.0
+        },
+        {
+          "query": "access control missing modifier unprotected withdrawal",
+          "profile": "access_control",
+          "n": 5,
+          "hit_categories": [
+            "access-control",
+            "access-control",
+            "access-control",
+            "access-control",
+            "initialization"
+          ],
+          "precision@k": 0.8,
+          "mrr": 1.0
+        },
+        {
+          "query": "proxy initialization front-run takeover upgradeable",
+          "profile": "proxy_upgrade",
+          "n": 5,
+          "hit_categories": [
+            "initialization",
+            "initialization",
+            "initialization",
+            "proxy",
+            "bridge"
+          ],
+          "precision@k": 0.8,
+          "mrr": 1.0
+        },
+        {
+          "query": "unchecked external call return value silent failure",
+          "profile": "cross_function",
+          "n": 5,
+          "hit_categories": [
+            "oracle",
+            "oracle",
+            "oracle",
+            "oracle",
+            "reentrancy"
+          ],
+          "precision@k": 0.0,
+          "mrr": 0.0
+        },
+        {
+          "query": "flash loan governance vote manipulation timelock",
+          "profile": "cross_function",
+          "n": 5,
+          "hit_categories": [
+            "governance",
+            "governance",
+            "governance",
+            "governance",
+            "accounting"
+          ],
+          "precision@k": 0.8,
+          "mrr": 1.0
+        },
+        {
+          "query": "approval race allowance double spend front-run",
+          "profile": "cross_function",
+          "n": 5,
+          "hit_categories": [
+            "approval",
+            "approval",
+            "reentrancy",
+            "reentrancy",
+            "oracle"
+          ],
+          "precision@k": 0.4,
+          "mrr": 1.0
+        },
+        {
+          "query": "cross-contract callback read-only reentrancy state",
+          "profile": "reentrancy",
+          "n": 5,
+          "hit_categories": [
+            "reentrancy",
+            "reentrancy",
+            "reentrancy",
+            "reentrancy",
+            "reentrancy"
+          ],
+          "precision@k": 1.0,
+          "mrr": 1.0
+        }
+      ]
+    }
+  }
+}

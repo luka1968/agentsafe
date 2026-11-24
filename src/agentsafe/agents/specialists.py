@@ -10,14 +10,16 @@ from __future__ import annotations
 
 from agentsafe.agents.base import BaseAgent
 from agentsafe.llm.prompts import (
-    ACCOUNTING_FOCUS,
     ACCESS_CONTROL_FOCUS,
+    ACCOUNTING_FOCUS,
     ARITHMETIC_FOCUS,
     BUSINESS_LOGIC_FOCUS,
+    CROSS_CONTRACT_FOCUS,
     CROSS_FUNCTION_FOCUS,
     DEFI_LOGIC_FOCUS,
     FUND_FLOW_FOCUS,
     GENERAL_DISCOVERY_FOCUS,
+    ORACLE_FOCUS,
     PROXY_UPGRADE_FOCUS,
     REENTRANCY_FOCUS,
 )
@@ -93,6 +95,34 @@ class DefiLogicAgent(BaseAgent):
     )
 
 
+class OracleAgent(BaseAgent):
+    """E2. Oracle and price manipulation: spot-price dependence, stale feeds,
+    decimal/scaling errors, TWAP assumptions, flash-loan manipulation."""
+
+    name = "oracle"
+    focus = ORACLE_FOCUS
+    profile = "oracle"
+    keywords = (
+        "oracle", "latestanswer", "latestrounddata", "getprice", "pricefeed",
+        "peek", "twap", "spot", "getreserves", "slot0", "chainlink",
+        "aggregator", "decimals", "consult",
+    )
+
+
+class CrossContractAgent(BaseAgent):
+    """I. External protocol dependencies, token behavior assumptions, callback
+    interactions, trust boundaries, interface mismatches, composability."""
+
+    name = "cross_contract"
+    focus = CROSS_CONTRACT_FOCUS
+    profile = "cross_contract"
+    keywords = (
+        ".call(", "delegatecall", "staticcall", ".transfer(", ".transferfrom(",
+        "interface ", "external", "callback", "onerc", "erc777", "tokensreceived",
+        "flashloan", "uniswap", "return", "approve(", "safetransfer",
+    )
+
+
 class ArithmeticAgent(BaseAgent):
     """F. Overflow/underflow, rounding, unit/decimal mismatches, boundaries,
     unsafe conversions, compiler-specific behavior."""
@@ -140,6 +170,8 @@ SPECIALIST_REGISTRY: dict[str, type[BaseAgent]] = {
     "accounting": AccountingAgent,
     "cross_function": CrossFunctionAgent,
     "defi_logic": DefiLogicAgent,
+    "oracle": OracleAgent,
+    "cross_contract": CrossContractAgent,
     "arithmetic": ArithmeticAgent,
     "proxy_upgrade": ProxyUpgradeAgent,
     "general_discovery": GeneralDiscoveryAgent,

@@ -38,7 +38,18 @@ __all__ = [
     "render_paths",
 ]
 
-PathOrigin = str  # "state_var_followup" | "sink_enumeration" | "cross_read_write"
+# "state_var_followup" | "sink_enumeration" | "cross_read_write" | "multi_tx_sequence"
+PathOrigin = str
+
+
+def _field(obj: Any, name: str, default: Any = None) -> Any:
+    """Read a field from either an AttackPath object or its dict form. The
+    interchange form is the dict (report + agent material), so renderers must
+    accept both - a renderer that only accepts objects silently drops the
+    hypotheses."""
+    if isinstance(obj, dict):
+        return obj.get(name, default)
+    return getattr(obj, name, default)
 
 
 @dataclass
@@ -51,6 +62,16 @@ class AttackPath:
     depth: int = 0
     reproduced: bool = False        # True only after external test confirmation
     evidence: list[str] = field(default_factory=list)      # per-step source slices
+    # --- Stage C attack-path attributes (evidence-derived; empty = unknown) ---
+    required_permissions: list[str] = field(default_factory=list)  # modifiers on chain
+    state_transitions: list[str] = field(default_factory=list)     # writes along chain
+    external_dependencies: list[str] = field(default_factory=list)  # external calls
+    attacker_controlled_inputs: list[str] = field(default_factory=list)  # inputs
+    capital_requirements: list[str] = field(default_factory=list)  # ETH/token balance
+    impact: list[str] = field(default_factory=list)                # ETH/delegatecall/tokens
+    cross_contract: bool = False
+    transaction_count: int = 1      # >1 for multi-transaction sequences
+    attacker_reachable: str = "unknown"  # yes | no | unknown (annotated from reachability)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -62,6 +83,15 @@ class AttackPath:
             "depth": self.depth,
             "reproduced": self.reproduced,
             "evidence": list(self.evidence),
+            "required_permissions": sorted(set(self.required_permissions)),
+            "state_transitions": list(self.state_transitions),
+            "external_dependencies": sorted(set(self.external_dependencies)),
+            "attacker_controlled_inputs": sorted(set(self.attacker_controlled_inputs)),
+            "capital_requirements": list(self.capital_requirements),
+            "impact": sorted(set(self.impact)),
+            "cross_contract": self.cross_contract,
+            "transaction_count": self.transaction_count,
+            "attacker_reachable": self.attacker_reachable,
         }
 
 
@@ -124,6 +154,34 @@ def _prereq_of(f: FunctionIntel) -> list[str]:
     return out
 
 
+def _attacker_inputs(f: FunctionIntel) -> list[str]:
+    """Inputs an attacker controls on this step: declared parameters plus
+    msg.sender/msg.value when the body actually uses them."""
+    out: list[str] = []
+    for part in (f.params or "").split(","):
+        idents = re.findall(r"[A-Za-z_]\w*", part)
+        if idents:
+            out.append(idents[-1])
+    body = f.body or ""
+    if "msg.sender" in body:
+        out.append("msg.sender")
+    if "msg.value" in body:
+        out.append("msg.value")
+    return sorted(set(out))
+
+
+def _impact_of(f: FunctionIntel) -> list[str]:
+    """Impact surface this step can reach, from extracted call evidence."""
+    out: list[str] = []
+    if f.ether_calls:
+        out.append("ETH transfer")
+    if f.delegatecalls:
+        out.append("delegatecall")
+    if f.token_calls:
+        out.append("token transfer")
+    return out
+
+
 # ---------------------------------------------------------------------------
 # enumeration
 # ---------------------------------------------------------------------------
@@ -151,16 +209,19 @@ def enumerate_attack_paths(
     cg = call_graph(intel)
     state = state_dependency_graph(intel)
     lookup = _fn_lookup(intel)
+    entry_keys = {_fn_key(e) for e in _entry_points(intel)}
     paths: list[AttackPath] = []
     seen: set[tuple[str, ...]] = set()
 
     def _add(path: list[str], origin: PathOrigin,
-             svars: list[str] | None = None) -> None:
+             svars: list[str] | None = None,
+             transaction_count: int = 1) -> None:
         t = tuple(path)
         if t in seen:
             return
         seen.add(t)
-        paths.append(_build_path(intel, lookup, cg, path, origin, svars))
+        paths.append(_build_path(intel, lookup, cg, path, origin, svars,
+                                 transaction_count))
         return
 
     # -- pass A: suspicious state var -> writers -> callers -> entry ----------
@@ -192,7 +253,8 @@ def enumerate_attack_paths(
             if len(paths) >= max_paths:
                 break
 
-    # -- pass C: cross read/write pairs --------------------------------------
+    # -- pass C: cross read/write pairs (single-tx chain, or a 2-transaction
+    #    sequence when a writer ENTRY and a reader ENTRY are distinct calls) ---
     for key, deps in state.items():
         readers, writers = deps["readers"], deps["writers"]
         cross = (set(readers) - set(writers)) and (set(writers) - set(readers))
@@ -200,7 +262,13 @@ def enumerate_attack_paths(
             continue
         for w in sorted(set(writers))[:2]:
             for r in sorted(set(readers))[:2]:
-                _add([w, r], "cross_read_write", [key])
+                both_entries = w in entry_keys and r in entry_keys
+                _add(
+                    [w, r],
+                    "multi_tx_sequence" if both_entries else "cross_read_write",
+                    [key],
+                    2 if both_entries else 1,
+                )
                 if len(paths) >= max_paths:
                     break
             if len(paths) >= max_paths:
@@ -217,16 +285,30 @@ def _build_path(intel: ContractIntel,
                 cg: dict[str, list[str]],
                 seq: list[str],
                 origin: PathOrigin,
-                svars: list[str] | None) -> AttackPath:
+                svars: list[str] | None,
+                transaction_count: int = 1) -> AttackPath:
     path = AttackPath(functions=list(seq), origin=origin,
-                      depth=len(seq) - 1)
+                      depth=len(seq) - 1, transaction_count=transaction_count)
     if svars:
         path.state_variables = list(svars)
+    contracts: set[str] = set()
     for key in seq:
         f = lookup.get(key)
         if f is None:
             continue
+        contracts.add(f.contract)
         path.prerequisites.extend(_prereq_of(f))
+        path.required_permissions.extend(f.modifiers)
+        if f.writes:
+            path.state_transitions.append(
+                f"{key} writes {','.join(sorted(f.writes))}")
+        path.external_dependencies.extend(f.external_calls)
+        path.attacker_controlled_inputs.extend(_attacker_inputs(f))
+        if f.mutability == "payable" or "msg.value" in (f.body or ""):
+            path.capital_requirements.append(f"{key}: ETH (msg.value)")
+        if f.token_calls:
+            path.capital_requirements.append(f"{key}: token balance")
+        path.impact.extend(_impact_of(f))
         path.evidence.append(
             f"{key} [{f.visibility}/{f.mutability or 'nonpayable'} "
             f"mods:{','.join(f.modifiers) or '-'}] "
@@ -237,6 +319,7 @@ def _build_path(intel: ContractIntel,
             if key not in path.entry_points:
                 path.entry_points.append(key)
     path.entry_points = sorted(set(path.entry_points))
+    path.cross_contract = len(contracts) > 1
     return path
 
 
@@ -292,20 +375,44 @@ def _callers_of(cg: dict[str, list[str]], fn: str) -> list[str]:
 # rendering
 # ---------------------------------------------------------------------------
 
-def render_paths(paths: list[AttackPath]) -> str:
+def render_paths(paths: list[Any]) -> str:
+    """Human-readable section for the report / agent material. Accepts both
+    AttackPath objects and their dict form: the agent material carries dicts,
+    so a renderer that demanded objects would silently drop every hypothesis."""
     if not paths:
         return "[no cross-function attack paths enumerated (bounded)]"
     lines = ["CROSS-FUNCTION ATTACK PATHS (bounded enumeration, inferred):"]
     for i, p in enumerate(paths, start=1):
-        status = "reproduced-in-test" if p.reproduced else "inferred"
+        functions = _field(p, "functions", []) or []
+        origin = _field(p, "origin", "?")
+        depth = _field(p, "depth", 0)
+        reproduced = _field(p, "reproduced", False)
+        reach = _field(p, "attacker_reachable", "unknown")
+        txs = _field(p, "transaction_count", 1) or 1
+        status = "reproduced-in-test" if reproduced else "inferred"
         lines.append(
-            f"- #{i} [{p.origin}] {status} depth={p.depth} "
-            f"{' -> '.join(p.functions)}")
-        if p.state_variables:
-            lines.append(f"    state: {', '.join(p.state_variables)}")
-        for pre in p.prerequisites[:3]:
+            f"- #{i} [{origin}] {status} depth={depth} txs={txs} "
+            f"attacker_reachable={reach} {' -> '.join(functions)}")
+        svars = _field(p, "state_variables", []) or []
+        if svars:
+            lines.append(f"    state: {', '.join(svars)}")
+        perms = _field(p, "required_permissions", []) or []
+        if perms:
+            lines.append(f"    permissions required: {', '.join(perms)}")
+        deps = _field(p, "external_dependencies", []) or []
+        if deps:
+            lines.append(f"    external calls: {', '.join(deps)}")
+        inputs = _field(p, "attacker_controlled_inputs", []) or []
+        if inputs:
+            lines.append(f"    attacker-controlled inputs: {', '.join(inputs[:6])}")
+        impact = _field(p, "impact", []) or []
+        if impact:
+            lines.append(f"    impact surface: {', '.join(impact)}")
+        for pre in (_field(p, "prerequisites", []) or [])[:3]:
             lines.append(f"    prerequisite: {pre}")
     lines.append(
         "NOTE: inferred paths are static hypotheses. They are attack-path "
-        "candidates, not findings; each requires validation before reporting.")
+        "candidates, not findings; each requires validation before reporting. "
+        "attacker_reachable=no means every external entry on the path is "
+        "authorization-gated in the analyzed source.")
     return "\n".join(lines)

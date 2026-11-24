@@ -22,6 +22,17 @@ services:
       - LLM_MAX_CALLS_PER_AUDIT=12
       - LLM_MAX_RETRIES_PER_CALL=3
       - LLM_REQUEST_TIMEOUT_SECONDS=90
+
+      # Security knowledge base (Neon + pgvector) and embeddings. When set,
+      # retrieval is hybrid; when empty the runtime falls back to the shipped
+      # JSONL KB (lexical-only). See .env.example.
+      - NEON_DATABASE_URL=${NEON_DATABASE_URL}
+      - KB_STORAGE=${KB_STORAGE}
+      - KB_VECTOR_DIM=${KB_VECTOR_DIM:-2048}
+      - NVIDIA_API_KEY=${NVIDIA_API_KEY}
+      - NVIDIA_BASE_URL=${NVIDIA_BASE_URL:-https://integrate.api.nvidia.com/v1}
+      - NVIDIA_EMBED_MODEL=${NVIDIA_EMBED_MODEL:-nvidia/nemotron-3.5-embed-1b}
+      - EMBED_DIM=${EMBED_DIM:-2048}
       
       # GitHub Actions worker
       - GITHUB_TOKEN=${GITHUB_TOKEN}

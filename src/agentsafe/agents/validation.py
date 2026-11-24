@@ -366,16 +366,20 @@ def _kb_corroborates(kb_evidence: Sequence[dict] | None, categories: set[str]) -
 class ValidationOutcome:
     findings: list[Finding] = field(default_factory=list)
     confirmed: int = 0
+    high_confidence: int = 0
     potential: int = 0
     informational: int = 0
     rejected: int = 0
     needs_manual_review: int = 0
+    unverified: int = 0
 
     def detail(self) -> str:
         return (
-            f"confirmed={self.confirmed} potential={self.potential} "
-            f"informational={self.informational} rejected={self.rejected} "
-            f"needs_manual_review={self.needs_manual_review}"
+            f"confirmed={self.confirmed} high_confidence={self.high_confidence} "
+            f"potential={self.potential} informational={self.informational} "
+            f"rejected={self.rejected} "
+            f"needs_manual_review={self.needs_manual_review} "
+            f"unverified={self.unverified}"
         )
 
 
@@ -441,6 +445,8 @@ class ValidationAgent:
     def _count(self, outcome: ValidationOutcome, f: Finding) -> None:
         if f.status is FindingStatus.CONFIRMED:
             outcome.confirmed += 1
+        elif f.status is FindingStatus.HIGH_CONFIDENCE:
+            outcome.high_confidence += 1
         elif f.status is FindingStatus.POTENTIAL:
             outcome.potential += 1
         elif f.status is FindingStatus.INFORMATIONAL:
@@ -449,6 +455,8 @@ class ValidationAgent:
             outcome.rejected += 1
         elif f.status is FindingStatus.NEEDS_MANUAL_REVIEW:
             outcome.needs_manual_review += 1
+        elif f.status is FindingStatus.UNVERIFIED:
+            outcome.unverified += 1
 
     # ------------------------------------------------------ LLM decision chain
 
@@ -548,7 +556,19 @@ class ValidationAgent:
                 + "); an incomplete hypothesis is informational, not an "
                 "actionable potential vulnerability",
             )
-        # 7. credible, complete, unverified -> potential
+        # 7. credible, complete, unverified. When an independent historical KB
+        #    case corroborates this class, the finding is strongly supported
+        #    (but not reproduced) -> high_confidence. Otherwise -> potential.
+        kb = bool(f.category) and _kb_corroborates(
+            kb_evidence, {f.category.value}
+        )
+        if kb:
+            return self._finalize(
+                f, FindingStatus.HIGH_CONFIDENCE, "hc0_kb_supported",
+                "complete evidence and an independent historical KB case for "
+                "this class support the finding, but it is neither reproduced "
+                "nor tool-corroborated at the same location",
+            )
         return self._finalize(
             f, FindingStatus.POTENTIAL, "pt0_default",
             "complete evidence, neither independently corroborated nor "

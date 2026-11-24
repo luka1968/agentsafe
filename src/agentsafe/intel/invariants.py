@@ -501,16 +501,27 @@ def _guarded_chain(intel: ContractIntel, chain: list[str]) -> bool:
     return False
 
 
-def render_invariants(records: list[InvariantRecord]) -> str:
+def _field(obj: Any, name: str, default: Any = None) -> Any:
+    """Read a field from an InvariantRecord or its dict form (agent material is
+    dict-based, so the renderer must accept both or it silently drops every
+    record)."""
+    if isinstance(obj, dict):
+        return obj.get(name, default)
+    return getattr(obj, name, default)
+
+
+def render_invariants(records: list[Any]) -> str:
     """Human-readable section for the report / agent material."""
     if not records:
         return "[no invariants proposed — no applicable categories]"
     lines = ["INVARIANTS (explicit results):"]
     for r in records:
         lines.append(
-            f"- [{r.result}] ({r.invariant_type}) {r.statement}")
-        for lim in r.limitations[:2]:
+            f"- [{_field(r, 'result', 'inconclusive')}] "
+            f"({_field(r, 'invariant_type', '?')}) {_field(r, 'statement', '')}")
+        for lim in (_field(r, "limitations", []) or [])[:2]:
             lines.append(f"    limitation: {lim}")
-        if r.attack_path:
-            lines.append(f"    attack path: {r.attack_path}")
+        attack_path = _field(r, "attack_path", None)
+        if attack_path:
+            lines.append(f"    attack path: {attack_path}")
     return "\n".join(lines)

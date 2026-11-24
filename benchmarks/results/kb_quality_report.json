@@ -1,0 +1,36 @@
+{
+  "scanned": 931,
+  "by_status": {
+    "DUPLICATE": 1,
+    "INCOMPLETE": 22,
+    "NEEDS_REVIEW": 388,
+    "VALIDATED": 520
+  },
+  "by_claim": {
+    "curated": 53,
+    "reproduced": 8,
+    "unverified-source": 870
+  },
+  "flag_counts": {
+    "missing_source_url": 574,
+    "missing_attack_scenario": 319,
+    "missing_severity": 90,
+    "possible_misclassification": 46,
+    "unknown_verification": 29,
+    "non_solidity_code_snippet": 10,
+    "missing_category": 9,
+    "short_description": 9,
+    "malformed_solc_version": 8,
+    "missing_preconditions": 4,
+    "near_duplicate_of:278": 1
+  },
+  "duplicate_count": 1,
+  "duplicates": [
+    {
+      "id": 394,
+      "duplicate_of": 278,
+      "title": "Should check return data from chainlink aggregators"
+    }
+  ],
+  "errors": []
+}

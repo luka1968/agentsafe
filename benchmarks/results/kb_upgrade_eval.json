@@ -20,7 +20,7 @@
           "donation",
           "oracle",
           "",
-          "reentrancy"
+          ""
         ],
         "precision_at_5": 0.2,
         "hit_rate_at_5": 1,

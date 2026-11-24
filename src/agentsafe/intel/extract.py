@@ -39,8 +39,10 @@ _CONTRACT_RE = re.compile(
 )
 _STATE_VAR_RE = re.compile(
     r"^\s*((?:mapping\s*\(.+?\)|[A-Za-z_][\w\.\[\]]*(?:\s*\[[^\]]*\])?)\s+)"
-    r"(?:immutable\s+|constant\s+|override\s+|transient\s+)*"
-    r"(public|private|internal)?\s*([A-Za-z_]\w*)\s*(?:=|;)",
+    r"(?:(?:immutable|constant|override|transient)\s+)*"
+    r"(?:(public|private|internal)\s+)?"
+    r"(?:(?:immutable|constant|override|transient)\s+)*"
+    r"([A-Za-z_]\w*)\s*(?:=|;)",
     re.MULTILINE,
 )
 _EVENT_RE = re.compile(r"\bevent\s+([A-Za-z_]\w*)\s*\(")

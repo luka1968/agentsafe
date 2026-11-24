@@ -46,12 +46,12 @@ class _StubStore(NeonKnowledgeStore):
         self._vec_queries: list[str] = []
         self._lex_queries: list[str] = []
 
-    def _leg_vector(self, query: str, limit: int):
+    def _leg_vector(self, query: str, limit: int, **filters):
         self._vec_queries.append(query)
         return [{"id": f"v{i}", "content_hash": f"h{i}", "description": query + str(i)}
                 for i in range(3)]
 
-    def _leg_lexical(self, query: str, limit: int):
+    def _leg_lexical(self, query: str, limit: int, **filters):
         self._lex_queries.append(query)
         return [{"id": f"l{i}", "content_hash": f"h{i}", "description": query + str(i)}
                 for i in range(3)]

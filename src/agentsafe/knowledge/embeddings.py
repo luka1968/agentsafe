@@ -142,12 +142,15 @@ def get_embedder(settings: Any = None) -> NVIDIAEmbedder | None:
     callers degrade to lexical-only retrieval (never fake vectors)."""
     env = os.environ
     if settings is not None:
+        # Merge EVERY configured key (a config-supplied value fills in only
+        # when the env var is absent) — never stop after the first one.
+        merged = dict(env)
         for k in ("NVIDIA_API_KEY", "NVIDIA_BASE_URL", "NVIDIA_EMBED_MODEL",
                   "EMBED_DIM"):
             v = getattr(settings, k, None)
-            if v and not env.get(k):
-                env = dict(env); env[k] = v  # type: ignore[assignment]
-                break
+            if v and not merged.get(k):
+                merged[k] = v
+        env = merged
     api_key = env.get("NVIDIA_API_KEY", "").strip()
     if not api_key:
         return None

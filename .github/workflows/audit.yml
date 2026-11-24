@@ -155,6 +155,17 @@ jobs:
           LLM_REQUEST_TIMEOUT_SECONDS: "180"
           AUDIT_TIMEOUT_SECONDS: "900"
           LOG_LEVEL: "INFO"
+          # Knowledge base: without these the worker runs the shipped JSONL
+          # KB (small, lexical-only). With them it uses the Neon hybrid KB
+          # (pgvector + full-text). Missing secrets degrade to lexical/JSONL,
+          # never fail the audit — but then vector retrieval is NOT executed.
+          NEON_DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
+          KB_STORAGE: "neon"
+          KB_VECTOR_DIM: "2048"
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+          NVIDIA_BASE_URL: "https://integrate.api.nvidia.com/v1"
+          NVIDIA_EMBED_MODEL: "nvidia/nemotron-3.5-embed-1b"
+          EMBED_DIM: "2048"
         run: |
           python scripts/run_audit.py \
             --address "$AUDIT_ADDRESS" \

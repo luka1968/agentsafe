@@ -140,12 +140,51 @@ def normalize_record(raw: dict[str, Any], *, source_name: str) -> dict[str, Any]
                               or raw.get("attack_scenario"),
         "confidence": raw.get("confidence"),
         "tags": raw.get("tags") or [],
-        "metadata": {
-            "source_name": source_name,
-            "original": raw.get("id") or raw.get("external_record_id"),
-            "parent_external_id": None,
-        },
+        # Preserve adapter-supplied provenance keys (e.g. the SPECA adapter's
+        # source_platform / contest / issue_id / scraped_at). Previously this
+        # rebuilt metadata from scratch, silently discarding them; callers that
+        # already normalized a row (import_speca -> run_import -> here) lost the
+        # per-record provenance. Merging is backward compatible: a raw record
+        # without metadata still yields exactly the canonical keys.
+        "metadata": _merge_metadata(raw, source_name),
     }
+
+
+def _merge_metadata(raw: dict[str, Any], source_name: str) -> dict[str, Any]:
+    """Canonical import metadata + any provenance the caller already attached.
+
+    Canonical keys (source_name / original / parent_external_id) always win so
+    downstream chunking and dedup behave identically; adapter keys are kept.
+    """
+    incoming = raw.get("metadata")
+    md: dict[str, Any] = dict(incoming) if isinstance(incoming, dict) else {}
+    md.update({
+        "source_name": source_name,
+        "original": raw.get("id") or raw.get("external_record_id"),
+        "parent_external_id": md.get("parent_external_id"),
+    })
+    return md
+
+
+# Hard cap on the text embedded for one record. A handful of public reports
+# are tens of thousands of characters; the embedding endpoint rejects inputs
+# beyond its limit (HTTP 422), which would leave those records with a stale
+# vector forever. Capping keeps the semantic summary (title + lead report body
+# + structured fields) and keeps the hash well-defined for both import and
+# refresh, so drift detection stays consistent.
+EMBED_BODY_CAP = 16_000
+
+
+def embedding_body(record: dict[str, Any]) -> str:
+    """The exact text embedded for a record. Shared by the import pipeline and
+    the embedding-refresh maintenance path so drift is detectable by comparing
+    ``content_hash_of(embedding_body(row))`` to the stored vector's hash."""
+    body = " ".join(filter(None, [
+        record.get("title"), record.get("description"),
+        record.get("root_cause"), " ".join(record.get("preconditions") or []),
+        record.get("impact"), record.get("remediation"),
+    ]))
+    return body[:EMBED_BODY_CAP]
 
 
 def _chunk_text(text: str, max_chars: int = CHUNK_MAX_CHARS) -> list[str]:
@@ -340,12 +379,7 @@ def run_import(
             rec["preconditions"] = []
         else:
             parent_pool[rec["external_record_id"]] = rec
-        body = " ".join(filter(None, [
-            rec.get("title"), rec.get("description"),
-            rec.get("root_cause"), " ".join(rec.get("preconditions") or []),
-            rec.get("impact"), rec.get("remediation"),
-        ]))
-        texts.append(body)
+        texts.append(embedding_body(rec))
 
     embeddings, reused = _plan_embeddings(store, texts, embedder, batch_size)
     summary.embeddings_reused = reused

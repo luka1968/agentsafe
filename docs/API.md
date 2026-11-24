@@ -184,16 +184,29 @@ The validated `AuditReport` includes:
 
 | Field                       | Meaning                                    |
 |-----------------------------|--------------------------------------------|
-| `findings[]`                | status, severity, category, SWC id, line, KB-corroborated flag |
-| `summary.static_analysis_status` | `full` / `partial` / `unavailable`   |
+| `findings[]`                | status (`confirmed` / `high_confidence` / `potential` / `informational` / `rejected` / `unverified` / `needs_manual_review`), severity, category, SWC id, line, validation method/result, KB-corroborated flag |
+| `summary.static_analysis_status` | `full` / `partial` / `unavailable` / `skipped` |
+| `summary.audit_state`       | `complete` / `partial` / `failed`         |
 | `summary.tools_failed`      | tools that failed (degraded, not fatal)   |
 | `errors[]`                  | hard audit errors (empty = clean run)     |
 | `limitations[]`             | honesty surface — what was not provable   |
-| `llm_success_rate`          | fraction of valid model outputs           |
+| `invariant_checks[]`        | candidate invariants with explicit results |
+| `attack_paths[]`            | bounded cross-function path hypotheses    |
+| `targeted_test_results[]`   | isolated test runs (never proof when not executed) |
+| `adversarial_review`        | independent verification summary: `challenged` / `downgraded_to_informational` / `refuted` / `by_rule` |
+| `coverage`                  | Stage B source coverage: `total_segments` / `analyzed_segments` / `unanalyzed_segments` / `uncovered_functions` / `is_complete` |
 
 The report **never over-claims**: a reentrancy is marked `high` only when the
 machine proves the CEI violation **and** history (KB) corroborates it; findings
 the machine cannot independently locate are honestly marked `potential`.
+
+After validation, an independent **adversarial review** attempts to disprove
+every surviving candidate against the verified source (external reachability,
+authorization gates, read-only evidence, proxy-by-design, vendored scope). It
+can only downgrade a finding — never confirm one, never clear a genuinely
+reachable entry point. Each downgrade records the rule, the reason, and the
+contradicting source evidence; the top-level `adversarial_review` summarises
+the pass. See [`ADVERSARIAL_REVIEW.md`](ADVERSARIAL_REVIEW.md).
 
 ---
 

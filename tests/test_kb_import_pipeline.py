@@ -223,3 +223,28 @@ class TestIncrementalImportLive:
                 cur.execute("""SELECT updated_at FROM vulnerability_knowledge
                                WHERE id=%s""", (r["id"],))
                 assert cur.fetchone()["updated_at"] == r["updated_at"]
+
+
+class TestAdapterMetadataPreserved:
+    """Provenance regression: run_import re-normalizes records that
+    import_speca already normalized. The second pass must not discard the
+    adapter's source_platform / contest / issue_id (it did before)."""
+
+    def test_speca_metadata_survives_double_normalization(self):
+        raw = {"id": "sherlock:sentiment-update:M-4", "title": "t",
+               "description": "d", "severity": "Medium", "domain": "defi",
+               "source_url": "", "source_platform": "sherlock",
+               "contest": "sentiment-update", "issue_id": "M-4"}
+        first = normalize_speca_row(raw, platform="sherlock")
+        second = normalize_record(first, source_name="speca-sherlock")
+        md = second["metadata"]
+        assert md["source_platform"] == "sherlock"
+        assert md["contest"] == "sentiment-update"
+        assert md["issue_id"] == "M-4"
+        assert md["original"] == "sherlock:sentiment-update:M-4"
+        assert md["source_name"] == "speca-sherlock"
+
+    def test_raw_record_without_metadata_unchanged(self):
+        n = normalize_record({"id": "X", "title": "t"}, source_name="s1")
+        assert n["metadata"] == {"source_name": "s1", "original": "X",
+                                 "parent_external_id": None}

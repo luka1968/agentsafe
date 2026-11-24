@@ -59,9 +59,14 @@ class FindingStatus(StrEnum):
     - llm_suggested: LLM hypothesis entering validation
 
     Final states (the only ones a customer-facing report may contain):
-    - confirmed: independently corroborated (tool + LLM agreement at the
-      same location, or deterministic corroboration). Corroboration means
-      "independently supported by evidence", never "proven exploitable".
+    - confirmed: the vulnerability is sufficiently demonstrated by reproducible
+      execution OR strong, independently checked technical evidence (tool + LLM
+      agreement at the same location, or deterministic corroboration).
+      Corroboration means "independently supported by evidence", never "proven
+      exploitable".
+    - high_confidence: strongly supported by independent evidence (e.g. an
+      independent historical KB case or a deterministic rule), but full
+      reproduction is unavailable. Below confirmed, above potential.
     - potential: complete evidence, neither confirmed nor refuted. Credible
       hypothesis requiring human judgment.
     - informational: validated as standard/theoretical/informational-grade
@@ -71,6 +76,10 @@ class FindingStatus(StrEnum):
       severity headlines.
     - needs_manual_review: validation inconclusive (missing location,
       untraceable evidence). Human input required.
+    - unverified: evidence is insufficient to reach a reliable conclusion.
+
+    Never silently upgrade POTENTIAL or UNVERIFIED to CONFIRMED; rejected
+    findings are never hidden from internal validation records.
 
     None of these states may ever be used to claim "the contract is safe".
     """
@@ -78,10 +87,12 @@ class FindingStatus(StrEnum):
     TOOL_DETECTED = "tool_detected"
     LLM_SUGGESTED = "llm_suggested"
     CONFIRMED = "confirmed"
+    HIGH_CONFIDENCE = "high_confidence"
     POTENTIAL = "potential"
     INFORMATIONAL = "informational"
     REJECTED = "rejected"
     NEEDS_MANUAL_REVIEW = "needs_manual_review"
+    UNVERIFIED = "unverified"
 
     @classmethod
     def final_states(cls) -> frozenset[FindingStatus]:
@@ -89,10 +100,12 @@ class FindingStatus(StrEnum):
         return frozenset(
             {
                 cls.CONFIRMED,
+                cls.HIGH_CONFIDENCE,
                 cls.POTENTIAL,
                 cls.INFORMATIONAL,
                 cls.REJECTED,
                 cls.NEEDS_MANUAL_REVIEW,
+                cls.UNVERIFIED,
             }
         )
 
@@ -445,6 +458,23 @@ class AuditReport(BaseModel):
     # Stage 8: targeted test runs (isolated sandbox). never treated as proof
     # when not_executed; failed != unsafe (honesty by construction).
     targeted_test_results: list[dict[str, Any]] = Field(default_factory=list)
+    # Independent adversarial review: counts + per-rule breakdown of candidates
+    # that were downgraded/refuted against the source after validation. An
+    # empty dict means the challenge pass produced no downgrades (never that it
+    # did not run - stage status in the task carries that).
+    adversarial_review: dict[str, Any] = Field(default_factory=dict)
+    # Stage B source-coverage record: total/analyzed/un-analyzed segments, the
+    # functions inside un-analyzed segments, coverage ratio, and an explicit
+    # ``is_complete`` flag. A partial analysis is never presented as complete.
+    coverage: dict[str, Any] = Field(default_factory=dict)
+    # Section 11 deployment context: source kind (verified deployed source vs
+    # unverified bytecode), immutability (immutable vs upgradeable), compiler
+    # era, and whether remediation can be applied to the deployed bytecode.
+    deployment: dict[str, Any] = Field(default_factory=dict)
+    # Section 13 report integrity: a consolidated transparency panel (coverage,
+    # engine/agent execution, skipped analysis, verified-vs-suspected counts,
+    # dynamic/PoC status, and the explicit claims guard).
+    integrity: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("address")
     @classmethod

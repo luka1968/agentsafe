@@ -1,0 +1,280 @@
+{
+  "k": 5,
+  "mode_embedder": "hybrid",
+  "ground_truth": {
+    "definition": "predicate over stored category metadata; recall anchored on the curated records; queries are class-level and not taken from record titles",
+    "curated_records": 90,
+    "fp_records": 9,
+    "limitation": "no human relevance judgments exist, so recall is a curated-anchored lower bound, not absolute recall"
+  },
+  "modes": {
+    "vector": {
+      "cases": 12,
+      "mean_precision@k": 0.6833,
+      "mean_recall@k": 0.2118,
+      "recall_cases_measured": 12,
+      "mean_mrr": 0.9583,
+      "coverage": 1.0,
+      "irrelevant_rate": 0.3167,
+      "source_refs_preserved": 1.0,
+      "latency_ms_mean": 7276.0,
+      "latency_ms_median": 7008.0,
+      "vector_leg_empty_cases": 0,
+      "vector_failure_rate": 0.0
+    },
+    "lexical": {
+      "cases": 12,
+      "mean_precision@k": 0.6667,
+      "mean_recall@k": 0.1341,
+      "recall_cases_measured": 12,
+      "mean_mrr": 0.7014,
+      "coverage": 1.0,
+      "irrelevant_rate": 0.3333,
+      "source_refs_preserved": 1.0,
+      "latency_ms_mean": 5398.5,
+      "latency_ms_median": 4914.0,
+      "vector_leg_empty_cases": null,
+      "vector_failure_rate": null
+    },
+    "hybrid": {
+      "cases": 12,
+      "mean_precision@k": 0.7667,
+      "mean_recall@k": 0.2191,
+      "recall_cases_measured": 12,
+      "mean_mrr": 0.9583,
+      "coverage": 1.0,
+      "irrelevant_rate": 0.2333,
+      "source_refs_preserved": 1.0,
+      "latency_ms_mean": 15111.9,
+      "latency_ms_median": 13266.0,
+      "vector_leg_empty_cases": null,
+      "vector_failure_rate": null
+    }
+  },
+  "cases": {
+    "reentrancy": {
+      "vector": {
+        "precision@k": 1.0,
+        "recall@k": 0.5,
+        "mrr": 1.0
+      },
+      "lexical": {
+        "precision@k": 0.8,
+        "recall@k": 0.4,
+        "mrr": 1.0
+      },
+      "hybrid": {
+        "precision@k": 1.0,
+        "recall@k": 0.5,
+        "mrr": 1.0
+      }
+    },
+    "cross_function_reentrancy": {
+      "vector": {
+        "precision@k": 0.8,
+        "recall@k": 0.3,
+        "mrr": 1.0
+      },
+      "lexical": {
+        "precision@k": 1.0,
+        "recall@k": 0.3,
+        "mrr": 1.0
+      },
+      "hybrid": {
+        "precision@k": 1.0,
+        "recall@k": 0.5,
+        "mrr": 1.0
+      }
+    },
+    "accounting": {
+      "vector": {
+        "precision@k": 0.6,
+        "recall@k": 0.1429,
+        "mrr": 1.0
+      },
+      "lexical": {
+        "precision@k": 0.8,
+        "recall@k": 0.1905,
+        "mrr": 0.5
+      },
+      "hybrid": {
+        "precision@k": 0.8,
+        "recall@k": 0.1905,
+        "mrr": 1.0
+      }
+    },
+    "access_control": {
+      "vector": {
+        "precision@k": 0.8,
+        "recall@k": 0.4444,
+        "mrr": 1.0
+      },
+      "lexical": {
+        "precision@k": 0.4,
+        "recall@k": 0.2222,
+        "mrr": 0.5
+      },
+      "hybrid": {
+        "precision@k": 0.8,
+        "recall@k": 0.4444,
+        "mrr": 1.0
+      }
+    },
+    "arithmetic": {
+      "vector": {
+        "precision@k": 0.4,
+        "recall@k": 0.0952,
+        "mrr": 1.0
+      },
+      "lexical": {
+        "precision@k": 0.2,
+        "recall@k": 0.0476,
+        "mrr": 1.0
+      },
+      "hybrid": {
+        "precision@k": 0.6,
+        "recall@k": 0.1429,
+        "mrr": 1.0
+      }
+    },
+    "oracle_manipulation": {
+      "vector": {
+        "precision@k": 1.0,
+        "recall@k": 0.2941,
+        "mrr": 1.0
+      },
+      "lexical": {
+        "precision@k": 1.0,
+        "recall@k": 0.0,
+        "mrr": 1.0
+      },
+      "hybrid": {
+        "precision@k": 1.0,
+        "recall@k": 0.2353,
+        "mrr": 1.0
+      }
+    },
+    "token_integration": {
+      "vector": {
+        "precision@k": 0.8,
+        "recall@k": 0.1765,
+        "mrr": 1.0
+      },
+      "lexical": {
+        "precision@k": 0.2,
+        "recall@k": 0.0,
+        "mrr": 0.25
+      },
+      "hybrid": {
+        "precision@k": 0.8,
+        "recall@k": 0.1176,
+        "mrr": 0.5
+      }
+    },
+    "signature_validation": {
+      "vector": {
+        "precision@k": 0.4,
+        "recall@k": 0.1333,
+        "mrr": 1.0
+      },
+      "lexical": {
+        "precision@k": 0.6,
+        "recall@k": 0.1333,
+        "mrr": 0.5
+      },
+      "hybrid": {
+        "precision@k": 0.4,
+        "recall@k": 0.1333,
+        "mrr": 1.0
+      }
+    },
+    "denial_of_service": {
+      "vector": {
+        "precision@k": 0.2,
+        "recall@k": 0.0,
+        "mrr": 0.5
+      },
+      "lexical": {
+        "precision@k": 0.6,
+        "recall@k": 0.0,
+        "mrr": 0.3333
+      },
+      "hybrid": {
+        "precision@k": 0.6,
+        "recall@k": 0.0,
+        "mrr": 1.0
+      }
+    },
+    "cross_contract": {
+      "vector": {
+        "precision@k": 0.8,
+        "recall@k": 0.16,
+        "mrr": 1.0
+      },
+      "lexical": {
+        "precision@k": 1.0,
+        "recall@k": 0.12,
+        "mrr": 1.0
+      },
+      "hybrid": {
+        "precision@k": 1.0,
+        "recall@k": 0.12,
+        "mrr": 1.0
+      }
+    },
+    "business_logic": {
+      "vector": {
+        "precision@k": 1.0,
+        "recall@k": 0.2,
+        "mrr": 1.0
+      },
+      "lexical": {
+        "precision@k": 0.6,
+        "recall@k": 0.1,
+        "mrr": 0.3333
+      },
+      "hybrid": {
+        "precision@k": 0.8,
+        "recall@k": 0.15,
+        "mrr": 1.0
+      }
+    },
+    "solc_version_specific": {
+      "vector": {
+        "precision@k": 0.4,
+        "recall@k": 0.0952,
+        "mrr": 1.0
+      },
+      "lexical": {
+        "precision@k": 0.8,
+        "recall@k": 0.0952,
+        "mrr": 1.0
+      },
+      "hybrid": {
+        "precision@k": 0.4,
+        "recall@k": 0.0952,
+        "mrr": 1.0
+      }
+    }
+  },
+  "counterexample_retrieval": {
+    "cases": 2,
+    "rate": 1.0,
+    "detail": {
+      "evm_rollback_counterexample": {
+        "returned": 5,
+        "counterexample": true,
+        "latency_ms": 16454.0
+      },
+      "false_positive_examples": {
+        "returned": 5,
+        "counterexample": true,
+        "latency_ms": 10828.0
+      }
+    }
+  },
+  "unmeasurable": {
+    "absolute_recall": "no exhaustive labeled corpus; recall is reported against the curated anchor set only",
+    "embedding_failure_rate": "reported as vector-leg-empty rate; a hard embedding failure is indistinguishable from a genuinely empty vector result"
+  }
+}

@@ -57,6 +57,9 @@ class AgentRunStats:
     skipped: str | None = None
     # Honest scope bookkeeping surfaced into report limitations.
     notes: list[str] = field(default_factory=list)
+    # Segment labels this agent actually analyzed (for source-coverage
+    # accounting: which agent read which segment).
+    analyzed_labels: list[str] = field(default_factory=list)
     # after validation pass
     findings_validated: int = 0
     contribution: int = 0  # validated findings attributed to this agent
@@ -75,6 +78,7 @@ class AgentRunStats:
             "models_used": sorted(self.models_used),
             "skipped": self.skipped,
             "notes": self.notes,
+            "analyzed_labels": list(self.analyzed_labels),
         }
 
 
@@ -209,6 +213,7 @@ class MultiAgentScheduler:
             stats.skipped = ares.skipped_reason
             stats.errors.extend(ares.errors)
             stats.notes = list(ares.notes)
+            stats.analyzed_labels = list(ares.analyzed_labels)
             # Measured attribution (task-local context var, concurrency-safe):
             # a calls_made delta around an await would count other agents.
             stats.llm_calls = self._calls_spent(budget, agent.name)
@@ -396,6 +401,7 @@ class MultiAgentScheduler:
             if ares.errors:
                 stats.errors.extend(ares.errors[:1])
                 continue
+            stats.analyzed_labels.extend(ares.analyzed_labels)
             known = [*result.candidates, *prior]
             new = [
                 f for f in ares.findings

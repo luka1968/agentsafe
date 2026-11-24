@@ -93,7 +93,14 @@ def assess(f: Finding) -> tuple[Severity, str]:
     if f.status is FindingStatus.INFORMATIONAL:
         return Severity.INFO, "rubric:informational"
 
-    if f.status in (FindingStatus.POTENTIAL, FindingStatus.NEEDS_MANUAL_REVIEW):
+    if f.status is FindingStatus.UNVERIFIED:
+        return Severity.INFO, "rubric:unverified"
+
+    if f.status in (
+        FindingStatus.HIGH_CONFIDENCE,
+        FindingStatus.POTENTIAL,
+        FindingStatus.NEEDS_MANUAL_REVIEW,
+    ):
         capped = _not_higher_than(claimed, Severity.MEDIUM)
         basis = (
             "rubric:unvalidated_capped_at_medium"

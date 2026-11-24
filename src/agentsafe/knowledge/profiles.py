@@ -35,6 +35,14 @@ RETRIEVAL_PROFILES: dict[str, dict[str, Any]] = {
                        "governance", "approval"),
         "boost": 2.0,
     },
+    # Cross-contract Agent: composability, external-dependency, token-behavior
+    # and return-value-handling cases.
+    "cross_contract": {
+        "kb_groups": ("B", "A"),
+        "categories": ("access-control", "token-transfer", "oracle", "bridge",
+                       "approval"),
+        "boost": 1.8,
+    },
     # Oracle Agent: oracle cases.
     "oracle": {
         "kb_groups": ("D",),
@@ -69,6 +77,15 @@ RETRIEVAL_PROFILES: dict[str, dict[str, Any]] = {
         "kb_groups": ("E", "B"),
         "categories": ("proxy", "initialization", "access-control"),
         "boost": 1.8,
+    },
+    # False-positive / counterexample pass: secure-code (E) and exploit-
+    # validation (F) records only — used to fetch counterexamples that argue
+    # AGAINST a claim. Never a verdict; the caller renders it as a checklist.
+    "false_positive": {
+        "kb_groups": ("E", "F"),
+        "categories": ("reentrancy", "access-control", "oracle", "proxy",
+                       "rounding", "approval", "accounting", "token-transfer"),
+        "boost": 1.0,
     },
     # general_discovery: no profile (broad retrieval across all groups).
 }

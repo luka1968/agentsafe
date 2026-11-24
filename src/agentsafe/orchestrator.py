@@ -15,8 +15,10 @@ import logging
 import time
 from collections.abc import Callable, Sequence
 from datetime import UTC
+from typing import Any
 
 from agentsafe import report as report_mod
+from agentsafe.agents.adversarial import AdversarialVerifier
 from agentsafe.agents.base import AnalysisMaterial, BaseAgent, split_segments
 from agentsafe.agents.validation import ValidationAgent
 from agentsafe.analyzers.bytecode import BytecodeAnalyzer, BytecodeClass
@@ -63,6 +65,7 @@ STAGES = (
     "cross_function_paths",
     "llm_agents",
     "cross_validation",
+    "adversarial_review",
     "severity_assessment",
     "merge_report",
 )
@@ -72,6 +75,24 @@ class OrchestratorError(RuntimeError):
     def __init__(self, message: str, *, error_code: str = "orchestrator_error") -> None:
         super().__init__(message)
         self.error_code = error_code
+
+
+def _cross_contract_scope_limitation(intel: Any) -> str | None:
+    """Honest scope note: external interactions whose target contract body is
+    NOT in the analyzed source set were recorded by the extractor but cannot be
+    analyzed. State it explicitly so an absent finding for those contracts is
+    never mistaken for safety. Returns None when everything referenced is
+    resolved within the provided source."""
+    unresolved = sorted(getattr(intel, "unresolved_externals", None) or ())
+    if not unresolved:
+        return None
+    sample = "; ".join(unresolved[:8])
+    more = "" if len(unresolved) <= 8 else f" (+{len(unresolved) - 8} more)"
+    return (
+        f"cross-contract scope: {len(unresolved)} external interaction(s) target "
+        "contracts whose source is not in the analyzed set and were NOT analyzed "
+        f"(recorded for follow-up): {sample}{more}"
+    )
 
 
 class AuditOrchestrator:
@@ -91,6 +112,7 @@ class AuditOrchestrator:
         clock: Callable[[], float] | None = None,
         kb_store_factory: Callable[[], Any] | None = None,
         scheduler: Any | None = None,
+        adversarial_verifier: AdversarialVerifier | None = None,
     ) -> None:
         self._rpc = rpc
         self._explorer = explorer
@@ -105,6 +127,7 @@ class AuditOrchestrator:
         self._clock = clock or time.monotonic
         self._kb_store_factory = kb_store_factory
         self._scheduler = scheduler
+        self._adversarial = adversarial_verifier or AdversarialVerifier()
 
     async def run(
         self,
@@ -380,6 +403,9 @@ class AuditOrchestrator:
                             intel.sinks = sink_inventory(intel)
                         except Exception as exc:  # graphs are an aid, never a blocker
                             limitations.append(f"intel graph construction failed: {exc}")
+                        scope_note = _cross_contract_scope_limitation(intel)
+                        if scope_note:
+                            limitations.append(scope_note)
                 else:
                     # pseudo-source: regex extraction would be misleading; skip
                     # honestly rather than fabricate structure.
@@ -461,9 +487,16 @@ class AuditOrchestrator:
                         except Exception as exc:  # targeted tests never block
                             errors.append(f"targeted tests: {exc}")
 
+                        from agentsafe.agents.attack_paths import annotate_attack_paths
+
+                        paths_dicts, path_reach = annotate_attack_paths(
+                            [p.to_dict() for p in path_records],
+                            {f.path: f.content for f in bundle.files},
+                            intel=intel,
+                        )
                         stage7 = {
                             "invariants": [r.to_dict() for r in inv_records],
-                            "paths": [p.to_dict() for p in path_records],
+                            "paths": paths_dicts,
                             "targeted_tests": targeted_tests,
                         }
                         violated = [r for r in inv_records
@@ -478,6 +511,8 @@ class AuditOrchestrator:
                         done(
                             "cross_function_paths",
                             detail=(f"paths={len(path_records)} "
+                                    f"attacker_reachable={path_reach.get('attacker_reachable', 0)} "
+                                    f"gated={path_reach.get('gated', 0)} "
                                     f"invariants={len(inv_records)} "
                                     f"held={len(held)} violated={len(violated)}"),
                         )
@@ -517,6 +552,9 @@ class AuditOrchestrator:
 
                 llm_usage = LLMUsage()
                 scheduler_meta: dict[str, Any] = {}
+                # Stage B: segment labels actually analyzed by any agent, unioned
+                # for source-coverage accounting below.
+                analyzed_segments: set[str] = set()
                 if self._router is not None and segments:
                     budget = self._router.start_audit(
                         max_calls=self._llm_max_calls,
@@ -560,6 +598,8 @@ class AuditOrchestrator:
                         findings.extend(sres.candidates)
                         validated_findings = sres.validated
                         errors.extend(sres.errors)
+                        for _s in sres.per_agent:
+                            analyzed_segments.update(_s.analyzed_labels)
                         if sres.routing_summary:
                             limitations.append(
                                 f"specialist routing: {sres.routing_summary.splitlines()[0]}")
@@ -605,6 +645,7 @@ class AuditOrchestrator:
                                 continue
                             findings.extend(ares.findings)
                             errors.extend(ares.errors)
+                            analyzed_segments.update(ares.analyzed_labels)
                             if ares.skipped_reason:
                                 limitations.append(f"{agent.name}: {ares.skipped_reason}")
                     u = budget.usage_summary()
@@ -637,6 +678,45 @@ class AuditOrchestrator:
                         )
                 else:
                     skip("llm_agents", "no LLM router configured or no material")
+
+                # -- 6b. source-coverage accounting (Stage B) -------------------
+                # Record exactly which segments were analyzed and which were not.
+                # When agents RAN but left source segments unread, the audit is
+                # demoted to PARTIAL and the unread code is named - missing
+                # analysis is never presented as a complete result.
+                coverage = None
+                coverage_incomplete = False
+                if segments:
+                    try:
+                        from agentsafe.coverage import build_coverage
+
+                        coverage = build_coverage(
+                            segments, analyzed_segments, intel=intel
+                        )
+                        if analyzed_segments and not coverage.is_complete:
+                            coverage_incomplete = True
+                            unread = coverage.unanalyzed_segments
+                            sample = ", ".join(unread[:6])
+                            more = (
+                                ""
+                                if len(unread) <= 6
+                                else f" (+{len(unread) - 6} more)"
+                            )
+                            fn_note = (
+                                f"; {len(coverage.uncovered_functions)} function(s) "
+                                "sit in un-analyzed segments"
+                                if coverage.uncovered_functions
+                                else ""
+                            )
+                            limitations.append(
+                                "source coverage incomplete: "
+                                f"{coverage.total_segments - coverage.analyzed_segments}"
+                                f"/{coverage.total_segments} segment(s) were not "
+                                f"analyzed by any agent{fn_note}; unread segments: "
+                                f"{sample}{more}"
+                            )
+                    except Exception as exc:  # noqa: BLE001 - coverage is an aid
+                        limitations.append(f"coverage accounting failed: {exc}")
 
                 # -- 7. cross validation ----------------------------------------
                 start("cross_validation")
@@ -717,6 +797,277 @@ class AuditOrchestrator:
                     done("cross_validation", error_code="validation_error",
                          detail=str(exc))
 
+                # -- 7b. independent adversarial review -------------------------
+                # A separate pass that actively TRIES TO DISPROVE every
+                # surviving candidate against the verified source (external
+                # reachability, authorization gates, read-only evidence,
+                # vendored-library scope). It can only downgrade, never raise,
+                # and every downgrade records the contradicting source evidence.
+                start("adversarial_review")
+                adversarial_summary: dict[str, Any] = {}
+                try:
+                    if self._adversarial is not None and (tool_final or findings):
+                        cres = self._adversarial.review(
+                            list(tool_final),
+                            list(findings),
+                            (segments if not pseudo else None) or None,
+                            pseudo,
+                            intel=intel,
+                            paths=stage7.get("paths", []),
+                        )
+                        tool_final = cres.tool_findings
+                        findings = cres.llm_findings
+                        adversarial_summary = cres.summary()
+                        if cres.challenged:
+                            limitations.append(
+                                f"adversarial review: {cres.downgraded} finding(s) "
+                                f"downgraded to informational, {cres.rejected} "
+                                "refuted and "
+                                f"{cres.needs_review} flagged for human review "
+                                f"({cres.unverified} left unverified) "
+                                "against the source (external reachability / "
+                                "authorization / read-only / declaration-only "
+                                "evidence, plus attacker-model feasibility); "
+                                "each downgrade is recorded on the finding"
+                            )
+                        done(
+                            "adversarial_review",
+                            detail=(f"challenged={cres.challenged} "
+                                    f"downgraded={cres.downgraded} "
+                                    f"rejected={cres.rejected} "
+                                    f"needs_review={cres.needs_review} "
+                                    f"unverified={cres.unverified}"),
+                        )
+                    else:
+                        skip("adversarial_review", "no findings to challenge")
+                except Exception as exc:  # noqa: BLE001 - a refutation crash must
+                    # never manufacture safety: record the gap explicitly.
+                    errors.append(f"adversarial review: {exc}")
+                    limitations.append(
+                        "adversarial review failed: findings were NOT "
+                        "independently challenged for external reachability or "
+                        "authorization; treat them as unverified hypotheses"
+                    )
+                    done(
+                        "adversarial_review",
+                        error_code="adversarial_review_error",
+                        detail=str(exc),
+                    )
+
+                # -- 7c. PoC planning (honest: never fabricated) ---------------
+                # Attempt to build a minimal reproduction plan for high-impact /
+                # financially-significant findings. When no EVM/Foundry backend
+                # exists the outcome is an explicit environment_limitation and no
+                # PoC result is claimed; confidence is never changed by this step.
+                try:
+                    from agentsafe.agents.poc import (
+                        assess_poc,
+                        foundry_available,
+                        poc_priority,
+                    )
+
+                    backend_ok = foundry_available()
+                    pmodel = None
+                    if segments and not pseudo:
+                        from agentsafe.agents.reachability import build_reachability
+
+                        pmodel = build_reachability(segments, intel=intel)
+                    env_limited = 0
+                    planned = 0
+                    updated: list[Finding] = []
+                    for f in findings:
+                        if (
+                            f.status
+                            in (
+                                FindingStatus.CONFIRMED,
+                                FindingStatus.HIGH_CONFIDENCE,
+                                FindingStatus.POTENTIAL,
+                            )
+                            and poc_priority(f) == "high"
+                        ):
+                            plan, pres = assess_poc(
+                                f, backend_available=backend_ok
+                            )
+                            nf = f.model_copy(deep=True)
+                            nf.metadata = {
+                                **nf.metadata,
+                                "poc": {**plan.to_dict(), **pres.to_dict()},
+                            }
+                            f = nf
+                            planned += 1
+                            if pres.status == "environment_limitation":
+                                env_limited += 1
+                        updated.append(f)
+                    findings = updated
+                    if env_limited:
+                        limitations.append(
+                            "PoC execution unavailable in this environment (no "
+                            f"EVM/Foundry backend); {env_limited} high-priority "
+                            "finding(s) have a reproduction plan but were NOT "
+                            "executed — confidence unchanged and NO PoC result is "
+                            "claimed"
+                        )
+                except Exception as exc:  # noqa: BLE001 - planning is an aid
+                    limitations.append(f"poc planning skipped: {exc}")
+
+                # -- 7d. deployment / compiler context (Section 11) -------------
+                # Distinguish immutable vs upgradeable deployed contracts and the
+                # compiler era; never let compiler warnings / code-quality
+                # observations become actionable vulnerabilities, and flag
+                # recommendations that cannot be applied to deployed bytecode.
+                deployment_summary: dict[str, Any] = {}
+                try:
+                    from agentsafe import CHAIN_ID
+                    from agentsafe.agents.deployment import (
+                        DISPOSITION_EXISTING_EXPOSURE,
+                        build_deployment_context,
+                        finding_disposition,
+                    )
+                    from agentsafe.severity import assess
+
+                    dctx = build_deployment_context(
+                        address=addr,
+                        is_verified_source=is_verified,
+                        compiler_version=(
+                            bundle.compiler_version if bundle is not None else ""
+                        ),
+                        intel=intel,
+                        chain=CHAIN_ID,
+                    )
+                    deployment_summary = dctx.to_dict()
+                    d_info = 0
+
+                    def _apply_deployment(fs: list[Finding]) -> list[Finding]:
+                        nonlocal d_info
+                        res2: list[Finding] = []
+                        for f in fs:
+                            disp = finding_disposition(f, dctx)
+                            nf = f.model_copy(deep=True)
+                            nf.metadata = {
+                                **nf.metadata,
+                                "deployment": deployment_summary,
+                                "disposition": disp,
+                            }
+                            if (
+                                disp != DISPOSITION_EXISTING_EXPOSURE
+                                and f.status
+                                in (
+                                    FindingStatus.CONFIRMED,
+                                    FindingStatus.HIGH_CONFIDENCE,
+                                    FindingStatus.POTENTIAL,
+                                )
+                            ):
+                                nf.proposed_severity = f.severity
+                                nf.status = FindingStatus.INFORMATIONAL
+                                nf.severity = assess(nf)[0]
+                                nf.validation_method = "deployment_context"
+                                nf.limitations = [
+                                    *nf.limitations,
+                                    f"deployment context: {disp}",
+                                ]
+                                d_info += 1
+                            res2.append(nf)
+                        return res2
+
+                    tool_final = _apply_deployment(tool_final)
+                    findings = _apply_deployment(findings)
+                    for _n in dctx.notes:
+                        limitations.append(f"deployment context: {_n}")
+                    if d_info:
+                        limitations.append(
+                            f"deployment context: {d_info} finding(s) reclassified "
+                            "as informational (code-quality / compiler-warning, or "
+                            "a recommendation not applicable to the deployed "
+                            "bytecode)"
+                        )
+                except Exception as exc:  # noqa: BLE001 - context is an aid
+                    limitations.append(f"deployment context skipped: {exc}")
+
+                # -- 7e. finding-quality completeness (Section 12) --------------
+                # Every reported finding must carry the full evidence package.
+                # Audit it (presence only), guarantee a PoC status, and record
+                # any gap honestly — never pad a finding or inflate severity.
+                try:
+                    from agentsafe.agents.quality import (
+                        ensure_poc_record,
+                        finding_quality,
+                    )
+
+                    q_incomplete = 0
+                    q_missing: dict[str, int] = {}
+
+                    def _apply_quality(fs: list[Finding]) -> list[Finding]:
+                        nonlocal q_incomplete
+                        res3: list[Finding] = []
+                        for f in fs:
+                            nf = f.model_copy(deep=True)
+                            nf.metadata = dict(nf.metadata)
+                            actionable = nf.status in (
+                                FindingStatus.CONFIRMED,
+                                FindingStatus.HIGH_CONFIDENCE,
+                                FindingStatus.POTENTIAL,
+                            )
+                            # Every reported finding carries a PoC status (never a
+                            # fabricated result); only actionable ones are counted.
+                            ensure_poc_record(nf)
+                            q = finding_quality(nf)
+                            nf.metadata["quality"] = q
+                            if actionable and not q["complete"]:
+                                q_incomplete += 1
+                                for name in q["missing"]:
+                                    q_missing[name] = q_missing.get(name, 0) + 1
+                            res3.append(nf)
+                        return res3
+
+                    tool_final = _apply_quality(tool_final)
+                    findings = _apply_quality(findings)
+                    if q_incomplete:
+                        top = ", ".join(
+                            f"{k}({v})"
+                            for k, v in sorted(
+                                q_missing.items(), key=lambda kv: -kv[1]
+                            )[:6]
+                        )
+                        limitations.append(
+                            f"finding quality: {q_incomplete} actionable finding(s) "
+                            f"are missing required evidence elements ({top}); the "
+                            "gap is recorded per finding, never padded"
+                        )
+                except Exception as exc:  # noqa: BLE001 - quality is an aid
+                    limitations.append(f"finding-quality check skipped: {exc}")
+
+                # -- 7f. specific remediation for confirmed findings (Sec. 13) --
+                # A confirmed finding gets code-anchored remediation derived from
+                # the actual vulnerable implementation, not generic advice.
+                try:
+                    from agentsafe.agents.remediation import (
+                        apply_specific_remediation,
+                    )
+
+                    rem_fixed = 0
+
+                    def _apply_rem(fs: list[Finding]) -> list[Finding]:
+                        nonlocal rem_fixed
+                        res4: list[Finding] = []
+                        for f in fs:
+                            nf = f.model_copy(deep=True)
+                            if nf.status is FindingStatus.CONFIRMED and (
+                                apply_specific_remediation(nf)
+                            ):
+                                rem_fixed += 1
+                            res4.append(nf)
+                        return res4
+
+                    tool_final = _apply_rem(tool_final)
+                    findings = _apply_rem(findings)
+                    if rem_fixed:
+                        limitations.append(
+                            f"remediation: {rem_fixed} confirmed finding(s) given "
+                            "specific, code-anchored remediation"
+                        )
+                except Exception as exc:  # noqa: BLE001 - remediation is an aid
+                    limitations.append(f"remediation step skipped: {exc}")
+
                 # -- 8. severity assessment (documented rubric) -----------------
                 start("severity_assessment")
                 assessed = [*tool_final, *findings]
@@ -772,6 +1123,7 @@ class AuditOrchestrator:
                     or tools_failed
                     or errors
                     or agents_failed_n
+                    or coverage_incomplete
                 ):
                     audit_state = "partial"
                     limitations.append(
@@ -814,6 +1166,9 @@ class AuditOrchestrator:
                             invariant_checks=stage7.get("invariants", []),
                             attack_paths=stage7.get("paths", []),
                             targeted_test_results=stage7.get("targeted_tests", []),
+                            adversarial_review=adversarial_summary,
+                            coverage=(coverage.to_dict() if coverage is not None else {}),
+                            deployment=deployment_summary,
                         )
                         break
                     except Exception as exc:  # noqa: BLE001 - retried, then surfaced
@@ -827,6 +1182,22 @@ class AuditOrchestrator:
                         f"report_generation_failed: {build_error}",
                         error_code="report_generation_failed",
                     )
+                try:
+                    from agentsafe.agents.integrity import build_integrity
+
+                    final.integrity = build_integrity(
+                        final,
+                        scheduler_meta=scheduler_meta,
+                        tools_attempted=sorted(
+                            set(tools_executed) | set(tools_failed)
+                        ),
+                        received_files=(
+                            [sf.path for sf in bundle.files]
+                            if bundle is not None else []
+                        ),
+                    )
+                except Exception as exc:  # noqa: BLE001 - integrity is an aid
+                    logger.warning("integrity panel failed: %s", exc)
                 done("merge_report")
                 return final
 

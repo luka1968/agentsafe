@@ -34,9 +34,11 @@ class ReportRenderError(RuntimeError):
 
 _STATUS_LABELS = {
     "confirmed": "Confirmed",
+    "high_confidence": "High confidence",
     "potential": "Potential",
     "informational": "Informational",
     "needs_manual_review": "Needs manual review",
+    "unverified": "Unverified",
     "rejected": "Rejected (excluded)",
 }
 
@@ -87,6 +89,143 @@ def _location(f: Finding) -> str:
             loc += " (unverified)"
         return loc
     return "location unavailable"
+
+
+def _package_rows(f: Finding) -> list[str]:
+    """Section 12 evidence-package summary (attacker model, exploitability,
+    state transitions, disposition, PoC status, confidence, quality gaps).
+    Built only from data already on the finding; nothing is invented."""
+    md = f.metadata if isinstance(f.metadata, dict) else {}
+    am = md.get("attacker_model") or {}
+    poc = md.get("poc") or {}
+    q = md.get("quality") or {}
+    rows: list[str] = []
+    if am.get("caller"):
+        rows.append(f"Attacker: {am.get('caller')}")
+    if am.get("feasible"):
+        rows.append(f"Exploitability: {am.get('feasible')}")
+    seq = am.get("sequence") or []
+    if seq:
+        rows.append(f"State transitions: {len(seq)} step(s)")
+    if md.get("disposition"):
+        rows.append(f"Disposition: {md.get('disposition')}")
+    if isinstance(poc, dict) and poc.get("status"):
+        rows.append(f"PoC: {poc.get('status')}")
+    if f.confidence is not None:
+        rows.append(f"Confidence: {f.confidence}")
+    if q and not q.get("complete", True):
+        rows.append("Missing elements: " + ", ".join(q.get("missing") or []))
+    return rows
+
+
+def _package_html(f: Finding) -> str:
+    rows = _package_rows(f)
+    if not rows:
+        return ""
+    return (
+        "<div><b>Evidence package</b> "
+        + " · ".join(_esc(r) for r in rows)
+        + "</div>"
+    )
+
+
+def _integrity_html(report: AuditReport) -> str:
+    it = getattr(report, "integrity", None) or {}
+    if not it:
+        return ""
+    se = it.get("static_engines") or {}
+    dt = it.get("dynamic_tests") or {}
+    poc = it.get("poc") or {}
+    v = it.get("verified_vs_suspected") or {}
+    cl = it.get("claims") or {}
+    sp = it.get("specialists") or []
+    ran = sum(1 for s in sp if s.get("ran"))
+    rows = [
+        f"<li><b>Audit completion</b> {_esc(it.get('audit_state'))}</li>",
+        "<li><b>Source files</b> received "
+        f"{len(it.get('source_files_received') or [])}, analyzed "
+        f"{len(it.get('source_files_analyzed') or [])}</li>",
+        "<li><b>Coverage</b> segments "
+        f"{_esc(it.get('segments_analyzed'))}/{_esc(it.get('segments_total'))}, "
+        f"functions {_esc(it.get('functions_covered'))}/"
+        f"{_esc(it.get('functions_total'))}, complete "
+        f"{_esc(it.get('coverage_complete'))}</li>",
+        f"<li><b>Static engines</b> {_esc(se.get('status'))}; executed "
+        f"{_esc(', '.join(se.get('executed') or []) or 'none')}; failed "
+        f"{_esc(', '.join(se.get('failed') or []) or 'none')}</li>",
+        f"<li><b>Specialists</b> {ran}/{len(sp)} ran; failed "
+        f"{_esc(', '.join(it.get('failed_agents') or []) or 'none')}; skipped "
+        f"{_esc(', '.join(it.get('skipped_analysis') or []) or 'none')}</li>",
+        f"<li><b>Dynamic verification</b> {_esc(it.get('dynamic_verification'))}; "
+        f"executed {_esc(dt.get('executed'))}/{_esc(dt.get('total'))}; all executed "
+        f"passed: {_esc(dt.get('all_executed_passed'))}</li>",
+        f"<li><b>PoC</b> attempted {_esc(poc.get('attempted'))}, executed "
+        f"{_esc(poc.get('executed'))}, environment-limited "
+        f"{_esc(poc.get('environment_limited'))}, reproduced "
+        f"{_esc(it.get('reproduced_findings'))}</li>",
+        "<li><b>Verified vs suspected</b> confirmed "
+        f"{_esc(v.get('confirmed'))}, high-confidence {_esc(v.get('high_confidence'))}, "
+        f"potential (suspected) {_esc(v.get('potential_suspected'))}, informational "
+        f"{_esc(v.get('informational'))}, unverified {_esc(v.get('unverified'))}, "
+        f"rejected {_esc(v.get('rejected'))}</li>",
+        f"<li><b>Claims</b> full coverage: {_esc(cl.get('full_coverage'))}; all "
+        f"tests passed: {_esc(cl.get('all_tests_passed'))}; reproduced: "
+        f"{_esc(cl.get('reproduced'))}</li>",
+        "<li>A vulnerability is reported as reproduced ONLY when an executed "
+        "test demonstrated the impact; an LLM hypothesis is never presented as "
+        "verified.</li>",
+    ]
+    return (
+        "<div class='card'><b>Audit integrity</b><ul>"
+        + "".join(rows)
+        + "</ul></div>"
+    )
+
+
+def _integrity_md(report: AuditReport) -> str:
+    it = getattr(report, "integrity", None) or {}
+    if not it:
+        return ""
+    se = it.get("static_engines") or {}
+    dt = it.get("dynamic_tests") or {}
+    poc = it.get("poc") or {}
+    v = it.get("verified_vs_suspected") or {}
+    cl = it.get("claims") or {}
+    sp = it.get("specialists") or []
+    ran = sum(1 for s in sp if s.get("ran"))
+    return "\n".join([
+        "## Audit integrity",
+        "",
+        f"- Audit completion: {it.get('audit_state')}",
+        f"- Source files: received {len(it.get('source_files_received') or [])}, "
+        f"analyzed {len(it.get('source_files_analyzed') or [])}",
+        f"- Coverage: segments {it.get('segments_analyzed')}/"
+        f"{it.get('segments_total')}, functions {it.get('functions_covered')}/"
+        f"{it.get('functions_total')}, complete {it.get('coverage_complete')}",
+        f"- Static engines: {se.get('status')} (executed "
+        f"{', '.join(se.get('executed') or []) or 'none'}; failed "
+        f"{', '.join(se.get('failed') or []) or 'none'})",
+        f"- Specialists: {ran}/{len(sp)} ran; failed "
+        f"{', '.join(it.get('failed_agents') or []) or 'none'}; skipped "
+        f"{', '.join(it.get('skipped_analysis') or []) or 'none'}",
+        f"- Dynamic verification: {it.get('dynamic_verification')} (executed "
+        f"{dt.get('executed')}/{dt.get('total')}; all executed passed "
+        f"{dt.get('all_executed_passed')})",
+        f"- PoC: attempted {poc.get('attempted')}, executed {poc.get('executed')}, "
+        f"environment-limited {poc.get('environment_limited')}, reproduced "
+        f"{it.get('reproduced_findings')}",
+        f"- Verified vs suspected: confirmed {v.get('confirmed')}, "
+        f"high-confidence {v.get('high_confidence')}, potential (suspected) "
+        f"{v.get('potential_suspected')}, informational {v.get('informational')}, "
+        f"unverified {v.get('unverified')}, rejected {v.get('rejected')}",
+        f"- Claims: full coverage {cl.get('full_coverage')}; all tests passed "
+        f"{cl.get('all_tests_passed')}; reproduced {cl.get('reproduced')}",
+        "",
+        "> A vulnerability is reported as reproduced ONLY when an executed test "
+        "demonstrated the impact; an LLM hypothesis is never presented as "
+        "verified.",
+        "",
+    ])
 
 
 def _swc_link(f: Finding) -> str | None:
@@ -293,6 +432,24 @@ def render_html(report: AuditReport) -> str:
         f"{_esc(usage.failed_calls or 0)} failed; providers: "
         f"{_esc(', '.join(usage.providers_used) or 'n/a')}</div>"
     )
+    _cov = report.coverage or {}
+    if _cov:
+        _unread = _cov.get("unanalyzed_segments_count", 0)
+        _covline = (
+            f"<div><b>Agent source coverage</b> "
+            f"{_esc(_cov.get('analyzed_segments', 0))}/"
+            f"{_esc(_cov.get('total_segments', 0))} segment(s) analyzed"
+        )
+        if _unread:
+            _covline += f"; {_esc(_unread)} un-analyzed"
+            if _cov.get("uncovered_functions_count"):
+                _covline += (
+                    f"; {_esc(_cov.get('uncovered_functions_count'))} function(s) "
+                    "in un-analyzed segments"
+                )
+        else:
+            _covline += "; complete"
+        parts.append(_covline + "</div>")
     parts.append(
         "<div><b>Coverage</b> every finding passed deterministic validation "
         "gates; untraceable claims are downgraded for manual review, never "
@@ -300,6 +457,7 @@ def render_html(report: AuditReport) -> str:
     )
 
     # ---- findings overview ----
+    parts.append(_integrity_html(report))
     parts.append("<h2>3. Findings overview</h2>")
     if report.findings:
         rows = []
@@ -421,6 +579,7 @@ def render_html(report: AuditReport) -> str:
             )
             + (f"<div><b>Recommended fix</b> {_esc(f.recommendation)}</div>" if f.recommendation else "")  # noqa: E501
             + (f"<div><b>References</b> {' · '.join(refs)}</div>" if refs else "")
+            + _package_html(f)
             + "</div></div>"
         )
 
@@ -460,8 +619,8 @@ def render_html(report: AuditReport) -> str:
         "<div>Total execution time: "
         f"{_esc(report.execution_time_seconds if report.execution_time_seconds is not None else 'n/a')}s</div>"  # noqa: E501
         "<div>Analysis pipeline: static + bytecode analysis, bounded multi-agent "
-        "LLM screening, deterministic cross-validation, evidence-based severity "
-        "assessment (documented rubric)</div></div>"
+        "LLM screening, deterministic cross-validation, independent adversarial "
+        "review, evidence-based severity assessment (documented rubric)</div></div>"
     )
     if report.errors:
         parts.append(
@@ -481,6 +640,23 @@ def render_html(report: AuditReport) -> str:
                 for f in rejected_findings
             )
             + "</ul></div>"
+        )
+    _adv = report.adversarial_review or {}
+    if _adv.get("challenged"):
+        _rules = ", ".join(
+            f"{_esc(k)} x {v}" for k, v in sorted((_adv.get("by_rule") or {}).items())
+        ) or "n/a"
+        parts.append(
+            "<div class='card'><b>Adversarial review (independent verification)</b>"
+            f"<div>{_esc(_adv.get('challenged', 0))} candidate(s) challenged; "
+            f"{_esc(_adv.get('downgraded_to_informational', 0))} downgraded to "
+            f"informational, {_esc(_adv.get('refuted', 0))} refuted, "
+            f"{_esc(_adv.get('needs_manual_review', 0))} flagged for human "
+            f"review and {_esc(_adv.get('unverified', 0))} left unverified."
+            "</div>"
+            f"<div>Rules applied: <span class='mono'>{_rules}</span></div>"
+            "<div>This pass can only reduce a finding's standing; it never confirms "
+            "a finding and never clears a genuinely reachable entry point.</div></div>"
         )
     parts.append(
         "<div class='card'><b>Known limitations</b><ul>"
@@ -551,9 +727,18 @@ def render_markdown(report: AuditReport) -> str:
         parts.append(f"By status: {', '.join(f'{k}={v}' for k, v in sorted(st.items()))}")
     parts.append(f"Tools executed: {', '.join(report.summary.tools_executed) or 'none'}")
     parts.append(f"Static analysis status: {report.summary.static_analysis_status}")
+    _cov = report.coverage or {}
+    if _cov:
+        _unread = _cov.get("unanalyzed_segments_count", 0)
+        parts.append(
+            f"Agent source coverage: {_cov.get('analyzed_segments', 0)}/"
+            f"{_cov.get('total_segments', 0)} segments"
+            + (f" ({_unread} un-analyzed)" if _unread else " (complete)")
+        )
     parts.append("")
 
     # findings
+    parts.append(_integrity_md(report))
     parts.append("## Findings")
     parts.append("")
     actionable = [f for f in report.findings if f.status is not FindingStatus.REJECTED]
@@ -622,6 +807,10 @@ def render_markdown(report: AuditReport) -> str:
             parts.append("")
             parts.append("**Limitations:**")
             parts.append("".join(f"- {_esc(x)}\n" for x in f.limitations))
+        _pkg = _package_rows(f)
+        if _pkg:
+            parts.append("")
+            parts.append("**Evidence package:** " + "; ".join(_esc(r) for r in _pkg))
         parts.append("")
         parts.append("---")
         parts.append("")
@@ -634,6 +823,32 @@ def render_markdown(report: AuditReport) -> str:
         for f in rejected:
             rule = (f.metadata.get("validation", {}) or {}).get("rule", "deterministic validation")
             parts.append(f"- `{_esc(f.finding_id)}` {_esc(f.title)} — refuted by `{_esc(rule)}`")
+        parts.append("")
+
+    # adversarial review summary (independent verification)
+    _adv = report.adversarial_review or {}
+    if _adv.get("challenged"):
+        parts.append("## Adversarial review (independent verification)")
+        parts.append("")
+        parts.append(
+            f"{_adv.get('challenged', 0)} candidate(s) challenged; "
+            f"{_adv.get('downgraded_to_informational', 0)} downgraded to informational, "
+            f"{_adv.get('refuted', 0)} refuted, "
+            f"{_adv.get('needs_manual_review', 0)} flagged for human review and "
+            f"{_adv.get('unverified', 0)} left unverified."
+        )
+        _by_rule = _adv.get("by_rule") or {}
+        if _by_rule:
+            parts.append("")
+            parts.append(
+                "Rules applied: "
+                + ", ".join(f"`{k}` x {v}" for k, v in sorted(_by_rule.items()))
+            )
+        parts.append("")
+        parts.append(
+            "> This pass can only reduce a finding's standing; it never confirms a "
+            "finding and never clears a genuinely reachable entry point."
+        )
         parts.append("")
 
     # limitations

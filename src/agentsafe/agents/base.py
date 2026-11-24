@@ -39,6 +39,43 @@ MAX_TOTAL_ANALYZED_CHARS = 45_000  # per agent across whole audit (focused batch
 MAX_SEGMENTS_PER_AGENT = 3
 
 
+def chunk_segment(
+    path: str, content: str, max_chars: int = MAX_SEGMENT_CHARS
+) -> list[tuple[str, str, int, int]]:
+    """Split one file into labelled chunks at line boundaries.
+
+    Single source of truth for segmentation: agents, coverage accounting and
+    any consumer must agree on labels. Returns ``(label, text, line_start,
+    line_end)`` with 1-indexed inclusive line ranges, so a chunk can be mapped
+    back to the functions it contains. A file within ``max_chars`` yields one
+    chunk labelled with the bare path."""
+    lines = content.splitlines(keepends=True)
+    total = len(lines)
+    if len(content) <= max_chars:
+        return [(path, content, 1, max(1, total))]
+    out: list[tuple[str, str, int, int]] = []
+    cur: list[str] = []
+    size = 0
+    part = 0
+    consumed = 0  # lines already placed into flushed chunks
+    for line in lines:
+        if size + len(line) > max_chars and cur:
+            part += 1
+            end = consumed
+            start = end - len(cur) + 1
+            out.append((f"{path}#part{part}", "".join(cur), start, end))
+            cur, size = [], 0
+        cur.append(line)
+        size += len(line)
+        consumed += 1
+    if cur:
+        part += 1
+        end = consumed
+        start = end - len(cur) + 1
+        out.append((f"{path}#part{part}", "".join(cur), start, end))
+    return out
+
+
 _RE_CAT_REENTRANCY = re.compile(r"re[- ]?entran", re.IGNORECASE)
 _RE_CAT_OVERFLOW = re.compile(r"(?:over|under)flow|arithmetic", re.IGNORECASE)
 _RE_CAT_ACCESS = re.compile(
@@ -199,24 +236,10 @@ class BaseAgent:
 
     def _chunk(self, path: str, content: str) -> list[tuple[str, str]]:
         """Split oversized files at line boundaries (never mid-line silently)."""
-        if len(content) <= self.max_segment_chars:
-            return [(path, content)]
-        chunks: list[tuple[str, str]] = []
-        lines = content.splitlines(keepends=True)
-        current: list[str] = []
-        size = 0
-        part = 0
-        for line in lines:
-            if size + len(line) > self.max_segment_chars and current:
-                part += 1
-                chunks.append((f"{path}#part{part}", "".join(current)))
-                current, size = [], 0
-            current.append(line)
-            size += len(line)
-        if current:
-            part += 1
-            chunks.append((f"{path}#part{part}", "".join(current)))
-        return chunks
+        return [
+            (label, text)
+            for label, text, _s, _e in chunk_segment(path, content, self.max_segment_chars)
+        ]
 
     def _relevance(self, text: str) -> int:
         """Deterministic evidence score for ONE segment: how strongly this
@@ -276,6 +299,7 @@ class BaseAgent:
                      intel_brief: str = "",
                      kb_snippet: str = "",
                      stage7_section: str = "",
+                     counterexamples_section: str = "",
                      prior_section: str = "") -> str:
         notice = (
             "NOTE: the following is decompiled PSEUDO-SOURCE recovered from "
@@ -304,7 +328,10 @@ class BaseAgent:
             f"{stage7_section}\n=== END CROSS-FUNCTION HYPOTHESES ===\n"
             if stage7_section else ""
         )
-        return f"""{notice}{intel_section}{kb_section}{stage7_section}{prior_section}
+        fp_section = (
+            f"\n{counterexamples_section}\n" if counterexamples_section else ""
+        )
+        return f"""{notice}{intel_section}{kb_section}{fp_section}{stage7_section}{prior_section}
 
 {suffix}
 
@@ -333,7 +360,9 @@ object described in your instructions."""
         intel_brief = ""
         try:
             if intel is not None:
-                intel_brief = render_intel_brief(intel, self.focus)
+                intel_brief = render_intel_brief(
+                    intel, getattr(self, "profile", None) or getattr(self, "name", "")
+                )
         except Exception as exc:  # intel is an optimization, never a blocker
             logger.warning("intel render failed for %s: %s", self.name, exc)
 
@@ -356,16 +385,61 @@ object described in your instructions."""
         except Exception as exc:  # Stage 7 hints are optional context
             logger.warning("stage7 render failed for %s: %s", self.name, exc)
 
+        # Phase 5: derive the target contract's technical context ONCE, so each
+        # chunk's retrieval carries the contract's own vocabulary and matches
+        # records that share its solc version / functions / state / token
+        # standards / traits. Best-effort: retrieval stays plain on any error.
+        ctx = None
+        try:
+            from agentsafe.knowledge.context import derive_context
+
+            ctx = derive_context(intel, material.text())
+        except Exception as exc:  # context is an optimization, never a blocker
+            logger.warning("context derive failed for %s: %s", self.name, exc)
+
+        # Phase 6: counterexample / false-positive checks for the target's
+        # detected signals. Best-effort; a checklist, never a verdict.
+        fp_section = ""
+        _kb_for_fp = getattr(material, "kb", None)
+        if _kb_for_fp is not None:
+            try:
+                from agentsafe.knowledge.falsepositives import (
+                    detect_fp_triggers,
+                    render_counterexamples,
+                    retrieve_counterexamples,
+                )
+
+                _text = material.text()
+                _triggers = detect_fp_triggers(_text, ctx)
+                if _triggers:
+                    _crecs = retrieve_counterexamples(
+                        _kb_for_fp, text=_text, context=ctx,
+                        category=getattr(self, "focus", None), limit=2)
+                    fp_section = render_counterexamples(_crecs, _triggers)
+            except Exception as exc:  # FP checks are context, never a blocker
+                logger.warning("counterexample retrieval failed for %s: %s",
+                               self.name, exc)
+
         for label, chunk in work:
             kb_snippet = ""
             kb_refs: list[str] = []
             try:
                 kb = getattr(material, "kb", None)
                 if kb is not None:
-                    records = kb.search(
-                        query=chunk[:4000] + " " + " ".join(self.keywords),
-                        focus=self.focus, limit=2,
-                        profile=getattr(self, "profile", None))
+                    if ctx is not None:
+                        from agentsafe.knowledge.context import (
+                            retrieve_for_agents,
+                        )
+
+                        records = retrieve_for_agents(
+                            kb, ctx, chunk=chunk, keywords=self.keywords,
+                            focus=self.focus,
+                            profile=getattr(self, "profile", None), limit=2)
+                    else:
+                        records = kb.search(
+                            query=chunk[:4000] + " " + " ".join(self.keywords),
+                            focus=self.focus, limit=2,
+                            profile=getattr(self, "profile", None))
                     kb_snippet = render_kb_snippets(records)
                     # Stage 5: attach retrieval provenance (record id or
                     # source url) to findings produced from this chunk.
@@ -381,7 +455,8 @@ object described in your instructions."""
                 {"role": "system", "content": system_prompt(self.focus)},
                 {"role": "user", "content": self._user_prompt(
                     label, chunk, deep, intel_brief=intel_brief,
-                    kb_snippet=kb_snippet, stage7_section=stage7_section)},
+                    kb_snippet=kb_snippet, stage7_section=stage7_section,
+                    counterexamples_section=fp_section)},
             ]
             try:
                 agent_token = CURRENT_AGENT.set(self.name)

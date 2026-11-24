@@ -27,12 +27,14 @@ import copy
 import hashlib
 import json
 import logging
+import os
 import threading
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
 from agentsafe.knowledge.kb import KnowledgeBase
+from agentsafe.knowledge.rerank import rerank
 
 logger = logging.getLogger("agentSAFE.knowledge.db")
 
@@ -185,9 +187,26 @@ CREATE TABLE IF NOT EXISTS vulnerability_knowledge (
     subcategory        text,
     vulnerability_id   text,
     swc_id             text,
+    cwe_id             text,
     exploit_sequence   text,
     confidence         double precision,
     tags               jsonb DEFAULT '[]'::jsonb,
+    -- Phase 3 structured vulnerability-intelligence view (identification /
+    -- root cause / exploit / verification / remediation). Additive and
+    -- derived from the columns above — never a second source of truth; it is a
+    -- deterministic projection so agents get one coherent, honestly-null
+    -- structure. Absent facts are null, never invented.
+    structured_intel   jsonb DEFAULT '{}'::jsonb,
+    -- Phase 2 data-quality classification. Additive: the source record is
+    -- never rewritten; these fields only annotate it and can be dropped to
+    -- revert. quality_status in VALIDATED|NEEDS_REVIEW|INCOMPLETE|DUPLICATE|
+    -- INVALID; quality_flags is the list of issues found; quality_claim is the
+    -- independent dimension of claim verification (reproduced|curated|
+    -- unverified-source).
+    quality_status     text,
+    quality_flags      jsonb DEFAULT '[]'::jsonb,
+    quality_claim      text,
+    quality_checked_at timestamptz,
     created_at         timestamptz DEFAULT now(),
     updated_at         timestamptz DEFAULT now()
 );
@@ -198,6 +217,10 @@ CREATE INDEX IF NOT EXISTS vk_subcategory_idx ON vulnerability_knowledge (subcat
 CREATE INDEX IF NOT EXISTS vk_vuln_id_idx      ON vulnerability_knowledge (vulnerability_id);
 CREATE INDEX IF NOT EXISTS vk_severity_idx     ON vulnerability_knowledge (severity);
 CREATE INDEX IF NOT EXISTS vk_tags_idx         ON vulnerability_knowledge USING gin (tags);
+CREATE INDEX IF NOT EXISTS vk_quality_idx      ON vulnerability_knowledge (quality_status);
+CREATE INDEX IF NOT EXISTS vk_cwe_idx          ON vulnerability_knowledge (cwe_id);
+CREATE INDEX IF NOT EXISTS vk_struct_idx
+    ON vulnerability_knowledge USING gin (structured_intel);
 
 CREATE TABLE IF NOT EXISTS knowledge_embeddings (
     id              bigserial PRIMARY KEY,
@@ -247,12 +270,19 @@ def _row_to_record(row: Any) -> dict[str, Any]:
     # Category B jsonb columns: parse to lists when the driver returned a str.
     for k in ("call_sequence", "internal_calls", "external_calls", "state_vars",
               "state_deps", "attacker_permissions", "tx_conditions",
-              "cross_function_deps", "cross_contract_deps", "tags"):
+              "cross_function_deps", "cross_contract_deps", "tags",
+              "quality_flags"):
         if isinstance(r.get(k), str):
             try:
                 r[k] = json.loads(r[k])
             except (ValueError, TypeError):
                 r[k] = []
+    # Phase 3 structured-intelligence projection (jsonb object).
+    if isinstance(r.get("structured_intel"), str):
+        try:
+            r["structured_intel"] = json.loads(r["structured_intel"])
+        except (ValueError, TypeError):
+            r["structured_intel"] = {}
     # exploit_sequence may be stored as a JSON list string (v1/v2 legacy);
     # normalize to a list so consumers get the array, not its repr.
     if isinstance(r.get("exploit_sequence"), str) and r.get("exploit_sequence").startswith("["):
@@ -338,9 +368,15 @@ def _row_to_record(row: Any) -> dict[str, Any]:
         "subcategory": r.get("subcategory"),
         "vulnerability_id": r.get("vulnerability_id"),
         "swc_id": r.get("swc_id"),
+        "cwe_id": r.get("cwe_id"),
         "exploit_sequence": r.get("exploit_sequence") or r.get("attack_scenario"),
         "confidence": r.get("confidence"),
         "tags": r.get("tags") or [],
+        # Phase 2 data-quality + Phase 3 structured intelligence
+        "quality_status": r.get("quality_status"),
+        "quality_claim": r.get("quality_claim"),
+        "quality_flags": r.get("quality_flags") or [],
+        "structured_intel": r.get("structured_intel") or {},
         "security_invariant": r.get("invariant"),
         "source_name": r.get("source_name") or r.get("source_id"),
         "source_license": r.get("license_status"),
@@ -350,7 +386,73 @@ def _row_to_record(row: Any) -> dict[str, Any]:
     return out
 
 
-def _connect(dsn: str, *, retries: int = 3):
+def _backup_then_drop_embeddings(cur, old_dim: int, new_dim: int) -> None:
+    """A dimension change requires recreating the vector column, which cannot
+    preserve the old vectors in place. Back them up LOSSLESSLY (as text, so the
+    dim is irrelevant) BEFORE dropping; if the backup cannot be completed, ABORT
+    the migration (raise) rather than silently destroying valid vectors."""
+    cur.execute("SELECT count(*) AS c FROM knowledge_embeddings")
+    r = cur.fetchone()
+    n = int(r.get("c") if isinstance(r, dict) else r[0])
+    if n == 0:
+        logger.info("embedding dim %s -> %s; table empty, recreating",
+                    old_dim, new_dim)
+        cur.execute("DROP TABLE knowledge_embeddings CASCADE")
+        return
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS knowledge_embeddings_backup_dim (
+            id              bigint PRIMARY KEY,
+            knowledge_id    bigint,
+            embedding_text  text,
+            embedding_model text,
+            dimensions      int,
+            content_hash    text,
+            created_at      timestamptz,
+            backed_up_dim   int,
+            backed_up_at    timestamptz DEFAULT now()
+        )
+        """
+    )
+    cur.execute(
+        """
+        INSERT INTO knowledge_embeddings_backup_dim
+            (id, knowledge_id, embedding_text, embedding_model, dimensions,
+             content_hash, created_at, backed_up_dim)
+        SELECT id, knowledge_id, embedding::text, embedding_model, dimensions,
+               content_hash, created_at, %s
+        FROM knowledge_embeddings
+        ON CONFLICT (id) DO NOTHING
+        """,
+        (old_dim,),
+    )
+    backed = int(cur.rowcount or 0)
+    cur.execute("SELECT count(*) AS c FROM knowledge_embeddings_backup_dim")
+    r2 = cur.fetchone()
+    total_backed = int(r2.get("c") if isinstance(r2, dict) else r2[0])
+    if total_backed < n:
+        raise RuntimeError(
+            f"embedding dim migration {old_dim}->{new_dim}: refused to drop "
+            f"vectors (backed up {total_backed}/{n}); migration aborted")
+    logger.info("embedding dim %s -> %s; backed up %d vectors to "
+                "knowledge_embeddings_backup_dim; recreating", old_dim, new_dim,
+                backed)
+    cur.execute("DROP TABLE knowledge_embeddings CASCADE")
+
+
+def _kb_search_timeout_ms() -> int:
+    """Statement timeout for RETRIEVAL queries only (not migrations/imports,
+    where a long index build is legitimate). Bounds runaway searches."""
+    try:
+        return max(0, int(os.environ.get("KB_STATEMENT_TIMEOUT_MS", "15000")))
+    except ValueError:
+        return 15000
+
+
+def _connect(dsn: str, *, retries: int = 3, statement_timeout_ms: int | None = None):
+    """Connect with bounded retries (safe retry on transient failures). When
+    ``statement_timeout_ms`` > 0, apply it so a runaway query cannot hang an
+    audit forever."""
     import time as _t
 
     import psycopg
@@ -360,8 +462,11 @@ def _connect(dsn: str, *, retries: int = 3):
     last: Exception | None = None
     for attempt in range(1, retries + 1):
         try:
-            return psycopg.connect(dsn, connect_timeout=15,
-                                   row_factory=dict_row)
+            conn = psycopg.connect(dsn, connect_timeout=15, row_factory=dict_row)
+            if statement_timeout_ms and statement_timeout_ms > 0:
+                with conn.cursor() as cur:
+                    cur.execute(f"SET statement_timeout = {int(statement_timeout_ms)}")
+            return conn
         except Exception as exc:
             last = exc
             if attempt < retries:
@@ -388,6 +493,10 @@ class NeonKnowledgeStore:
         self._cache_capacity = max(1, int(cache_capacity))
         self._cache: OrderedDict[str, list[dict[str, Any]]] = OrderedDict()
         self._cache_lock = threading.Lock()
+        # Last retrieval status (mode / degraded / reason), so callers can tell
+        # a full hybrid result from a degraded (e.g. lexical-only) one instead
+        # of silently treating partial retrieval as a complete success.
+        self._last_search_status: dict[str, Any] = {}
 
     def _cache_get(self, key: str) -> list[dict[str, Any]] | None:
         with self._cache_lock:
@@ -412,6 +521,11 @@ class NeonKnowledgeStore:
 
     def _connect(self):
         return _connect(self.dsn)
+
+    def _connect_search(self):
+        """Connection for retrieval queries (bounded by a statement timeout so
+        a runaway search cannot hang an audit)."""
+        return _connect(self.dsn, statement_timeout_ms=_kb_search_timeout_ms())
 
     def migrate(self) -> None:
         with self._connect() as conn:
@@ -439,7 +553,11 @@ class NeonKnowledgeStore:
                             "expected_safe_behavior", "test_result",
                             "solc_version", "foundry_version",
                             "subcategory", "vulnerability_id", "swc_id",
-                            "exploit_sequence"):
+                            "cwe_id",
+                            "exploit_sequence",
+                            # Phase 2 data-quality classification (additive,
+                            # non-destructive: the source fields are untouched).
+                            "quality_status", "quality_claim"):
                     cur.execute(
                         "ALTER TABLE vulnerability_knowledge "
                         f"ADD COLUMN IF NOT EXISTS {col} text")
@@ -449,11 +567,15 @@ class NeonKnowledgeStore:
                 for col in ("call_sequence", "internal_calls", "external_calls",
                             "state_vars", "state_deps", "attacker_permissions",
                             "tx_conditions", "cross_function_deps",
-                            "cross_contract_deps", "tags"):
+                            "cross_contract_deps", "tags",
+                            "quality_flags", "structured_intel"):
                     cur.execute(
                         "ALTER TABLE vulnerability_knowledge "
                         f"ADD COLUMN IF NOT EXISTS {col} jsonb "
                         "DEFAULT '[]'::jsonb")
+                cur.execute(
+                    "ALTER TABLE vulnerability_knowledge "
+                    "ADD COLUMN IF NOT EXISTS quality_checked_at timestamptz")
                 # Dimension change: drop stale embeddings so the HNSW index is
                 # rebuilt with the configured dim (records stay; vectors reseed).
                 cur.execute(
@@ -464,9 +586,8 @@ class NeonKnowledgeStore:
                 if row:
                     old_dim = row.get("dim") if isinstance(row, dict) else row[0]
                     if old_dim and int(old_dim) != int(self.vector_dim):
-                        logger.info("embedding dim %s -> %s; dropping stale vectors",
-                                    old_dim, self.vector_dim)
-                        cur.execute("DROP TABLE knowledge_embeddings CASCADE")
+                        _backup_then_drop_embeddings(
+                            cur, int(old_dim), int(self.vector_dim))
                 cur.execute(_SCHEMA.replace("{DIM}", str(self.vector_dim)))
                 # Standardized data-model indexes (idempotent; also covers the
                 # fresh-CREATE path since CREATE TABLE IF NOT EXISTS above only
@@ -483,6 +604,22 @@ class NeonKnowledgeStore:
                 cur.execute(
                     "CREATE INDEX IF NOT EXISTS vk_tags_idx "
                     "ON vulnerability_knowledge USING gin (tags)")
+                # Parent -> chunk-child lookup (metadata.parent_external_id) is
+                # used by intelligence propagation. Without this functional
+                # index the cross-row sweep degrades to a nested jsonb scan.
+                cur.execute(
+                    "CREATE INDEX IF NOT EXISTS vk_parent_ext_idx "
+                    "ON vulnerability_knowledge "
+                    "(source_id, (metadata->>'parent_external_id'))")
+                cur.execute(
+                    "CREATE INDEX IF NOT EXISTS vk_quality_idx "
+                    "ON vulnerability_knowledge (quality_status)")
+                cur.execute(
+                    "CREATE INDEX IF NOT EXISTS vk_cwe_idx "
+                    "ON vulnerability_knowledge (cwe_id)")
+                cur.execute(
+                    "CREATE INDEX IF NOT EXISTS vk_struct_idx "
+                    "ON vulnerability_knowledge USING gin (structured_intel)")
                 # DB-level dedup on the source identifier pair (requirement 6):
                 # same (source_id, external_record_id) can exist only once.
                 # If legacy data contains dupes, index creation fails and is
@@ -510,12 +647,22 @@ class NeonKnowledgeStore:
         JOIN knowledge_sources src ON src.name = vk.source_id
     """
 
+    # Searchable text for the lexical leg. Includes the technical fields an
+    # agent reasons over (function/contract, code, class ids, exploit context,
+    # PoC evidence) so exact terminology and code identifiers match, not only
+    # the prose description. jsonb columns are cast to text for indexing.
     _TS_COLS = (
         "coalesce(vk.description,'') || ' ' || coalesce(vk.title,'') || ' ' || "
         "coalesce(vk.root_cause,'') || ' ' || coalesce(vk.remediation,'') || ' ' || "
         "coalesce(vk.attack_scenario,'') || ' ' || coalesce(vk.vulnerable_code,'') || ' ' || "
         "coalesce(vk.metadata::text,'') || ' ' || "
-        "coalesce(vk.category,'') || ' ' || coalesce(vk.protocol_domain,'')"
+        "coalesce(vk.category,'') || ' ' || coalesce(vk.protocol_domain,'') || ' ' || "
+        "coalesce(vk.affected_function,'') || ' ' || coalesce(vk.affected_contract,'') || ' ' || "
+        "coalesce(vk.subcategory,'') || ' ' || coalesce(vk.cwe_id,'') || ' ' || "
+        "coalesce(vk.swc_id,'') || ' ' || coalesce(vk.exploit_sequence,'') || ' ' || "
+        "coalesce(vk.invariant,'') || ' ' || coalesce(vk.security_pattern,'') || ' ' || "
+        "coalesce(vk.verification_evidence,'') || ' ' || coalesce(vk.poc_code,'') || ' ' || "
+        "coalesce(vk.preconditions::text,'') || ' ' || coalesce(vk.tags::text,'')"
     )
 
     @staticmethod
@@ -554,11 +701,24 @@ class NeonKnowledgeStore:
             else:
                 vec = self.embedding_model(query)  # type: ignore[operator]
             if not vec:
+                # Never silent: an empty query embedding means the vector leg
+                # cannot run; surface it (and count it) rather than pretending
+                # lexical-only was intended.
+                logger.warning("query embedding empty; vector leg skipped "
+                               "(lexical-only for this query)")
+                from agentsafe.metrics import get_metrics
+
+                get_metrics().incr("retrieval_embedding_empty")
                 return []
+            if len(vec) != self.vector_dim:
+                logger.warning(
+                    "query embedding dim %d != configured KB_VECTOR_DIM %d; "
+                    "vector leg truncates (verify EMBED_DIM matches the store)",
+                    len(vec), self.vector_dim)
             qv = [float(x) for x in vec[: self.vector_dim]]
             fsql, fparams = self._filter_clause(kb_groups, categories, tags,
                                                 sources=sources)
-            with self._connect() as conn:
+            with self._connect_search() as conn:
                 with conn.cursor() as cur:
                     cur.execute(
                         f"""
@@ -589,7 +749,7 @@ class NeonKnowledgeStore:
         BM25)."""
         fsql, fparams = self._filter_clause(kb_groups, categories, tags,
                                             sources=sources)
-        with self._connect() as conn:
+        with self._connect_search() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     f"""
@@ -617,7 +777,10 @@ class NeonKnowledgeStore:
 
     def search(self, query: str, focus: str = "", limit: int = 3, *,
                profile: str | None = None, kb_groups=None, categories=None,
-               tags=None, sources=None) -> list[dict[str, Any]]:
+               tags=None, sources=None, solc: str | None = None,
+               context: dict[str, Any] | None = None,
+               min_relevance: float = 0.0,
+               status: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         """Hybrid retrieval: pgvector cosine + PostgreSQL full-text, fused with
         Reciprocal Rank Fusion (RRF): score(d) = sum 1/(K + rank_i(d)), K=60
         (standard RRF constant). Rank-fusion is documented, not BM25: full-text
@@ -656,63 +819,120 @@ class NeonKnowledgeStore:
         _t0 = _t.monotonic()
         _ckey = (f"{query.strip()}\x1f{focus}\x1f{limit}\x1f{profile or ''}"
                  f"\x1f{sorted(kb_groups or [])}\x1f{sorted(categories or [])}"
-                 f"\x1f{sorted(tags or [])}\x1f{sorted(sources or [])}")
+                 f"\x1f{sorted(tags or [])}\x1f{sorted(sources or [])}"
+                 f"\x1f{solc or ''}\x1f{min_relevance or 0.0}"
+                 f"\x1f{json.dumps(context or {}, sort_keys=True)}")
         cached = self._cache_get(_ckey)
         if cached is not None:
+            st = {"cached": True, "mode": "cached", "degraded": False,
+                  "vector_used": self.embedding_model is not None,
+                  "lexical_used": True, "reason": None, "returned": len(cached)}
+            self._last_search_status = dict(st)
+            if status is not None:
+                status.clear()
+                status.update(st)
             return cached
         K = 60
         vec_hits: list[tuple[Any, float]] = []  # (record, rank0-based)
         lex_hits: list[tuple[Any, float]] = []
+        vec_error = lex_error = None
         if self.embedding_model is not None:
-            vec_hits = [(r, i) for i, r in enumerate(self._leg_vector(
+            try:
+                vec_hits = [(r, i) for i, r in enumerate(self._leg_vector(
+                    query, limit * 3, kb_groups=kb_groups,
+                    categories=categories, tags=tags, sources=sources))]
+            except Exception as exc:  # a leg failure degrades, never raises
+                vec_error = exc
+                logger.warning("vector leg error (%s); degrading", exc)
+        try:
+            lex_hits = [(r, i) for i, r in enumerate(self._leg_lexical(
                 query, limit * 3, kb_groups=kb_groups, categories=categories,
                 tags=tags, sources=sources))]
-        lex_hits = [(r, i) for i, r in enumerate(self._leg_lexical(
-            query, limit * 3, kb_groups=kb_groups, categories=categories,
-            tags=tags, sources=sources))]
-        if not vec_hits and not lex_hits:
-            return []
-        if self.embedding_model is not None and not vec_hits:
-            from agentsafe.metrics import get_metrics
+        except Exception as exc:  # DB failure on the lexical leg
+            lex_error = exc
+            logger.warning("lexical leg error (%s)", exc)
 
-            get_metrics().incr("retrieval_vector_fallback")
-        # RRF fusion keyed on content_hash (stable dedup across legs)
+        vector_attempted = self.embedding_model is not None
+        vector_used = bool(vec_hits)
+        lexical_used = bool(lex_hits)
+        degraded = bool(
+            (vector_attempted and not vector_used) or lex_error is not None)
+        reason = None
+        if vec_error is not None:
+            reason = f"vector leg failed: {type(vec_error).__name__}"
+        elif lex_error is not None:
+            reason = f"lexical leg failed: {type(lex_error).__name__}"
+        elif vector_attempted and not vector_used:
+            reason = "vector leg returned no results (embedding failure or miss)"
+        st = {
+            "cached": False,
+            "mode": ("hybrid" if vector_used and lexical_used
+                     else "vector" if vector_used else "lexical"),
+            "vector_attempted": vector_attempted,
+            "vector_used": vector_used,
+            "lexical_used": lexical_used,
+            "degraded": degraded,
+            "reason": reason,
+        }
+        self._last_search_status = dict(st)
+        if status is not None:
+            status.clear()
+            status.update(st)
+
+        if not vec_hits and not lex_hits:
+            # Nothing retrieved. Distinguish a genuine empty result from a
+            # failure so the caller does NOT treat it as a full success.
+            st["returned"] = 0
+            st["empty"] = True
+            self._last_search_status = dict(st)
+            if status is not None:
+                status.clear()
+                status.update(st)
+            if degraded:
+                _m.incr("retrieval_degraded")
+            return []
+        if vector_attempted and not vector_used:
+            _m.incr("retrieval_vector_fallback")
+
+        # RRF fusion keyed on content_hash (stable dedup across legs), then the
+        # bounded Phase-4 reranker (profile / validation / evidence / term /
+        # code / solc). Rank fusion is documented, not BM25.
         def key(r: dict[str, Any]) -> str:
             return str(r.get("content_hash") or r.get("id") or id(r))
-        rrf: dict[str, float] = {}
-        best: dict[str, dict[str, Any]] = {}
-        legs: dict[str, list[int]] = {}
-        for hits in (vec_hits, lex_hits):
+
+        candidates: dict[str, dict[str, Any]] = {}
+        for hits, leg in ((vec_hits, "vector"), (lex_hits, "lexical")):
             for row, rank in hits:
                 k = key(row)
-                rrf[k] = rrf.get(k, 0.0) + 1.0 / (K + rank + 1)
-                legs.setdefault(k, []).append(rank)
-                if k not in best:
-                    best[k] = row
-        # Category-specific prioritization: boost matched records after
-        # fusion (never exclude — cross-signal stays visible).
-        boosted: dict[str, float] = {}
-        if prof:
-            for k, row in best.items():
-                b = prof["boost"] if (
-                    row.get("kb_group") in prof["kb_groups"]
-                    or row.get("category") in prof["categories"]) else 1.0
-                boosted[k] = rrf[k] * b
-        else:
-            boosted = rrf
-        fused = sorted(best.values(), key=lambda r: boosted[key(r)], reverse=True)
+                c = candidates.get(k)
+                if c is None:
+                    c = {"key": k, "row": row, "rrf": 0.0,
+                         "vector_rank": None, "lexical_rank": None}
+                    candidates[k] = c
+                c["rrf"] += 1.0 / (K + rank + 1)
+                field = f"{leg}_rank"
+                c[field] = rank if c[field] is None else min(c[field], rank)
+        order, diag = rerank(list(candidates.values()), query=query,
+                             profile=prof, solc=solc, context=context)
         out = []
-        for r in fused[:limit]:
-            rec = _row_to_record(r)
-            rec["_retrieval"] = {
-                "rrf_score": round(rrf[key(r)], 6),
-                "boosted_score": round(boosted[key(r)], 6),
-                "profile": profile,
-                "vector_rank": min(legs[key(r)]) if key(r) in legs else None,
-                "matched_legs": sum(1 for h in (vec_hits, lex_hits)
-                                    if any(key(x[0]) == key(r) for x in h)),
-            }
+        for c in order:
+            d = diag[c["key"]]
+            if min_relevance and d["boosted_score"] < float(min_relevance):
+                continue
+            rec = _row_to_record(c["row"])
+            d = dict(d)
+            d["profile"] = profile
+            rec["_retrieval"] = d
             out.append(rec)
+            if len(out) >= limit:
+                break
+        st["returned"] = len(out)
+        self._last_search_status = dict(st)
+        if status is not None:
+            status.clear()
+            status.update(st)
+        if degraded:
+            _m.incr("retrieval_degraded")
         _m.incr("retrieval_calls")
         _m.record("retrieval_latency_ms", (_t.monotonic() - _t0) * 1000.0)
         self._cache_put(_ckey, out)
@@ -774,8 +994,20 @@ def get_knowledge_store(settings: Any,
         try:
             from agentsafe.knowledge.embeddings import get_embedder
 
-            embedder = get_embedder()
-            if embedder is not None and embedder.dim != vector_dim:
+            # Pass the settings so a config-supplied embedding configuration is
+            # honoured (not only os.environ); production retrieval must use the
+            # intended embedder rather than silently degrading to lexical-only.
+            embedder = get_embedder(settings)
+            if embedder is None:
+                # Visible, not silent: Neon is configured but there is no
+                # embedder, so the vector leg cannot run. Retrieval is
+                # lexical-only over the Neon rows (still better than the
+                # JSONL fallback, but NOT hybrid).
+                logger.warning(
+                    "knowledge store: Neon configured but no embedder "
+                    "(set NVIDIA_API_KEY + NVIDIA_EMBED_MODEL); retrieval is "
+                    "lexical-only — vector search will NOT execute")
+            elif embedder.dim != vector_dim:
                 logger.warning(
                     "embedder dim %s != KB_VECTOR_DIM %s; vector leg truncates to %s",
                     embedder.dim, vector_dim, vector_dim,
@@ -837,10 +1069,13 @@ def get_knowledge_store(settings: Any,
                 # secure-code / FP), v7 (Category F: verification methods),
                 # and v8 (Category F: Foundry PoC / exploit validation)
                 # datasets. Idempotent.
+                # v9/fp_v1 is the Phase-6 counterexample / false-positive set
+                # (kb_group E): validated FP patterns retrievable during audits.
                 for _src, _file in (("agentsafe-v5.jsonl", "v5.jsonl"),
                                     ("agentsafe-v6.jsonl", "v6.jsonl"),
                                     ("agentsafe-v7.jsonl", "v7.jsonl"),
-                                    ("agentsafe-v8.jsonl", "v8.jsonl")):
+                                    ("agentsafe-v8.jsonl", "v8.jsonl"),
+                                    ("agentsafe-fp-v1.jsonl", "fp_v1.jsonl")):
                     try:
                         if store.source_status(_src) not in ("done", "running"):
                             from agentsafe.knowledge.importers import import_jsonl_dataset
@@ -861,6 +1096,14 @@ def get_knowledge_store(settings: Any,
             from agentsafe.metrics import get_metrics
 
             get_metrics().incr("retrieval_neon_fallback")
-    return KnowledgeBase.load_default()
+    # Shipped JSONL KB (small, lexical-only). Logged explicitly so a production
+    # deployment can SEE that the Neon hybrid KB is not active — otherwise this
+    # degradation is invisible (the store simply returns fewer, weaker results).
+    kb = KnowledgeBase.load_default()
+    logger.warning(
+        "knowledge store: shipped JSONL KB (%d records, lexical-only); "
+        "set NEON_DATABASE_URL + NVIDIA_API_KEY to enable the Neon hybrid KB",
+        len(getattr(kb, "records", []) or []))
+    return kb
 
 

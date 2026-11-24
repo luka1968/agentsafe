@@ -85,6 +85,11 @@ jobs:
           INFURA_ETH_ENDPOINT: ${{ secrets.INFURA_ETH_ENDPOINT }}
           ETHERSCAN_API_KEY: ${{ secrets.ETHERSCAN_API_KEY }}
           LLM_PROVIDERS_JSON: ${{ secrets.LLM_PROVIDERS_JSON }}
+          # Knowledge base + embeddings: enable the Neon hybrid KB inside the
+          # container. Absent secrets degrade to the shipped JSONL KB
+          # (lexical-only) — the audit still runs, but not with the full KB.
+          NEON_DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
         run: |
           mkdir -p out
           docker run --rm \
@@ -98,6 +103,13 @@ jobs:
             -e LLM_MAX_OUTPUT_TOKENS=8000 \
             -e AUDIT_TIMEOUT_SECONDS=1800 \
             -e LOG_LEVEL=INFO \
+            -e NEON_DATABASE_URL \
+            -e KB_STORAGE=neon \
+            -e KB_VECTOR_DIM=2048 \
+            -e NVIDIA_API_KEY \
+            -e NVIDIA_BASE_URL=https://integrate.api.nvidia.com/v1 \
+            -e NVIDIA_EMBED_MODEL=nvidia/nemotron-3.5-embed-1b \
+            -e EMBED_DIM=2048 \
             agentsafe:audit \
               --address "$AUDIT_ADDRESS" \
               --task-id "$AUDIT_TASK_ID" \

@@ -1,0 +1,45 @@
+{
+  "scanned": 931,
+  "written": 931,
+  "section_fill": {
+    "identification": {
+      "filled": 9986,
+      "total": 12103,
+      "pct": 82.5
+    },
+    "root_cause": {
+      "filled": 1286,
+      "total": 7448,
+      "pct": 17.3
+    },
+    "exploit_intelligence": {
+      "filled": 2857,
+      "total": 13034,
+      "pct": 21.9
+    },
+    "verification": {
+      "filled": 134,
+      "total": 6517,
+      "pct": 2.1
+    },
+    "remediation": {
+      "filled": 463,
+      "total": 3724,
+      "pct": 12.4
+    }
+  },
+  "field_fill": {
+    "preconditions": 927,
+    "root_cause": 924,
+    "category": 922,
+    "title": 902,
+    "severity": 841,
+    "attack_scenario": 612,
+    "remediation": 385,
+    "vulnerable_code": 326,
+    "impact": 323,
+    "attack_entry": 10,
+    "affected_contract": 8
+  },
+  "errors": []
+}
