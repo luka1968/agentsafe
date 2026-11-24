@@ -24,6 +24,15 @@ LEGAL_FILES = {
 
 LEGAL_SLUGS = tuple(LEGAL_FILES)
 
+# Crypto (x402) checkout UI on the landing page. The x402 endpoints, the
+# advertised `accepts` list, payment verification and settlement are
+# UNCHANGED by this flag - it only HIDES the "Pay with <chain>" buttons
+# (Base mainnet / Base Sepolia) so the page offers the card checkout
+# (Creem) only. Flip back to True to show the crypto buttons again; no
+# backend change or redeploy of anything else is needed.
+CRYPTO_CHECKOUT_UI_ENABLED = False
+_CRYPTO_UI_JS = "true" if CRYPTO_CHECKOUT_UI_ENABLED else "false"
+
 
 class LegalDocumentMissingError(RuntimeError):
     """The backing Markdown file could not be found in any known location."""
@@ -104,24 +113,14 @@ CLAUDE_CONFIG_JSON = """{
 
 _TALLY_URL = "https://tally.so/r/laby7B"
 
+_SHOW_PRICING_TABLE = False
+
 _INDEX_ROWS = (
     ("1 &ndash; 100", "$0.50"),
     ("101 &ndash; 500", "$2.50"),
     ("501 &ndash; 1,000", "$5.00"),
     ("1,001 &ndash; 5,000", "$25.00"),
 )
-
-# The size-tier ladder is hidden on the landing page while the card channel
-# (Creem) charges one fixed price. Flip to True to publish the table again -
-# the server-side tiers in pricing.py are unchanged either way.
-_SHOW_PRICING_TABLE = False
-
-# The wallet (x402) network picker is hidden on the landing page while the card
-# channel (Creem) is the offered payment method. The x402 flow itself is
-# untouched for MCP clients, which never use this page. The picker also comes
-# back by itself when the card channel is unavailable, so the page can never
-# end up with no way to pay.
-_SHOW_CHAIN_BUTTONS = False
 
 
 def _build_index_html() -> str:
@@ -133,6 +132,15 @@ def _build_index_html() -> str:
     enterprise_cell = (
         f'<a class="text-cyan-300 hover:underline" href="{_TALLY_URL}">Enterprise inquiry</a>'
     )
+    pre_class = (
+        "overflow-x-auto rounded-lg border border-zinc-800 bg-zinc-900 p-4 text-xs text-cyan-300"
+    )
+    _sha = (
+        os.environ.get("AGENTSAFE_GIT_SHA")
+        or os.environ.get("VERCEL_GIT_COMMIT_SHA")
+        or "dev"
+    )
+    build_tag = "v" + __version__ + "-" + _sha[:8]
     pricing_section = ""
     if _SHOW_PRICING_TABLE:
         pricing_section = f'''
@@ -156,14 +164,6 @@ def _build_index_html() -> str:
     retrieved with the issued task ID at no extra charge.</p>
   </section>
 '''
-    pre_class = (
-        "overflow-x-auto rounded-lg border border-zinc-800 bg-zinc-900 p-4 text-xs text-cyan-300"
-    )
-    build_tag = "v" + __version__ + "-" + (
-        os.environ.get("AGENTSAFE_GIT_SHA")
-        or os.environ.get("VERCEL_GIT_COMMIT_SHA")
-        or "dev"
-    )[:8]
     return f"""<!DOCTYPE html>
 <html lang="en" class="bg-black text-white">
 <head>
@@ -218,16 +218,16 @@ def _build_index_html() -> str:
     </div>
     <div id="flow" class="mt-4 hidden rounded-lg border border-zinc-800 bg-black p-4 text-sm"></div>
     <p id="wallet-hint" class="mt-2 hidden text-xs text-zinc-300">
-      Your wallet will open to approve the USDC payment on the selected chain.
+      You will be redirected to a secure checkout to complete the payment.
     </p>
   </section>
 
   <script>
   (function () {{
     var REST = "/api/audit";
-    // Landing-page payment options. False hides the wallet chain picker;
-    // renderChoices() brings it back when the card channel is unavailable.
-    var SHOW_CHAIN_BUTTONS = {str(_SHOW_CHAIN_BUTTONS).lower()};
+    // Chain buttons on/off (server-rendered flag; see
+    // CRYPTO_CHECKOUT_UI_ENABLED). Card checkout is independent of this.
+    var CRYPTO_UI = {_CRYPTO_UI_JS};
     var addr = document.getElementById("addr");
     var email = document.getElementById("email");
     var start = document.getElementById("start");
@@ -521,37 +521,30 @@ def _build_index_html() -> str:
     // summary can pick a different network without re-requesting terms.
     function renderChoices(accs, a, clickFn) {{
       var lines = [];
-      // Card-only deployments (Creem) hide the wallet chain picker; the
-      // picker comes back by itself if the card channel is not advertised.
-      var showChains = SHOW_CHAIN_BUTTONS || !window.__creemEnabled;
-      if (showChains) {{
-        lines.push("<p class='text-yellow-300'>Payment required to start this audit. Pick the network you want to pay on:</p>");
-        lines.push("<p class='text-xs text-zinc-300'>The flat fee covers contracts up to <b>500 source lines</b>. "
-          + "Larger contracts are billed per size tier on the MCP endpoint (tool "
-          + "<code>audit_contract</code>); requesting one here is refused <i>before</i> "
-          + "settlement, so no USDC is ever taken.</p>");
-      }} else {{
-        lines.push("<p class='text-yellow-300'>Payment required to start this audit. Pay by card to begin &mdash; no crypto wallet needed.</p>");
-      }}
-      if (showChains) {{
-        accs.forEach(function (acc, i) {{
-          var meta = CHAINS[acc.network] || {{ name: acc.network }};
-          // USDC is 6 decimals. Show the true amount without padding the
-          // trailing zeros so a sub-cent testnet price ($0.0001) does not
-          // render as "0.00 USDC".
-          var price = (Number(acc.amount) / 1e6).toFixed(6).replace(/0+$/, "").replace(/\.$/, "");
-          var payTo = acc.payTo || "";
-          var tag = meta.testnet
-            ? " <span class='rounded bg-amber-900/60 px-1.5 py-0.5 text-[10px] text-amber-300'>TESTNET (free USDC)</span>"
-            : "";
-          lines.push("<button data-chain='" + i + "' class='chain-opt mt-2 w-full rounded-lg border border-zinc-700 bg-zinc-900 px-4 py-3 text-left text-sm hover:border-cyan-400'>"
-            + "<span class='font-semibold text-cyan-300'>Pay with " + esc(meta.name) + "</span>" + tag
-            + " <span class='text-zinc-300'>" + esc(acc.network) + "</span>"
-            + " &mdash; <b>" + price + " USDC</b>"
-            + "<br><span class='text-xs text-zinc-300'>pay to: <code class='break-all'>" + esc(payTo) + "</code></span>"
-            + "</button>");
-        }});
-      }}
+      lines.push(CRYPTO_UI
+        ? "<p class='text-yellow-300'>Payment required to start this audit. Pick the network you want to pay on:</p>"
+        : "<p class='text-yellow-300'>Payment required to start this audit.</p>");
+      lines.push("<p class='text-xs text-zinc-300'>The flat fee covers contracts up to <b>500 source lines</b>. "
+        + "Larger contracts are billed per size tier on the MCP endpoint (tool "
+        + "<code>audit_contract</code>); requesting one here is refused <i>before</i> "
+        + "settlement, so nothing is ever charged.</p>");
+      if (CRYPTO_UI) accs.forEach(function (acc, i) {{
+        var meta = CHAINS[acc.network] || {{ name: acc.network }};
+        // USDC is 6 decimals. Show the true amount without padding the
+        // trailing zeros so a sub-cent testnet price ($0.0001) does not
+        // render as "0.00 USDC".
+        var price = (Number(acc.amount) / 1e6).toFixed(6).replace(/0+$/, "").replace(/\.$/, "");
+        var payTo = acc.payTo || "";
+        var tag = meta.testnet
+          ? " <span class='rounded bg-amber-900/60 px-1.5 py-0.5 text-[10px] text-amber-300'>TESTNET (free USDC)</span>"
+          : "";
+        lines.push("<button data-chain='" + i + "' class='chain-opt mt-2 w-full rounded-lg border border-zinc-700 bg-zinc-900 px-4 py-3 text-left text-sm hover:border-cyan-400'>"
+          + "<span class='font-semibold text-cyan-300'>Pay with " + esc(meta.name) + "</span>" + tag
+          + " <span class='text-zinc-300'>" + esc(acc.network) + "</span>"
+          + " &mdash; <b>" + price + " USDC</b>"
+          + "<br><span class='text-xs text-zinc-300'>pay to: <code class='break-all'>" + esc(payTo) + "</code></span>"
+          + "</button>");
+      }});
       // Card checkout (Creem, Merchant of Record): rendered only when the
       // backend advertises the channel (GET /api/pay/creem/config).
       if (window.__creemEnabled) {{
@@ -560,8 +553,11 @@ def _build_index_html() -> str:
           + " <span class='text-zinc-300'>&mdash; card / Apple Pay / Google Pay</span>"
           + "<br><span class='text-xs text-zinc-300'>Hosted checkout by Creem (Merchant of Record). No crypto wallet needed.</span>"
           + "</button>");
+      }} else if (!CRYPTO_UI) {{
+        lines.push("<p class='text-yellow-300'>Card checkout is temporarily "
+          + "unavailable. Please try again shortly.</p>");
       }}
-      if (showChains) {{
+      if (CRYPTO_UI) {{
         lines.push("<p class='mt-3 text-xs text-zinc-300'>Your wallet will open and switch to that network, then ask you to approve the payment. "
           + "Prefer the terminal? Run the curl command below with an x402-enabled client:</p>");
         var curlCmd = "curl -X POST " + window.location.origin + REST
