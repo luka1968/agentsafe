@@ -74,7 +74,15 @@ def _now_iso() -> str:
 
 
 def new_task_id() -> str:
-    return secrets.token_urlsafe(18)  # 24 chars, 144 bits entropy
+    """Unguessable task id (~144 bits). The first character is forced to be
+    alphanumeric: ``secrets.token_urlsafe`` can emit a leading ``-``, and a
+    task id is later passed on command lines (``--task-id <id>``) where a
+    leading dash is parsed as an option and silently breaks the worker
+    (argparse exits 2). URL-safe *and* argv-safe by construction."""
+    while True:
+        tid = secrets.token_urlsafe(18)  # 24 chars, 144 bits entropy
+        if tid[0].isalnum():
+            return tid
 
 
 def _safe_redis_host(redis_url: str) -> str:

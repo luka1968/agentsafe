@@ -111,9 +111,9 @@ jobs:
             -e NVIDIA_EMBED_MODEL=nvidia/nemotron-3.5-embed-1b \
             -e EMBED_DIM=2048 \
             agentsafe:audit \
-              --address "$AUDIT_ADDRESS" \
-              --task-id "$AUDIT_TASK_ID" \
-              --output /out/report.json
+              --address="$AUDIT_ADDRESS" \
+              --task-id="$AUDIT_TASK_ID" \
+              --output=/out/report.json
 
       - name: Upload report artifact (always, even on failure)
         if: always()
