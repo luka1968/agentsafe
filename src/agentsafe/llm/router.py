@@ -236,7 +236,12 @@ class LLMRouter:
         self._providers = [
             _ProviderRuntime(
                 name=p.name,
-                base_url=p.base_url,
+                # Normalize the base URL: a trailing slash would produce
+                # ".../v4//chat/completions" (double slash), which many
+                # OpenAI-compatible gateways reject - silently failing the
+                # operator's preferred/preferred-strong model and rotating to a
+                # weaker fallback. Strip it once here.
+                base_url=(p.base_url or "").rstrip("/"),
                 api_key=p.api_key,
                 model=p.model,
                 rpm_limit=p.rpm_limit,
