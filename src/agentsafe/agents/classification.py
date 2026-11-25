@@ -126,9 +126,17 @@ def classify_contract(intel, source_text: str = "") -> ClassifiedProfile:
             kind = getattr(c, "kind", "")
             if kind:
                 p.contract_classes.append(f"{c.name}:{kind}")
-        p.contract_classes.extend(
-            f"{c.name}:proxy" for c in getattr(intel, "contracts", []) or []
-            if getattr(c, "bases", None))
+        # Proxy-ness is EVIDENCE only (EIP-1967 slots / delegatecall fallback /
+        # upgrade mechanism). "Has a base contract" is inheritance, NOT a proxy;
+        # tagging it as proxy produced false facts like `WETH9:proxy`.
+        try:
+            from agentsafe.intel.proxy import ProxyClass, classify_contracts
+
+            for pc in classify_contracts(intel):
+                if pc.classification in (ProxyClass.CONFIRMED, ProxyClass.PROBABLE):
+                    p.contract_classes.append(f"{pc.contract}:proxy({pc.pattern})")
+        except Exception:  # noqa: BLE001 - classification is a lens, never a blocker
+            pass
         if getattr(intel, "proxy_hints", None):
             p.contract_classes.append("proxy-hints")
     # bytecode-only (no intel): keep honest, use raw text signals only
