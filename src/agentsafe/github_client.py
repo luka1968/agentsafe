@@ -161,7 +161,13 @@ class GitHubActionsClient:
                 elif resp.status_code == 403 and self._is_rate_limited(resp):
                     raise RateLimitedError("GitHub API rate limit exceeded")
                 elif resp.status_code >= 400:
-                    raise GitHubClientError(f"GitHub API {method} {path}: HTTP {resp.status_code}")
+                    # include the response body: GitHub's message is the actual
+                    # reason (e.g. "Not Found" vs "Resource not accessible by
+                    # integration") and is what makes a failure diagnosable.
+                    _body = (resp.text or "").strip().replace("\n", " ")[:300]
+                    raise GitHubClientError(
+                        f"GitHub API {method} {path}: HTTP {resp.status_code} {_body}"
+                    )
             except (httpx.TimeoutException, httpx.TransportError) as exc:
                 transient = True
                 last_detail = f"transport error: {exc}"
@@ -184,6 +190,45 @@ class GitHubActionsClient:
         return "rate limit" in (resp.text or "").lower()
 
     # ------------------------------------------------------------- dispatch
+    async def resolve_dispatch_target(self) -> dict[str, Any]:
+        """Resolve the repo's DEFAULT BRANCH and locate the configured workflow
+        file with read-only API calls.
+
+        ``workflow_dispatch`` can only trigger a workflow that exists on the
+        repository's default branch, and the dispatch ``ref`` must be a branch
+        where the file exists. Using the repo's actual default branch (instead
+        of a hard-coded ``main``) removes a whole class of 404 failures; and if
+        the workflow file is missing, the error lists what IS available."""
+        repo_resp = await self._request("GET", f"/repos/{self._repo}")
+        default_branch = (repo_resp.json() or {}).get("default_branch") or self._ref
+        wf_resp = await self._request(
+            "GET", f"/repos/{self._repo}/actions/workflows", params={"per_page": 100}
+        )
+        items = (wf_resp.json() or {}).get("workflows") or []
+        target = None
+        for w in items:
+            path = str(w.get("path") or "")
+            if (
+                path == f".github/workflows/{self._workflow}"
+                or path.endswith("/" + self._workflow)
+                or w.get("name") == self._workflow
+            ):
+                target = w
+                break
+        if target is None:
+            available = ", ".join(sorted(str(w.get("path")) for w in items)) or "(none)"
+            raise GitHubClientError(
+                f"workflow '{self._workflow}' is not dispatchable on repo "
+                f"'{self._repo}' (default branch '{default_branch}'): it must "
+                f"exist on the default branch. Workflows present: {available}"
+            )
+        return {
+            "repo": self._repo,
+            "workflow": self._workflow,
+            "ref": default_branch,
+            "workflow_id": target.get("id"),
+        }
+
     async def trigger_workflow(self, address: str, task_id: str) -> int:
         """Dispatch the audit workflow and return the created run id.
 
@@ -197,19 +242,24 @@ class GitHubActionsClient:
         addr = normalize_address(address)
         if not task_id or len(task_id) > 64:
             raise ValueError("invalid task_id")
+        # Resolve the repo's default branch + confirm the workflow is
+        # dispatchable BEFORE dispatching (workflow_dispatch requires the file
+        # on the default branch). This removes the most common 404 cause.
+        target = await self.resolve_dispatch_target()
+        ref = target["ref"]
         dispatched_at = datetime.now(UTC)
         resp = await self._request(
             "POST",
             f"/repos/{self._repo}/actions/workflows/{self._workflow}/dispatches",
-            json_body={"ref": self._ref, "inputs": {"address": addr, "task_id": task_id}},
+            json_body={"ref": ref, "inputs": {"address": addr, "task_id": task_id}},
         )
-        # GitHub documents 204 No Content for a successful dispatch.
         if resp.status_code != 204:
-            logger.warning(
-                "dispatch returned unexpected HTTP %s (expected 204); treating as sent",
-                resp.status_code,
+            _b = (resp.text or "").strip().replace("\n", " ")[:300]
+            raise GitHubClientError(
+                f"dispatch rejected: HTTP {resp.status_code} {_b} "
+                f"(repo={self._repo} ref={ref} workflow={self._workflow})"
             )
-        logger.info("workflow dispatched task=%s address=%s", task_id, addr)
+        logger.info("workflow dispatched task=%s address=%s ref=%s", task_id, addr, ref)
 
         # A run is uniquely identified by its id. Find it once (retrying a
         # bounded window while the row appears, e.g. slow runner startup),

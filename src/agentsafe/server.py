@@ -1472,6 +1472,31 @@ def build_server(settings: Settings, *, validate: bool = True) -> FastMCP:
                 status_code=500,
             )
 
+    @app.custom_route("/api/diag/dispatch", methods=["GET"])
+    async def _api_diag_dispatch(request: Request) -> Response:
+        """Read-only dispatch-config diagnostics. No secrets, no side effects.
+
+        Confirms the server can see repo/workflow/default-branch and that the
+        configured workflow is dispatchable — the exact things that fail
+        silently when a paid audit never produces a run."""
+        try:
+            info = await gh.resolve_dispatch_target()
+            return JSONResponse({
+                "ok": True,
+                "github_repo": settings.GITHUB_REPO,
+                "workflow_file": settings.GITHUB_WORKFLOW_FILE,
+                "configured_ref": settings.GITHUB_REF,
+                **info,
+            })
+        except Exception as exc:  # noqa: BLE001 - diagnostics must not 500
+            return JSONResponse({
+                "ok": False,
+                "github_repo": settings.GITHUB_REPO,
+                "workflow_file": settings.GITHUB_WORKFLOW_FILE,
+                "configured_ref": settings.GITHUB_REF,
+                "error": f"{type(exc).__name__}: {exc}",
+            }, status_code=200)
+
     @app.custom_route("/api/audit/{task_id}/status", methods=["GET"])
     async def _api_audit_status(request: Request) -> Response:
         """Lightweight audit status probe (the MythX-style async pattern).
