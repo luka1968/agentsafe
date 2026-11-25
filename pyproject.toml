@@ -32,6 +32,16 @@ report = [
     "reportlab>=4.2",
 ]
 
+# Executable PoC (Section 8): a pure-Python EVM backend so a candidate can be
+# reproduced in-memory without Foundry. solc is fetched from
+# binaries.soliditylang.org. Optional: without it, PoC results are honestly
+# reported as an environment limitation, never fabricated.
+poc = [
+    "eth-tester[py-evm]>=0.11",
+    "py-solc-x>=2.0",
+    "web3>=6",
+]
+
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",

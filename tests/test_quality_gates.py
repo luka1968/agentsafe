@@ -51,15 +51,22 @@ class TestQualityGates:
         assert g["no_fabricated_results"]["passed"]
         assert g["severity_confidence_consistency"]["passed"]
 
-    def test_unmet_gate_is_reported_not_hidden(self):
+    def test_poc_gate_reflects_the_backend_honestly(self):
+        from agentsafe.validation.evm_poc import evm_backend_available
+
         r = Q.evaluate_gates()
-        # No EVM backend here -> PoC reproducibility is honestly 0 and the gate
-        # is reported as NOT met (never fabricated as a pass).
         g = r["gates"]["reproducible_poc"]
-        assert g["passed"] is False and g["measured"] == 0.0
-        assert "environment_limitation" in g["note"]
-        assert r["summary"]["commercially_ready"] is False
-        assert r["summary"]["n_not_met"] >= 1
+        if evm_backend_available():
+            # a real EVM backend is present -> the PoC gate is met (measured 1.0)
+            assert g["passed"] is True and g["measured"] == 1.0
+        else:
+            # absent backend -> reported NOT met, with the reason, never faked
+            assert g["passed"] is False and g["measured"] == 0.0
+            assert "backend" in g["note"]
+        # commercially_ready is exactly "every gate met" (never asserted blindly)
+        assert r["summary"]["commercially_ready"] == all(
+            x["passed"] for x in r["gates"].values()
+        )
 
 
 class TestModelPolicy:

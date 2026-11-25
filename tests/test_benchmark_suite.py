@@ -68,8 +68,13 @@ class TestMetrics:
         assert m["false_positive_rate"] == 0.5
 
     def test_confirmed_reproducibility_reported_honestly(self):
+        from agentsafe.validation.evm_poc import evm_backend_available
+
         r = S.evaluate()
-        assert r["confirmed_reproducibility_rate"] == 0.0
+        rate = r["confirmed_reproducibility_rate"]
+        assert rate in (0.0, 1.0)
+        # 1.0 only when a real EVM backend reproduced the reference scenario
+        assert rate == (1.0 if evm_backend_available() else 0.0)
 
 
 class TestSecureContractsNotFabricated:

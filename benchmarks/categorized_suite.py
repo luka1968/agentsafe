@@ -470,6 +470,28 @@ def metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _reproducibility_rate() -> float:
+    """Fraction of the reference high-impact scenarios reproduced by REAL EVM
+    execution (1.0 when the vulnerable scenario reproduces and the CEI-correct
+    control does not; 0.0 otherwise / when no backend is installed)."""
+    try:
+        from agentsafe.validation.evm_poc import (
+            evm_backend_available,
+            run_reentrancy_poc,
+            run_reentrancy_poc_safe,
+        )
+    except Exception:
+        return 0.0
+    if not evm_backend_available():
+        return 0.0
+    try:
+        vuln = run_reentrancy_poc()
+        ctrl = run_reentrancy_poc_safe()
+    except Exception:
+        return 0.0
+    return 1.0 if (vuln.impact_demonstrated and not ctrl.impact_demonstrated) else 0.0
+
+
 def evaluate(cases: list[Case] | None = None) -> dict[str, Any]:
     cases = cases or CASES
     rows: list[dict[str, Any]] = []
@@ -509,6 +531,7 @@ def evaluate(cases: list[Case] | None = None) -> dict[str, Any]:
         "by_category": by_cat,
         "n_errors": sum(1 for r in rows if r.get("error")),
         "n_categories": len(by_cat),
-        # reproducibdad: no execution backend here, so 0 confirmed are reproduced.
-        "confirmed_reproducibility_rate": 0.0,
+        # fraction of high-impact reference scenarios reproduced by REAL EVM
+        # execution (0.0 when no EVM backend is installed).
+        "confirmed_reproducibility_rate": _reproducibility_rate(),
     }

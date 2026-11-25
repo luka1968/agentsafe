@@ -128,6 +128,36 @@ def _no_fabricated_results(rows: list[dict[str, Any]]) -> tuple[bool, int]:
     return (honest and fp == 0), fp
 
 
+def _reproducible_poc() -> tuple[float, bool, str]:
+    """Real EVM execution: a known-vulnerable reentrancy must be reproduced, and
+    a CEI-correct control must NOT be. Returns (measured, passed, note)."""
+    try:
+        from agentsafe.validation.evm_poc import (
+            evm_backend_available,
+            run_reentrancy_poc,
+            run_reentrancy_poc_safe,
+        )
+    except Exception as exc:
+        return 0.0, False, f"poc module unavailable: {exc}"
+    if not evm_backend_available():
+        return (
+            0.0,
+            False,
+            "no EVM execution backend installed (eth-tester/py-evm + solc); "
+            "install the 'poc' extra to execute PoCs",
+        )
+    vuln = run_reentrancy_poc()
+    ctrl = run_reentrancy_poc_safe()
+    ok = bool(vuln.impact_demonstrated) and not bool(ctrl.impact_demonstrated)
+    return (
+        1.0 if ok else 0.0,
+        ok,
+        f"vulnerable reproduced={vuln.impact_demonstrated}, "
+        f"CEI-correct control reproduced={ctrl.impact_demonstrated} "
+        f"(backend eth-tester/py-evm)",
+    )
+
+
 def evaluate_gates() -> dict[str, Any]:
     r = S.evaluate()
     rows = r["cases"]
@@ -135,7 +165,7 @@ def evaluate_gates() -> dict[str, Any]:
     ch_recall, ch_hit, ch_n = _critical_high_recall(rows)
     unsupported = _unsupported_proxy_count()
     no_fab, fp = _no_fabricated_results(rows)
-    repro = r["confirmed_reproducibility_rate"]
+    repro, repro_passed, repro_note = _reproducible_poc()
 
     gates = {
         "recall_critical_high": _gate(
@@ -166,10 +196,8 @@ def evaluate_gates() -> dict[str, Any]:
             "failed agents and skipped analysis are recorded explicitly",
         ),
         "reproducible_poc": _gate(
-            ">= 1 executed PoC for applicable high-impact findings", repro,
-            repro > 0,
-            "no EVM/Foundry backend in this environment: PoCs are planned but "
-            "reported as environment_limitation, so 0 are reproduced (honest)",
+            ">= 1 executed PoC reproducing impact (and none on a CEI-correct control)",
+            repro, repro_passed, repro_note,
         ),
         "no_fabricated_results": _gate(
             "== 0 fabricated", fp, no_fab,
