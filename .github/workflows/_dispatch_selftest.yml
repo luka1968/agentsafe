@@ -8,7 +8,7 @@ name: _dispatch selftest
 
 on:
   push:
-    branches: [dispatch-selftest]
+    branches: [dispatch-selftest2]
   workflow_dispatch:
 
 permissions:
@@ -27,7 +27,7 @@ jobs:
         run: |
           set +e
           REPO="${GITHUB_REPOSITORY}"
-          REF="${GITHUB_REF_NAME}"
+          REF="main"
           {
             echo "repo=${REPO}"
             echo "ref=${REF}"
