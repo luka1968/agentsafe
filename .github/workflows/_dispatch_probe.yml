@@ -1,0 +1,26 @@
+name: _dispatch probe
+
+# Harmless target workflow used to validate workflow_dispatch end-to-end
+# (token scope, repo, ref, run creation) without triggering a real audit.
+
+on:
+  workflow_dispatch:
+    inputs:
+      address:
+        required: false
+        type: string
+      task_id:
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo "probe run ok"
+          echo "task_id=${{ github.event.inputs.task_id }}"
+          echo "address=${{ github.event.inputs.address }}"
